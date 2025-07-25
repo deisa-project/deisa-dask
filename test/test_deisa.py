@@ -129,7 +129,7 @@ class TestSimulation:
         self.bridges = [get_bridge_instance(scheduler_address, nb_mpi_ranks, rank, arrays_metadata) for rank in
                         range(nb_mpi_ranks)]
 
-    def __gen_data(self) -> np.array:
+    def __gen_data(self, noise_level: int=0) -> np.array:
         # Create coordinate grid
         x = np.linspace(-1, 1, self.global_grid_size[0])
         y = np.linspace(-1, 1, self.global_grid_size[1])
@@ -138,6 +138,12 @@ class TestSimulation:
         # Generate 2D Gaussian (bell curve)
         sigma = 0.5
         global_data_np = np.exp(-(X ** 2 + Y ** 2) / (2 * sigma ** 2))
+
+        # Add Gaussian noise if requested
+        if noise_level > 0:
+            noise = np.random.normal(loc=0.0, scale=noise_level, size=global_data_np.shape)
+            global_data_np += noise
+
         # global_data_da = da.from_array(global_data_np)
         return global_data_np
 
@@ -159,8 +165,8 @@ class TestSimulation:
 
         return blocks
 
-    def generate_data(self, array_name: str) -> np.array:
-        global_data = self.__gen_data()
+    def generate_data(self, array_name: str, iteration: int) -> np.array:
+        global_data = self.__gen_data(noise_level=iteration)
         chunks = self.__split_array_equal_chunks(global_data)
 
         assert len(chunks) == len(self.bridges)
@@ -202,7 +208,7 @@ def test_dask_queue(env_setup):
 
 @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
 @pytest.mark.parametrize('mpi_parallelism', [(2, 2), (1, 2), (2, 1)])
-@pytest.mark.parametrize('nb_iterations', [1, 2])
+@pytest.mark.parametrize('nb_iterations', [1, 2, 10])
 def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, env_setup):
     print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}")
 
@@ -224,7 +230,7 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
                          })
 
     for i in range(nb_iterations):
-        global_data = sim.generate_data('my_array')
+        global_data = sim.generate_data('my_array', i)
         global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                             global_grid_size[1] // mpi_parallelism[1]))
         darr = deisa.get_array('my_array')
