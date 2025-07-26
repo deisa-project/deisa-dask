@@ -32,7 +32,8 @@ import asyncio
 import dask
 import dask.array as da
 import numpy as np
-from dask.distributed import get_client, comm, Queue, Variable
+from dask.distributed import comm, Queue, Variable
+from distributed import Client
 
 QUEUE_PREFIX = "queue_"
 
@@ -65,7 +66,7 @@ class Bridge:
                         'subsize': [50, 50]
                     }
         """
-        self.client = get_client(dask_scheduler_address)
+        self.client = Client(dask_scheduler_address)
         self.mpi_rank = mpi_rank
         self.arrays_metadata = arrays_metadata
 
@@ -82,7 +83,7 @@ class Bridge:
         if self.mpi_rank == 0:
             Queue("Arrays", client=self.client).put(self.arrays_metadata)
 
-        self.queue = Queue(QUEUE_PREFIX + str(self.mpi_rank), client=self.client)
+        self.queue = Queue(QUEUE_PREFIX + str(self.mpi_rank), client=self.client)  # TODO: remove unused
 
     def publish_data(self, array_name: str, data: np.array):
         """
@@ -97,7 +98,8 @@ class Bridge:
         :type data: numpy.ndarray
         :return: None
         """
-        # TODO: check that client is connected
+
+        assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
         f = self.client.scatter(data, direct=True, workers=self.workers)  # send data to workers
 
@@ -122,7 +124,7 @@ class Deisa(object):
     def __init__(self, dask_scheduler_address: str, mpi_comm_size: int, nb_workers: int):
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        self.client = get_client(dask_scheduler_address)
+        self.client = Client(dask_scheduler_address)
 
         # Wait for all workers to be available.
         self.workers = [comm.get_address_host_port(i, strict=False) for i in

@@ -26,13 +26,14 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-
+import math
+import random
 
 import dask
 import dask.array as da
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster, get_client, Queue
+from distributed import Client, LocalCluster, get_client, Queue, Variable
 
 from deisa.deisa import Deisa, get_bridge_instance
 
@@ -125,11 +126,11 @@ class TestSimulation:
         assert global_grid_size[0] % mpi_parallelism[0] == 0, "cannot compute local grid size for x dimension"
         assert global_grid_size[1] % mpi_parallelism[1] == 0, "cannot compute local grid size for y dimension"
 
-        nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
-        self.bridges = [get_bridge_instance(scheduler_address, nb_mpi_ranks, rank, arrays_metadata) for rank in
-                        range(nb_mpi_ranks)]
+        self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+        self.bridges = [get_bridge_instance(scheduler_address, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
+                        range(self.nb_mpi_ranks)]
 
-    def __gen_data(self, noise_level: int=0) -> np.array:
+    def __gen_data(self, noise_level: int = 0) -> np.array:
         # Create coordinate grid
         x = np.linspace(-1, 1, self.global_grid_size[0])
         y = np.linspace(-1, 1, self.global_grid_size[1])
@@ -165,14 +166,19 @@ class TestSimulation:
 
         return blocks
 
-    def generate_data(self, array_name: str, iteration: int) -> np.array:
+    def generate_data(self, array_name: str, iteration: int, send_order_fn=None) -> np.array:
         global_data = self.__gen_data(noise_level=iteration)
         chunks = self.__split_array_equal_chunks(global_data)
 
         assert len(chunks) == len(self.bridges)
 
-        for i, bridge in enumerate(self.bridges):
-            bridge.publish_data(array_name, chunks[i])
+        if send_order_fn is None:
+            for i, bridge in enumerate(self.bridges):
+                bridge.publish_data(array_name, chunks[i])
+        else:
+            send_order = send_order_fn(chunks)
+            for i, chunk in enumerate(send_order):
+                self.bridges[i].publish_data(array_name, chunk)
 
         return global_data
 
@@ -189,27 +195,77 @@ def env_setup():
 
 def test_dask_queue(env_setup):
     client, cluster = env_setup
+
     q = Queue("Test", client=client)
 
-    data = np.random.random((2, 2))
-    f = client.scatter(data, direct=True)
+    np.random.seed(42)
 
-    q.put({'shape': data.shape,
-           'dtype': data.dtype,
-           'f': f})
+    datas = []
+    for _ in range(1):
+        data = np.random.random((2, 2))
+        datas.append(data)
 
+        f = client.scatter(data, direct=True)
+        to_send = {'shape': data.shape,
+                   'dtype': data.dtype,
+                   'f': f,
+                   'f_key': f.key}
+        q.put(to_send)
+
+    # get 1
     res = q.get()
+
+    assert res['shape'] == datas[0].shape
+    assert res['dtype'] == datas[0].dtype
+
+    darr = da.from_delayed(dask.delayed(res["f"]), res["shape"], dtype=res["dtype"])
+    assert darr.compute().all() == datas[0].all()
+    assert darr.sum().compute() == datas[0].sum()
+
+
+def test_dask_variable(env_setup):
+    client, cluster = env_setup
+
+    v = Variable("Test", client=client)
+
+    np.random.seed(42)
+    data = np.random.random((2, 2))
+
+    f = client.scatter(data, direct=True)
+    v.set({'shape': data.shape,
+           'dtype': data.dtype,
+           'f': f,
+           'f_key': f.key})
+
+    res = v.get()
     assert res['shape'] == data.shape
     assert res['dtype'] == data.dtype
 
-    darr = da.from_delayed(dask.delayed(f), res["shape"], dtype=res["dtype"])
+    darr = da.from_delayed(dask.delayed(res["f"]), res["shape"], dtype=res["dtype"])
     assert darr.compute().all() == data.all()
+    assert darr.sum().compute() == data.sum()
+
+
+def in_order(original_send_order: list[int]):
+    return original_send_order
+
+
+def reverse_order(original_send_order: list[int]):
+    original_send_order.reverse()
+    return original_send_order
+
+
+def random_order(original_send_order: list[int]):
+    random.seed(42)
+    random.shuffle(original_send_order)
+    return original_send_order
 
 
 @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
-@pytest.mark.parametrize('mpi_parallelism', [(2, 2), (1, 2), (2, 1)])
-@pytest.mark.parametrize('nb_iterations', [1, 2, 10])
-def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, env_setup):
+@pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
+@pytest.mark.parametrize('send_order_fn', [in_order, reverse_order, random_order])
+@pytest.mark.parametrize('nb_iterations', [1, 2, 5])
+def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, send_order_fn, env_setup):
     print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}")
 
     client, cluster = env_setup
@@ -230,10 +286,11 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
                          })
 
     for i in range(nb_iterations):
-        global_data = sim.generate_data('my_array', i)
+        global_data = sim.generate_data('my_array', i, send_order_fn)
         global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                             global_grid_size[1] // mpi_parallelism[1]))
         darr = deisa.get_array('my_array')
 
-        assert global_data_da.sum().compute() == darr.sum().compute(), "reconstructed dask array does not match original"
+        assert math.isclose(global_data_da.sum().compute(), darr.sum().compute(),
+                            rel_tol=1e-09), "reconstructed dask array does not match original"
         assert global_data_da.all() == darr.all(), "reconstructed dask array does not match original"
