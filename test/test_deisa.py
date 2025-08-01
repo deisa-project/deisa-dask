@@ -28,6 +28,7 @@
 # =============================================================================
 import math
 import random
+import time
 
 import dask
 import dask.array as da
@@ -174,11 +175,11 @@ class TestSimulation:
 
         if send_order_fn is None:
             for i, bridge in enumerate(self.bridges):
-                bridge.publish_data(array_name, chunks[i])
+                bridge.publish_data(array_name, chunks[i], iteration)
         else:
             send_order = send_order_fn(chunks)
             for i, chunk in enumerate(send_order):
-                self.bridges[i].publish_data(array_name, chunk)
+                self.bridges[i].publish_data(array_name, chunk, iteration)
 
         return global_data
 
@@ -289,8 +290,59 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         global_data = sim.generate_data('my_array', i, send_order_fn)
         global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                             global_grid_size[1] // mpi_parallelism[1]))
-        darr = deisa.get_array('my_array')
+        darr, iteration = deisa.get_array('my_array')
 
+        assert iteration == i, "iteration does not match expected"
         assert math.isclose(global_data_da.sum().compute(), darr.sum().compute(),
                             rel_tol=1e-09), "reconstructed dask array does not match original"
         assert global_data_da.all() == darr.all(), "reconstructed dask array does not match original"
+
+
+@pytest.mark.parametrize('global_grid_size', [(8, 8)])
+@pytest.mark.parametrize('mpi_parallelism', [(2, 2)])
+@pytest.mark.parametrize('nb_iterations', [1, 2, 5])
+def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, env_setup):
+    print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}")
+
+    client, cluster = env_setup
+    scheduler_address = cluster.scheduler_address
+    nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+
+    deisa = Deisa(scheduler_address, nb_mpi_ranks, 2)
+    sim = TestSimulation(scheduler_address,
+                         global_grid_size=global_grid_size,
+                         mpi_parallelism=mpi_parallelism,
+                         arrays_metadata={
+                             'my_array': {
+                                 'size': global_grid_size,
+                                 'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                             global_grid_size[1] // mpi_parallelism[1])
+                             }
+                         })
+
+    context = {
+        'counter': 0
+    }
+
+    def window_callback(window: list[da.Array], timestep: int):
+        print(f"hello from window_callback. iteration={timestep}", flush=True)
+        context['counter'] += 1
+        context['latest_timestep'] = timestep
+        context['latest_data'] = window[-1]
+
+    deisa.register_sliding_window_callback("my_array", window_callback, window_size=2, timeout='1s')
+
+    for i in range(1, nb_iterations + 1):
+        print(f"iteration {i}", flush=True)
+        global_data = sim.generate_data('my_array', i)
+        global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
+                                                            global_grid_size[1] // mpi_parallelism[1]))
+
+        time.sleep(.1)  # wait for callback to be called
+        assert context['counter'] == i, "callback was not called"
+        assert context['latest_timestep'] == i, "callback was not called with correct timestep"
+        assert type(context['latest_data']) == da.Array, "callback was not called with correct data"
+        assert context['latest_data'].any() == global_data_da.any(), "callback was not called with correct data"
+
+    assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
+    deisa.close()

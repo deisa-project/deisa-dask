@@ -28,14 +28,17 @@
 # =============================================================================
 
 import asyncio
+import collections
+import gc
+import threading
+from typing import Callable
 
 import dask
 import dask.array as da
 import numpy as np
+from dask.array import Array
 from dask.distributed import comm, Queue, Variable
-from distributed import Client
-
-QUEUE_PREFIX = "queue_"
+from distributed import Client, Future
 
 
 def get_bridge_instance(dask_scheduler_address: str, mpi_comm_size: int, mpi_rank: int,
@@ -69,6 +72,7 @@ class Bridge:
         self.client = Client(dask_scheduler_address)
         self.mpi_rank = mpi_rank
         self.arrays_metadata = arrays_metadata
+        self.futures = []
 
         # TODO: check this
         # Note: Blocking call. Simulation will wait for the analysis code to be run.
@@ -83,9 +87,7 @@ class Bridge:
         if self.mpi_rank == 0:
             Queue("Arrays", client=self.client).put(self.arrays_metadata)
 
-        self.queue = Queue(QUEUE_PREFIX + str(self.mpi_rank), client=self.client)  # TODO: remove unused
-
-    def publish_data(self, array_name: str, data: np.array):
+    def publish_data(self, array_name: str, data: np.array, iteration: int):
         """
         Publishes data to the distributed workers and communicates metadata and data future via a queue. This method is used
         to send data to workers in a distributed computing setup and ensures that both the metadata about the data and the
@@ -96,6 +98,8 @@ class Bridge:
         :type array_name: str
         :param data: The data to be distributed among the workers
         :type data: numpy.ndarray
+        :param iteration: The iteration number associated with the data
+        :type iteration: int
         :return: None
         """
 
@@ -103,19 +107,20 @@ class Bridge:
 
         f = self.client.scatter(data, direct=True, workers=self.workers)  # send data to workers
 
-        metadata = {
+        # TODO: this is a memory leak. Find a way to release the futures once they are used to build a dask array in the client code.
+        self.futures.append(f)
+
+        to_send = {
             'rank': self.mpi_rank,
             'shape': data.shape,
-            'dtype': data.dtype
+            'dtype': data.dtype,
+            'iteration': iteration,
+            'future': f
         }
 
-        # Queue(array_name, client=self.client).put(metadata)
         q = Queue(array_name, client=self.client)
-        q.put(metadata)  # put metadata
-        q.put(f)  # put future
+        q.put(to_send)
 
-        # self.queue.put(metadata)  # put metadata
-        # self.queue.put(f)  # put future
         # TODO: what to do if error ?
 
 
@@ -137,14 +142,23 @@ class Deisa(object):
 
         # print(self.workers)
         self.mpi_comm_size = mpi_comm_size
-        self.queues = [Queue(QUEUE_PREFIX + str(i), client=self.client) for i in range(mpi_comm_size)]
         self.arrays_metadata = None
+        self.sliding_window_callback_threads: list[threading.Thread] = []
 
-    def get_array(self, name: str) -> da.Array:
+    def __del__(self):
+        for thread in self.sliding_window_callback_threads:
+            thread.stop = True
+            thread.join()
+        gc.collect()
+
+    def close(self):
+        self.__del__()
+
+    def get_array(self, name: str, timeout=None) -> tuple[Array, int]:
+        """Retrieve a Dask array for a given array name."""
 
         if self.arrays_metadata is None:
-            self.arrays_metadata = Queue("Arrays",
-                                         client=self.client).get()  # {'my_array': {'size': (32,32), 'subsize': (16,16), 'dtype': float}}
+            self.arrays_metadata = Queue("Arrays", client=self.client).get(timeout=timeout)
         # arrays_metadata will look something like this:
         # arrays_metadata = {
         #     'global_t': {
@@ -160,38 +174,77 @@ class Deisa(object):
             raise ValueError(f"Array '{name}' is not known.")
 
         res = []
-        l = self.client.sync(self.__get_all_chunks, Queue(name, client=self.client), self.mpi_comm_size)
-        for m, f in l:
-            m["da"] = da.from_delayed(dask.delayed(f), m["shape"], dtype=m["dtype"])
+        iteration = 0
+        l = self.client.sync(self.__get_all_chunks, Queue(name, client=self.client),
+                             self.mpi_comm_size, timeout=timeout)
+        for m in l:
+            assert type(m) is dict, "Metadata must be a dictionary."
+            assert type(m['future']) is Future, "Data future must be a Dask future."
+            m["da"] = da.from_delayed(dask.delayed(m['future']), m["shape"], dtype=m["dtype"])
             res.append(m)
+            iteration = m["iteration"]
 
         # create dask array from blocks
         res.sort(key=lambda x: x['rank'])  # sort by mpi rank
         chunks = [item['da'] for item in res]  # extract ordered dask arrays
         darr = self.__tile_dask_blocks(chunks, self.arrays_metadata[name]['size'])
-        return darr
+        return darr, iteration
+
+    def register_sliding_window_callback(self, array_name: str, callback: Callable[[list[da.Array], int], None],
+                                         window_size: int = 1, timeout=None):
+        """
+        Registers a sliding window callback that processes a fixed-size window of arrays over a period.
+        This method allows monitoring arrays associated with a specific name and performing operations
+        based on a sliding window of recent arrays. The callback will be triggered whenever a new
+        array is added to the window.
+
+        The method starts a background thread to watch for updates to the specified array. The thread
+        retrieves arrays from the internal system queue with the given `array_name` and manages the
+        sliding window. Upon each update, the user-provided `callback` function is invoked with the
+        current window and iteration index.
+
+        If the timeout is specified, it sets the maximum duration to wait for the array to be retrieved
+        when the corresponding queue is checked.
+
+        :param array_name: The name of the array to monitor for updates.
+        :param callback: A callable to execute whenever the sliding window is updated. The callable
+            receives the current sliding window as a list of arrays and the iteration index as arguments.
+        :param window_size: The number of arrays to maintain in the sliding window. Defaults to 1.
+        :param timeout: The maximum time, in seconds, to wait for the array to be retrieved from the
+            queue. If None, waits indefinitely. Defaults to None.
+        :return: None
+        """
+
+        def queue_watcher():
+            current_window = collections.deque(maxlen=window_size)
+            t = threading.current_thread()
+
+            while getattr(t, "stop", False) is False:
+                try:
+                    darr, iteration = self.get_array(array_name, timeout=timeout)
+                    current_window.append(darr)
+                    # TODO handle case where user callback throws
+                    callback(list(current_window), iteration)
+                except TimeoutError:
+                    pass
+
+        thread = threading.Thread(target=queue_watcher)
+        self.sliding_window_callback_threads.append(thread)
+        thread.start()
+
+    #    def unregister_sliding_window_callback(self, array_name: str): # TODO
+    #        self.sliding_window_callback_threads.
 
     @staticmethod
-    async def __get_all_chunks(q: Queue, mpi_comm_size: int):
-        res = []
-        for _ in range(mpi_comm_size):
-            res.append(q.get(batch=2))
-        return await asyncio.gather(*res)
-
-    # @staticmethod
-    # async def __get_all_chunks(queues):
-    #     res = []
-    #     for q in queues:
-    #         res.append(q.get(batch=2))
-    #     return await asyncio.gather(*res)
-
-    @staticmethod
-    def __get_from_queue(q: Queue) -> dict:
-        metadata, data_future = q.get(batch=2)  # metadata + data future
-        metadata['da'] = da.from_delayed(dask.delayed(data_future),
-                                         shape=metadata["shape"],
-                                         dtype=metadata["dtype"])
-        return metadata
+    async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
+        """This will return a list of tuples (metadata, data_future) for all chunks in the queue."""
+        try:
+            res = []
+            for _ in range(mpi_comm_size):
+                res.append(q.get(timeout=timeout))
+            return await asyncio.gather(*res)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Timeout reached while waiting for chunks in queue '{q.name}'.")
 
     @staticmethod
     def __tile_dask_blocks(blocks: list[da.Array], global_shape: tuple[int, ...]) -> da.Array:
