@@ -298,11 +298,14 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         assert global_data_da.all() == darr.all(), "reconstructed dask array does not match original"
 
 
-@pytest.mark.parametrize('global_grid_size', [(8, 8)])
-@pytest.mark.parametrize('mpi_parallelism', [(2, 2)])
-@pytest.mark.parametrize('nb_iterations', [1, 2, 5])
-def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, env_setup):
-    print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}")
+@pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
+@pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
+@pytest.mark.parametrize('nb_iterations', [1, 5])
+@pytest.mark.parametrize('window_size', [1, 2])
+def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, window_size: int,
+                        env_setup):
+    print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} "
+          f"nb_iterations={nb_iterations} window_size={window_size}")
 
     client, cluster = env_setup
     scheduler_address = cluster.scheduler_address
@@ -329,8 +332,9 @@ def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         context['counter'] += 1
         context['latest_timestep'] = timestep
         context['latest_data'] = window[-1]
+        context['latest_window_size'] = len(window)
 
-    deisa.register_sliding_window_callback("my_array", window_callback, window_size=2, timeout='1s')
+    deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size, timeout='1s')
 
     for i in range(1, nb_iterations + 1):
         print(f"iteration {i}", flush=True)
@@ -343,6 +347,7 @@ def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         assert context['latest_timestep'] == i, "callback was not called with correct timestep"
         assert type(context['latest_data']) == da.Array, "callback was not called with correct data"
         assert context['latest_data'].any() == global_data_da.any(), "callback was not called with correct data"
+        assert context['latest_window_size'] == min(i, window_size), "callback was not called with correct window size"
 
     assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
     deisa.close()
