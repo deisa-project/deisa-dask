@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2015-2023 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -34,7 +34,7 @@ import dask
 import dask.array as da
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster, get_client, Queue, Variable
+from distributed import Client, LocalCluster, Queue, Variable
 
 from deisa.deisa import Deisa, get_bridge_instance
 

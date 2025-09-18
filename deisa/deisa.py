@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2015-2023 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -43,6 +43,24 @@ from distributed import Client, Future
 
 def get_bridge_instance(dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
                         arrays_metadata: dict[str, dict], **kwargs):
+    """
+    Get an instance of the Bridge class to establish a connection between MPI and Dask.
+
+    This function facilitates the creation of a `Bridge` instance that acts as
+    a communication layer between the MPI processes and the Dask scheduler. It
+    requires MPI-related parameters, Dask scheduler address, and metadata about
+    the arrays being utilized.
+
+    :param dask_scheduler_address: Address of the Dask scheduler or an instance
+        of dask.distributed.Client to connect to.
+    :param mpi_comm_size: Size of the MPI communicator.
+    :param mpi_rank: Rank of the MPI process within the communicator.
+    :param arrays_metadata: Metadata for arrays managed in the bridge. It should
+        indicate characteristics and configuration details about the arrays.
+    :param kwargs: Additional optional arguments to configure the Bridge instance.
+    :return: An instance of Bridge configured to mediate communication between MPI
+        and Dask.
+    """
     return Bridge(dask_scheduler_address, mpi_comm_size, mpi_rank, arrays_metadata, **kwargs)
 
 
@@ -54,10 +72,17 @@ class Bridge:
         system and a Dask-based framework. The class ensures proper allocation of workers
         among processes and instantiates the required communication objects like queues.
 
-        :param dask_scheduler_address: The address of the Dask scheduler to connect to.
-        :param mpi_comm_size: The size of the MPI communicator (total number of MPI
-                              processes).
-        :param mpi_rank: The rank of the current MPI process.
+        :param dask_scheduler_address: Address of the Dask Scheduler as a string or an instance of
+            Dask Client that facilitates communication with the cluster.
+        :type dask_scheduler_address: str | Client
+
+        :param mpi_comm_size: Total number of MPI processes involved in the computation.
+        :type mpi_comm_size: int
+
+        :param mpi_rank: The rank of this MPI process, indicating its unique identifier in the
+            computation.
+        :type mpi_rank: int
+
         :param arrays_metadata: A dictionary containing metadata about the Dask arrays
                 eg: arrays_metadata = {
                     'global_t': {
@@ -68,6 +93,10 @@ class Bridge:
                         'size': [100, 100]
                         'subsize': [50, 50]
                     }
+        :type arrays_metadata: dict[str, dict]
+
+        :param kwargs: Currently unused.
+        :type kwargs: dict
         """
 
         if isinstance(dask_scheduler_address, str):
@@ -134,6 +163,17 @@ class Bridge:
 class Deisa(object):
 
     def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, nb_workers: int):
+        """
+        Initializes the distributed processing environment and configures workers using
+        a Dask scheduler. This class handles setting up a Dask client and ensures the
+        specified number of workers are available for distributed computation tasks.
+
+        :param dask_scheduler_address: Address string of the Dask scheduler or an
+            instance of Dask's Client to connect to the cluster.
+        :param mpi_comm_size: Number of MPI processes for the computation.
+        :param nb_workers: Expected number of workers to be synchronized with the
+            Dask client.
+        """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
         if isinstance(dask_scheduler_address, str):
