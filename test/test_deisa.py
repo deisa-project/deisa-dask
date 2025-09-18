@@ -116,9 +116,9 @@ def test_reconstruct_global_dask_array_empty():
 
 
 class TestSimulation:
-    def __init__(self, scheduler_address: str, global_grid_size: tuple, mpi_parallelism: tuple,
+    def __init__(self, client: Client, global_grid_size: tuple, mpi_parallelism: tuple,
                  arrays_metadata: dict[str, dict]):
-        self.client = get_client(scheduler_address)
+        self.client = client
         self.global_grid_size = global_grid_size
         self.mpi_parallelism = mpi_parallelism
         self.local_grid_size = (global_grid_size[0] // mpi_parallelism[0],
@@ -128,7 +128,7 @@ class TestSimulation:
         assert global_grid_size[1] % mpi_parallelism[1] == 0, "cannot compute local grid size for y dimension"
 
         self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
-        self.bridges = [get_bridge_instance(scheduler_address, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
+        self.bridges = [get_bridge_instance(client, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
                         range(self.nb_mpi_ranks)]
 
     def __gen_data(self, noise_level: int = 0) -> np.array:
@@ -184,9 +184,9 @@ class TestSimulation:
         return global_data
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def env_setup():
-    cluster = LocalCluster(n_workers=2, threads_per_worker=1)
+    cluster = LocalCluster(n_workers=2, threads_per_worker=1, dashboard_address=None, processes=False)
     client = Client(cluster)
     yield client, cluster
     # teardown
@@ -273,9 +273,10 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
 
     scheduler_address = cluster.scheduler_address
     nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+    nb_workers = len(cluster.workers)
 
-    deisa = Deisa(scheduler_address, nb_mpi_ranks, 2)
-    sim = TestSimulation(scheduler_address,
+    deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+    sim = TestSimulation(client,
                          global_grid_size=global_grid_size,
                          mpi_parallelism=mpi_parallelism,
                          arrays_metadata={
@@ -308,11 +309,11 @@ def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
           f"nb_iterations={nb_iterations} window_size={window_size}")
 
     client, cluster = env_setup
-    scheduler_address = cluster.scheduler_address
     nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+    nb_workers = len(cluster.workers)
 
-    deisa = Deisa(scheduler_address, nb_mpi_ranks, 2)
-    sim = TestSimulation(scheduler_address,
+    deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+    sim = TestSimulation(client,
                          global_grid_size=global_grid_size,
                          mpi_parallelism=mpi_parallelism,
                          arrays_metadata={

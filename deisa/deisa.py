@@ -41,13 +41,13 @@ from dask.distributed import comm, Queue, Variable
 from distributed import Client, Future
 
 
-def get_bridge_instance(dask_scheduler_address: str, mpi_comm_size: int, mpi_rank: int,
+def get_bridge_instance(dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
                         arrays_metadata: dict[str, dict], **kwargs):
     return Bridge(dask_scheduler_address, mpi_comm_size, mpi_rank, arrays_metadata, **kwargs)
 
 
 class Bridge:
-    def __init__(self, dask_scheduler_address: str, mpi_comm_size: int, mpi_rank: int,
+    def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
                  arrays_metadata: dict[str, dict], **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
@@ -69,7 +69,14 @@ class Bridge:
                         'subsize': [50, 50]
                     }
         """
-        self.client = Client(dask_scheduler_address)
+
+        if isinstance(dask_scheduler_address, str):
+            self.client = Client(dask_scheduler_address)
+        elif isinstance(dask_scheduler_address, Client):
+            self.client = dask_scheduler_address
+        else:
+            raise ValueError("dask_scheduler_address must be a string or a Dask Client object.")
+
         self.mpi_rank = mpi_rank
         self.arrays_metadata = arrays_metadata
         self.futures = []
@@ -126,17 +133,20 @@ class Bridge:
 
 class Deisa(object):
 
-    def __init__(self, dask_scheduler_address: str, mpi_comm_size: int, nb_workers: int):
+    def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, nb_workers: int):
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        self.client = Client(dask_scheduler_address)
+        if isinstance(dask_scheduler_address, str):
+            self.client = Client(dask_scheduler_address)
+        elif isinstance(dask_scheduler_address, Client):
+            self.client = dask_scheduler_address
+        else:
+            raise ValueError("dask_scheduler_address must be a string or a Dask Client object.")
 
         # Wait for all workers to be available.
-        self.workers = [comm.get_address_host_port(i, strict=False) for i in
-                        self.client.scheduler_info()["workers"].keys()]
+        self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]
         while len(self.workers) != nb_workers:
-            self.workers = [comm.get_address_host_port(i, strict=False) for i in
-                            self.client.scheduler_info()["workers"].keys()]
+            self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]
 
         Variable("workers", client=self.client).set(self.workers)
 
