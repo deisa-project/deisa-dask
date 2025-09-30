@@ -70,7 +70,7 @@ setup(name='deisa',
       author='Benoît Martin',
       author_email='bmartin@cea.fr',
 
-      python_requires='>=3.9',
+      python_requires='>=3.8',
 
       keywords='deisa in-situ',
 
