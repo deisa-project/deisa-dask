@@ -70,7 +70,7 @@ setup(name='deisa',
       author='Benoît Martin',
       author_email='bmartin@cea.fr',
 
-      python_requires='>=3.8',
+      python_requires='>=3.10',
 
       keywords='deisa in-situ',
 
@@ -85,7 +85,7 @@ setup(name='deisa',
       test_suite='test',
 
       classifiers=[
-          "Programming Language :: Python :: 3.9",
+          "Programming Language :: Python :: 3.10",
           "License :: OSI Approved :: MIT License",
           "Operating System :: OS Independent",
           "Development Status :: 3 - Alpha"
