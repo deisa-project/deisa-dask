@@ -116,6 +116,7 @@ def test_reconstruct_global_dask_array_empty():
 
 
 class TestSimulation:
+    __test__ = False
     def __init__(self, client: Client, global_grid_size: tuple, mpi_parallelism: tuple,
                  arrays_metadata: dict[str, dict]):
         self.client = client
