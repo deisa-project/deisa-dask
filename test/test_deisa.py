@@ -117,6 +117,7 @@ def test_reconstruct_global_dask_array_empty():
 
 class TestSimulation:
     __test__ = False
+
     def __init__(self, client: Client, global_grid_size: tuple, mpi_parallelism: tuple,
                  arrays_metadata: dict[str, dict]):
         self.client = client
@@ -187,7 +188,7 @@ class TestSimulation:
 
 @pytest.fixture(scope="session")
 def env_setup():
-    cluster = LocalCluster(n_workers=2, threads_per_worker=1, dashboard_address=None, processes=False)
+    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False)
     client = Client(cluster)
     yield client, cluster
     # teardown
@@ -304,8 +305,8 @@ def test_get_dask_array(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
 @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
 @pytest.mark.parametrize('nb_iterations', [1, 5])
 @pytest.mark.parametrize('window_size', [1, 2])
-def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, window_size: int,
-                        env_setup):
+def test_sliding_window_callback_register(global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
+                                          window_size: int, env_setup):
     print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} "
           f"nb_iterations={nb_iterations} window_size={window_size}")
 
@@ -336,10 +337,13 @@ def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         context['latest_data'] = window[-1]
         context['latest_window_size'] = len(window)
 
-    deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size, timeout='1s')
+    deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
 
     for i in range(1, nb_iterations + 1):
         print(f"iteration {i}", flush=True)
+        # register an already registered callback. This should not do anything.
+        deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
+
         global_data = sim.generate_data('my_array', i)
         global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                             global_grid_size[1] // mpi_parallelism[1]))
@@ -352,4 +356,53 @@ def test_sliding_window(global_grid_size: tuple, mpi_parallelism: tuple, nb_iter
         assert context['latest_window_size'] == min(i, window_size), "callback was not called with correct window size"
 
     assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
+    deisa.close()
+
+
+def test_sliding_window_callback_unregister(env_setup):
+    client, cluster = env_setup
+    global_grid_size = (8, 8)
+    mpi_parallelism = (2, 2)
+    window_size = 1
+    nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+    nb_workers = len(cluster.workers)
+
+    deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+    sim = TestSimulation(client,
+                         global_grid_size=global_grid_size,
+                         mpi_parallelism=mpi_parallelism,
+                         arrays_metadata={
+                             'my_array': {
+                                 'size': global_grid_size,
+                                 'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                             global_grid_size[1] // mpi_parallelism[1])
+                             }
+                         })
+
+    context = {
+        'counter': 0
+    }
+
+    def window_callback(window: list[da.Array], timestep: int):
+        print(f"hello from window_callback. iteration={timestep}", flush=True)
+        context['counter'] += 1
+        context['latest_timestep'] = timestep
+        context['latest_data'] = window[-1]
+        context['latest_window_size'] = len(window)
+
+    # register followed by unregister
+    deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
+    deisa.unregister_sliding_window_callback("my_array")
+    sim.generate_data('my_array', iteration=1)
+    time.sleep(1)
+    assert context['counter'] == 0, "callback should not be called"
+
+    # unregister an unknown array name
+    deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
+    deisa.unregister_sliding_window_callback("my_unknown_array")
+    sim.generate_data('my_array', iteration=2)
+    time.sleep(1)
+    assert context['counter'] == 2, "callback should be called"
+    assert context['latest_timestep'] == 2, "callback should be called"
+
     deisa.close()

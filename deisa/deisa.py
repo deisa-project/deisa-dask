@@ -161,6 +161,7 @@ class Bridge:
 
 
 class Deisa(object):
+    SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
     def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, nb_workers: int):
         """
@@ -193,10 +194,10 @@ class Deisa(object):
         # print(self.workers)
         self.mpi_comm_size = mpi_comm_size
         self.arrays_metadata = None
-        self.sliding_window_callback_threads: list[threading.Thread] = []
+        self.sliding_window_callback_threads: dict[str, threading.Thread] = {}
 
     def __del__(self):
-        for thread in self.sliding_window_callback_threads:
+        for thread in self.sliding_window_callback_threads.values():
             thread.stop = True
             thread.join()
         gc.collect()
@@ -241,7 +242,7 @@ class Deisa(object):
         return darr, iteration
 
     def register_sliding_window_callback(self, array_name: str, callback: Callable[[list[da.Array], int], None],
-                                         window_size: int = 1, timeout=None):
+                                         window_size: int = 1):
         """
         Registers a sliding window callback that processes a fixed-size window of arrays over a period.
         This method allows monitoring arrays associated with a specific name and performing operations
@@ -253,37 +254,48 @@ class Deisa(object):
         sliding window. Upon each update, the user-provided `callback` function is invoked with the
         current window and iteration index.
 
-        If the timeout is specified, it sets the maximum duration to wait for the array to be retrieved
-        when the corresponding queue is checked.
-
         :param array_name: The name of the array to monitor for updates.
         :param callback: A callable to execute whenever the sliding window is updated. The callable
             receives the current sliding window as a list of arrays and the iteration index as arguments.
         :param window_size: The number of arrays to maintain in the sliding window. Defaults to 1.
-        :param timeout: The maximum time, in seconds, to wait for the array to be retrieved from the
-            queue. If None, waits indefinitely. Defaults to None.
         :return: None
         """
 
         def queue_watcher():
+            print(f"Starting sliding window callback for array '{array_name}'", flush=True)
             current_window = collections.deque(maxlen=window_size)
             t = threading.current_thread()
 
             while getattr(t, "stop", False) is False:
                 try:
-                    darr, iteration = self.get_array(array_name, timeout=timeout)
+                    darr, iteration = self.get_array(array_name, timeout='1s')
                     current_window.append(darr)
                     # TODO handle case where user callback throws
                     callback(list(current_window), iteration)
                 except TimeoutError:
                     pass
+                except Exception:
+                    pass
 
-        thread = threading.Thread(target=queue_watcher)
-        self.sliding_window_callback_threads.append(thread)
-        thread.start()
+        if array_name not in self.sliding_window_callback_threads:
+            thread = threading.Thread(target=queue_watcher, name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{array_name}")
+            self.sliding_window_callback_threads[array_name] = thread
+            thread.start()
 
-    #    def unregister_sliding_window_callback(self, array_name: str): # TODO
-    #        self.sliding_window_callback_threads.
+    def unregister_sliding_window_callback(self, array_name: str):
+        """
+        Unregisters a sliding window callback for the specified array name. This method removes the
+        callback thread associated with the array name. If the thread exists, it stops the thread and waits
+        for it to finish execution.
+
+        :param array_name: The name of the array for which the sliding window callback is to be unregistered.
+            Must be a string.
+        :return: None
+        """
+        thread = self.sliding_window_callback_threads.pop(array_name, None)
+        if thread:
+            thread.stop = True
+            thread.join()
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
