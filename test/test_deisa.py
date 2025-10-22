@@ -133,7 +133,7 @@ class TestSimulation:
         self.bridges = [get_bridge_instance(client, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
                         range(self.nb_mpi_ranks)]
 
-    def __gen_data(self, noise_level: int = 0) -> np.array:
+    def __gen_data(self, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
         x = np.linspace(-1, 1, self.global_grid_size[0])
         y = np.linspace(-1, 1, self.global_grid_size[1])
@@ -151,7 +151,7 @@ class TestSimulation:
         # global_data_da = da.from_array(global_data_np)
         return global_data_np
 
-    def __split_array_equal_chunks(self, arr: np.array) -> list[np.array]:
+    def __split_array_equal_chunks(self, arr: np.ndarray) -> list[np.ndarray]:
         if arr.ndim != 2:
             raise ValueError("Input must be a 2D array")
 
@@ -169,7 +169,7 @@ class TestSimulation:
 
         return blocks
 
-    def generate_data(self, array_name: str, iteration: int, send_order_fn=None) -> np.array:
+    def generate_data(self, array_name: str, iteration: int, send_order_fn=None) -> np.ndarray:
         global_data = self.__gen_data(noise_level=iteration)
         chunks = self.__split_array_equal_chunks(global_data)
 

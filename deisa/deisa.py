@@ -123,7 +123,7 @@ class Bridge:
         if self.mpi_rank == 0:
             Queue("Arrays", client=self.client).put(self.arrays_metadata)
 
-    def publish_data(self, array_name: str, data: np.array, iteration: int):
+    def publish_data(self, array_name: str, data: np.ndarray, iteration: int):
         """
         Publishes data to the distributed workers and communicates metadata and data future via a queue. This method is used
         to send data to workers in a distributed computing setup and ensures that both the metadata about the data and the
