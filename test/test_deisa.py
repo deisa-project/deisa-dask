@@ -406,3 +406,75 @@ def test_sliding_window_callback_unregister(env_setup):
     assert context['latest_timestep'] == 2, "callback should be called"
 
     deisa.close()
+
+
+def test_sliding_window_callback_throws(env_setup):
+    client, cluster = env_setup
+    global_grid_size = (8, 8)
+    mpi_parallelism = (2, 2)
+    nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+    nb_workers = len(cluster.workers)
+
+    deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+    sim = TestSimulation(client,
+                         global_grid_size=global_grid_size,
+                         mpi_parallelism=mpi_parallelism,
+                         arrays_metadata={
+                             'my_array': {
+                                 'size': global_grid_size,
+                                 'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                             global_grid_size[1] // mpi_parallelism[1])
+                             }
+                         })
+
+    context = {
+        'counter': 0,
+        'exception_handler': 0
+    }
+
+    def window_callback(_: list[da.Array], timestep: int):
+        print(f"hello from window_callback. iteration={timestep}", flush=True)
+        context['counter'] += 1
+        raise RuntimeError("Throw from user callback")
+
+    def custom_exception_handler(array_name, exc):
+        print(f"hello from custom_exception_handler. {array_name}={exc}", flush=True)
+        context['exception_handler'] += 1
+
+    def custom_exception_handler_raise(array_name, exc):
+        print(f"hello from custom_exception_handler. {array_name}={exc}", flush=True)
+        context['exception_handler'] += 1
+        raise RuntimeError("Throw from user exception handler.")
+
+    # default exception_handler
+    deisa.register_sliding_window_callback("my_array", window_callback)
+    sim.generate_data('my_array', 1)
+    time.sleep(1)  # wait for callback to be called
+    assert context['counter'] == 1, "callback was not called"
+    assert context['exception_handler'] == 0, "callback was not called"
+
+    # custom error handler
+    deisa.unregister_sliding_window_callback("my_array")
+    deisa.register_sliding_window_callback("my_array", window_callback,
+                                           exception_handler=custom_exception_handler)
+    sim.generate_data('my_array', 2)
+    time.sleep(1)  # wait for callback to be called
+    assert context['counter'] == 2, "callback was not called"
+    assert context['exception_handler'] == 1, "callback was not called"
+
+    # custom error handler that throws
+    deisa.unregister_sliding_window_callback("my_array")
+    deisa.register_sliding_window_callback("my_array", window_callback,
+                                           exception_handler=custom_exception_handler_raise)
+    sim.generate_data('my_array', 3)
+    time.sleep(1)  # wait for callback to be called
+    assert context['counter'] == 3, "callback was not called"
+    assert context['exception_handler'] == 2, "callback was not called"
+
+    # callback unregistered due to un handled exception in custom_exception_handler_raise. Should no longer be called.
+    sim.generate_data('my_array', 4)
+    time.sleep(1)  # wait for callback to be called
+    assert context['counter'] == 3, "callback was not called"
+    assert context['exception_handler'] == 2, "callback was not called"
+
+    deisa.close()

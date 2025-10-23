@@ -30,7 +30,9 @@
 import asyncio
 import collections
 import gc
+import sys
 import threading
+import traceback
 from typing import Callable
 
 import dask
@@ -195,12 +197,23 @@ class Deisa(object):
         self.mpi_comm_size = mpi_comm_size
         self.arrays_metadata = None
         self.sliding_window_callback_threads: dict[str, threading.Thread] = {}
+        self.sliding_window_callback_thread_lock = threading.Lock()
 
     def __del__(self):
         for thread in self.sliding_window_callback_threads.values():
-            thread.stop = True
-            thread.join()
+            self.__stop_join_thread(thread)
         gc.collect()
+
+    @staticmethod
+    def __stop_join_thread(thread: threading.Thread):
+        thread.stop = True
+        thread.join()
+
+        # exc = getattr(thread, "exception", None)
+        # if exc:
+        #     # print(f"Exception encountered: {exc['traceback']}", file=sys.stderr, flush=True)
+        #     # raise exc['exception']
+        #     pass
 
     def close(self):
         self.__del__()
@@ -241,8 +254,14 @@ class Deisa(object):
         darr = self.__tile_dask_blocks(chunks, self.arrays_metadata[name]['size'])
         return darr, iteration
 
+    @staticmethod
+    def __default_exception_handler(array_name, e):
+        print(f"Exception from {array_name} thread: {e}", file=sys.stderr, flush=True)
+
     def register_sliding_window_callback(self, array_name: str, callback: Callable[[list[da.Array], int], None],
-                                         window_size: int = 1):
+                                         window_size: int = 1,
+                                         exception_handler: Callable[
+                                             [str, BaseException], None] = __default_exception_handler):
         """
         Registers a sliding window callback that processes a fixed-size window of arrays over a period.
         This method allows monitoring arrays associated with a specific name and performing operations
@@ -258,6 +277,8 @@ class Deisa(object):
         :param callback: A callable to execute whenever the sliding window is updated. The callable
             receives the current sliding window as a list of arrays and the iteration index as arguments.
         :param window_size: The number of arrays to maintain in the sliding window. Defaults to 1.
+        :param exception_handler: A callable to execute whenever the callback raises an exception.
+            If exception_handler raises an exception, callback is unregistered.
         :return: None
         """
 
@@ -270,12 +291,20 @@ class Deisa(object):
                 try:
                     darr, iteration = self.get_array(array_name, timeout='1s')
                     current_window.append(darr)
-                    # TODO handle case where user callback throws
                     callback(list(current_window), iteration)
                 except TimeoutError:
                     pass
-                except Exception:
-                    pass
+                except BaseException as e:
+                    setattr(t, "exception", (e, traceback.format_exc()))
+                    try:
+                        if exception_handler:
+                            exception_handler(array_name, e)
+                    except BaseException as e:
+                        with self.sliding_window_callback_thread_lock:
+                            print(
+                                f"Exception thrown in exception handler for {array_name} thread: {e} Unregistering callback.",
+                                file=sys.stderr)
+                            self.unregister_sliding_window_callback(array_name)
 
         if array_name not in self.sliding_window_callback_threads:
             thread = threading.Thread(target=queue_watcher, name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{array_name}")
@@ -294,8 +323,7 @@ class Deisa(object):
         """
         thread = self.sliding_window_callback_threads.pop(array_name, None)
         if thread:
-            thread.stop = True
-            thread.join()
+            self.__stop_join_thread(thread)
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
