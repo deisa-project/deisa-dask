@@ -186,7 +186,7 @@ class TestSimulation:
         return global_data
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def env_setup_tcp_cluster():
     cluster = LocalCluster(n_workers=0, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=8786)
     yield cluster
