@@ -2,3 +2,5 @@
 # Copyright (c) 2025 Commissariat a l'énergie atomique et aux énergies alternatives (CEA)
 # SPDX-License-Identifier: MIT
 ###################################################################################################
+
+from deisa.deisa import *
