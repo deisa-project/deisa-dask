@@ -190,6 +190,10 @@ class Deisa(object):
                 # try scheduler_file
                 if os.path.isfile(dask_scheduler_address):
                     self.client = Client(scheduler_file=dask_scheduler_address)
+                else:
+                    raise ValueError(
+                        "dask_scheduler_address must be a string containing the address of the scheduler, "
+                        "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
         else:
             raise ValueError(
                 "dask_scheduler_address must be a string containing the address of the scheduler, "

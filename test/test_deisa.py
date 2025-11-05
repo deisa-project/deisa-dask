@@ -27,6 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import math
+import os.path
 import random
 import time
 
@@ -212,7 +213,8 @@ def test_deisa_ctor_str(env_setup_tcp_cluster):
 
 def test_deisa_ctor_scheduler_file(env_setup_tcp_cluster):
     cluster = env_setup_tcp_cluster
-    deisa = Deisa('test-scheduler.json', mpi_comm_size=0, nb_workers=0)
+    f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler.json'
+    deisa = Deisa(f, mpi_comm_size=0, nb_workers=0)
     assert deisa.client is not None, "Deisa should not be None"
     assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
     deisa.close()
@@ -220,7 +222,8 @@ def test_deisa_ctor_scheduler_file(env_setup_tcp_cluster):
 
 def test_deisa_ctor_scheduler_file_error():
     with pytest.raises(ValueError) as e:
-        deisa = Deisa('test-scheduler-error.json', mpi_comm_size=0, nb_workers=0)
+        f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
+        deisa = Deisa(f, mpi_comm_size=0, nb_workers=0)
 
 
 @pytest.fixture(scope="session")
