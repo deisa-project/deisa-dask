@@ -1,0 +1,13 @@
+{
+  "type": "Scheduler",
+  "id": "Scheduler-bb130e13-812d-405b-965e-b9789d411850",
+  "address": "blablabla",
+  "services": {
+    "dashboard": 8787
+  },
+  "started": 1762292500.0331717,
+  "n_workers": 0,
+  "total_threads": 0,
+  "total_memory": 0,
+  "workers": {}
+}

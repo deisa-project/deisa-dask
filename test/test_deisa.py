@@ -186,6 +186,43 @@ class TestSimulation:
         return global_data
 
 
+@pytest.fixture(scope="module")
+def env_setup_tcp_cluster():
+    cluster = LocalCluster(n_workers=0, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=8786)
+    yield cluster
+    cluster.close()
+
+
+def test_deisa_ctor_client(env_setup_tcp_cluster):
+    cluster = env_setup_tcp_cluster
+    client = Client(cluster)
+    deisa = Deisa(client, mpi_comm_size=0, nb_workers=0)
+    assert deisa.client is not None, "Deisa should not be None"
+    assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
+    deisa.close()
+
+
+def test_deisa_ctor_str(env_setup_tcp_cluster):
+    cluster = env_setup_tcp_cluster
+    deisa = Deisa('tcp://127.0.0.1:8786', mpi_comm_size=0, nb_workers=0)
+    assert deisa.client is not None, "Deisa should not be None"
+    assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
+    deisa.close()
+
+
+def test_deisa_ctor_scheduler_file(env_setup_tcp_cluster):
+    cluster = env_setup_tcp_cluster
+    deisa = Deisa('test-scheduler.json', mpi_comm_size=0, nb_workers=0)
+    assert deisa.client is not None, "Deisa should not be None"
+    assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
+    deisa.close()
+
+
+def test_deisa_ctor_scheduler_file_error():
+    with pytest.raises(ValueError) as e:
+        deisa = Deisa('test-scheduler-error.json', mpi_comm_size=0, nb_workers=0)
+
+
 @pytest.fixture(scope="session")
 def env_setup():
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False)

@@ -30,6 +30,7 @@
 import asyncio
 import collections
 import gc
+import os.path
 import sys
 import threading
 import traceback
@@ -171,20 +172,28 @@ class Deisa(object):
         a Dask scheduler. This class handles setting up a Dask client and ensures the
         specified number of workers are available for distributed computation tasks.
 
-        :param dask_scheduler_address: Address string of the Dask scheduler or an
-            instance of Dask's Client to connect to the cluster.
+        :param dask_scheduler_address: Instance of Dask's Client to connect to the cluster,
+            or address string of the Dask scheduler,
+            or a string containing a file name to a dask scheduler file.
         :param mpi_comm_size: Number of MPI processes for the computation.
         :param nb_workers: Expected number of workers to be synchronized with the
             Dask client.
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        if isinstance(dask_scheduler_address, str):
-            self.client = Client(dask_scheduler_address)
-        elif isinstance(dask_scheduler_address, Client):
+        if isinstance(dask_scheduler_address, Client):
             self.client = dask_scheduler_address
+        elif isinstance(dask_scheduler_address, str):
+            try:
+                self.client = Client(address=dask_scheduler_address)
+            except ValueError:
+                # try scheduler_file
+                if os.path.isfile(dask_scheduler_address):
+                    self.client = Client(scheduler_file=dask_scheduler_address)
         else:
-            raise ValueError("dask_scheduler_address must be a string or a Dask Client object.")
+            raise ValueError(
+                "dask_scheduler_address must be a string containing the address of the scheduler, "
+                "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
 
         # Wait for all workers to be available.
         self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]
@@ -200,9 +209,10 @@ class Deisa(object):
         self.sliding_window_callback_thread_lock = threading.Lock()
 
     def __del__(self):
-        for thread in self.sliding_window_callback_threads.values():
-            self.__stop_join_thread(thread)
-        gc.collect()
+        if hasattr(self, 'sliding_window_callback_threads'):  # may not be the case if an exception is thrown in ctor
+            for thread in self.sliding_window_callback_threads.values():
+                self.__stop_join_thread(thread)
+            gc.collect()
 
     @staticmethod
     def __stop_join_thread(thread: threading.Thread):
