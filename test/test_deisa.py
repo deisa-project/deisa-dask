@@ -29,6 +29,7 @@
 import math
 import os.path
 import random
+import sys
 import time
 
 import dask
@@ -440,5 +441,59 @@ class TestUsingDaskCluster:
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 3, "callback was not called"
         assert context['exception_handler'] == 2, "callback was not called"
+
+        deisa.close()
+
+    def test_sliding_window_map_blocks(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+        nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+        nb_workers = len(cluster.workers)
+
+        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        sim = TestSimulation(client,
+                             global_grid_size=global_grid_size,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             })
+
+        def map_block_function(block, block_info=None):
+            print("map_block_function() block_info=" + str(block_info), flush=True)
+            return np.array([[1]])
+
+        context = {'counter': 0}
+
+        def window_callback(window: list[da.Array], timestep: int):
+            print(f"hello from window_callback. iteration={timestep}", flush=True)
+
+            darr = window[-1]
+
+            assert darr.shape == global_grid_size
+            assert darr.chunksize == (global_grid_size[0] // mpi_parallelism[0],
+                                      global_grid_size[1] // mpi_parallelism[1])
+
+            meta = np.array([[0]])
+            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
+
+            context['counter'] += res.sum()
+
+        def exception_handler(array_name, e):
+            print(f"exception_handler. array_name={array_name}, e={e}", flush=True, file=sys.stderr)
+            # pytest.fail(str(e))
+
+        deisa.register_sliding_window_callback("my_array", window_callback,
+                                               window_size=1,
+                                               exception_handler=exception_handler)
+
+        for i in range(1, 5):
+            sim.generate_data('my_array', i)
+            time.sleep(.1)  # wait for callback to be called
+            assert context['counter'] == 4 * i, "map_blocks did not run on all blocks"
 
         deisa.close()
