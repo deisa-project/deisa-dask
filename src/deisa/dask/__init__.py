@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: MIT
 ###################################################################################################
 
-from deisa.deisa import *
+from .deisa import *

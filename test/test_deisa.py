@@ -39,7 +39,7 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.deisa import Deisa
+from deisa.dask import Deisa
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
@@ -155,7 +155,7 @@ class TestDeisaCtor:
 
 
 class TestUsingDaskCluster:
-    @pytest.fixture(scope="class")
+    @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False)
         client = Client(cluster)
@@ -240,7 +240,6 @@ class TestUsingDaskCluster:
 
         client, cluster = env_setup
 
-        scheduler_address = cluster.scheduler_address
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
@@ -485,7 +484,7 @@ class TestUsingDaskCluster:
 
         def exception_handler(array_name, e):
             print(f"exception_handler. array_name={array_name}, e={e}", flush=True, file=sys.stderr)
-            # pytest.fail(str(e))
+            # pytest.fail(str(e))   # TODO
 
         deisa.register_sliding_window_callback("my_array", window_callback,
                                                window_size=1,

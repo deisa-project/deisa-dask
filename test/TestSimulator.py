@@ -26,10 +26,11 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-import numpy as np
-from distributed import Client
 
-from deisa import get_bridge_instance
+import numpy as np
+from deisa.common import BridgeInterface
+from deisa.dask import Bridge
+from distributed import Client
 
 
 class TestSimulation:
@@ -47,8 +48,8 @@ class TestSimulation:
         assert global_grid_size[1] % mpi_parallelism[1] == 0, "cannot compute local grid size for y dimension"
 
         self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
-        self.bridges = [get_bridge_instance(client, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
-                        range(self.nb_mpi_ranks)]
+        self.bridges: list[BridgeInterface] = [Bridge(client, self.nb_mpi_ranks, rank, arrays_metadata) for rank in
+                                               range(self.nb_mpi_ranks)]
 
     def __gen_data(self, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid

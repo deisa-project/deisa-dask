@@ -44,29 +44,6 @@ from dask.distributed import comm, Queue, Variable
 from distributed import Client, Future
 
 
-def get_bridge_instance(dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
-                        arrays_metadata: dict[str, dict], **kwargs):
-    """
-    Get an instance of the Bridge class to establish a connection between MPI and Dask.
-
-    This function facilitates the creation of a `Bridge` instance that acts as
-    a communication layer between the MPI processes and the Dask scheduler. It
-    requires MPI-related parameters, Dask scheduler address, and metadata about
-    the arrays being utilized.
-
-    :param dask_scheduler_address: Address of the Dask scheduler or an instance
-        of dask.distributed.Client to connect to.
-    :param mpi_comm_size: Size of the MPI communicator.
-    :param mpi_rank: Rank of the MPI process within the communicator.
-    :param arrays_metadata: Metadata for arrays managed in the bridge. It should
-        indicate characteristics and configuration details about the arrays.
-    :param kwargs: Additional optional arguments to configure the Bridge instance.
-    :return: An instance of Bridge configured to mediate communication between MPI
-        and Dask.
-    """
-    return Bridge(dask_scheduler_address, mpi_comm_size, mpi_rank, arrays_metadata, **kwargs)
-
-
 class Bridge:
     def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
                  arrays_metadata: dict[str, dict], **kwargs):
@@ -163,7 +140,7 @@ class Bridge:
         # TODO: what to do if error ?
 
 
-class Deisa(object):
+class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
     def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, nb_workers: int):

@@ -29,7 +29,7 @@
 
 import os
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 def find_version(*file_paths):
@@ -51,7 +51,7 @@ def readme():
         return f.read()
 
 
-version = find_version("deisa", "__version__.py")
+version = find_version("src/deisa/dask", "__version__.py")
 
 setup(name='deisa',
       version=version,
@@ -74,14 +74,21 @@ setup(name='deisa',
 
       keywords='deisa in-situ',
 
-      packages=['deisa'],
+      package_dir={'': 'src'},
+      packages=find_packages(where="src"),
 
       install_requires=[
-          "dask",
+          'dask',
           'distributed'
       ],
 
-      tests_require=["pytest", "numpy"],
+      extras_require={
+          "test": [
+              "pytest",
+              "numpy",
+              "deisa-common @ git+https://github.com/deisa-project/common@main"
+          ]
+      },
       test_suite='test',
 
       classifiers=[
