@@ -29,7 +29,7 @@
 
 import os
 
-from setuptools import setup, find_packages
+from setuptools import setup, find_namespace_packages
 
 
 def find_version(*file_paths):
@@ -75,7 +75,7 @@ setup(name='deisa',
       keywords='deisa in-situ',
 
       package_dir={'': 'src'},
-      packages=find_packages(where="src"),
+      packages=find_namespace_packages(where='src', include=['deisa.dask']),
 
       install_requires=[
           'dask',
