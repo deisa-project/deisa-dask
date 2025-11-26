@@ -53,7 +53,7 @@ def readme():
 
 version = find_version("src/deisa/dask", "__version__.py")
 
-setup(name='deisa',
+setup(name='deisa-dask',
       version=version,
 
       description='Deisa: Dask-Enabled In Situ Analytics',
@@ -61,10 +61,10 @@ setup(name='deisa',
       long_description_content_type='text/markdown',
       license='MIT',
 
-      url='https://github.com/deisa-project/deisa',
+      url='https://github.com/deisa-project/deisa-dask',
       project_urls={
-          'Bug Reports': 'https://github.com/deisa-project/deisa/issues',
-          'Source': 'https://github.com/deisa-project/deisa',
+          'Bug Reports': 'https://github.com/deisa-project/deisa-dask/issues',
+          'Source': 'https://github.com/deisa-project/deisa-dask',
       },
 
       author='Benoît Martin',
@@ -86,7 +86,7 @@ setup(name='deisa',
           "test": [
               "pytest",
               "numpy",
-              "deisa-common @ git+https://github.com/deisa-project/common@main"
+              "deisa @ git+https://github.com/deisa-project/deisa@main"
           ]
       },
       test_suite='test',
