@@ -44,16 +44,36 @@ from dask.distributed import comm, Queue, Variable
 from distributed import Client, Future
 
 
+def get_connection_info(dask_scheduler_address: str | Client) -> Client:
+    if isinstance(dask_scheduler_address, Client):
+        client = dask_scheduler_address
+    elif isinstance(dask_scheduler_address, str):
+        try:
+            client = Client(address=dask_scheduler_address)
+        except ValueError:
+            # try scheduler_file
+            if os.path.isfile(dask_scheduler_address):
+                client = Client(scheduler_file=dask_scheduler_address)
+            else:
+                raise ValueError(
+                    "dask_scheduler_address must be a string containing the address of the scheduler, "
+                    "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+    else:
+        raise ValueError(
+            "dask_scheduler_address must be a string containing the address of the scheduler, "
+            "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+
+    return client
+
+
 class Bridge:
-    def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, mpi_rank: int,
-                 arrays_metadata: dict[str, dict], **kwargs):
+    def __init__(self, mpi_comm_size: int, mpi_rank: int, arrays_metadata: dict[str, dict],
+                 get_connection_info: Callable, *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
         system and a Dask-based framework. The class ensures proper allocation of workers
         among processes and instantiates the required communication objects like queues.
 
-        :param dask_scheduler_address: Address of the Dask Scheduler as a string or an instance of
-            Dask Client that facilitates communication with the cluster.
         :type dask_scheduler_address: str | Client
 
         :param mpi_comm_size: Total number of MPI processes involved in the computation.
@@ -75,17 +95,14 @@ class Bridge:
                     }
         :type arrays_metadata: dict[str, dict]
 
+        :param get_connection_info: A function that returns a connected Dask Client.
+        :type get_connection_info: Callable
+
         :param kwargs: Currently unused.
         :type kwargs: dict
         """
 
-        if isinstance(dask_scheduler_address, str):
-            self.client = Client(dask_scheduler_address)
-        elif isinstance(dask_scheduler_address, Client):
-            self.client = dask_scheduler_address
-        else:
-            raise ValueError("dask_scheduler_address must be a string or a Dask Client object.")
-
+        self.client = get_connection_info()
         self.mpi_rank = mpi_rank
         self.arrays_metadata = arrays_metadata
         self.futures = []
@@ -143,38 +160,21 @@ class Bridge:
 class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
-    def __init__(self, dask_scheduler_address: str | Client, mpi_comm_size: int, nb_workers: int):
+    def __init__(self, mpi_comm_size, nb_workers, get_connection_info: Callable, *args, **kwargs):
         """
         Initializes the distributed processing environment and configures workers using
         a Dask scheduler. This class handles setting up a Dask client and ensures the
         specified number of workers are available for distributed computation tasks.
 
-        :param dask_scheduler_address: Instance of Dask's Client to connect to the cluster,
-            or address string of the Dask scheduler,
-            or a string containing a file name to a dask scheduler file.
         :param mpi_comm_size: Number of MPI processes for the computation.
         :param nb_workers: Expected number of workers to be synchronized with the
             Dask client.
+        :param get_connection_info: A function that returns a connected Dask Client.
+        :type get_connection_info: Callable
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        if isinstance(dask_scheduler_address, Client):
-            self.client = dask_scheduler_address
-        elif isinstance(dask_scheduler_address, str):
-            try:
-                self.client = Client(address=dask_scheduler_address)
-            except ValueError:
-                # try scheduler_file
-                if os.path.isfile(dask_scheduler_address):
-                    self.client = Client(scheduler_file=dask_scheduler_address)
-                else:
-                    raise ValueError(
-                        "dask_scheduler_address must be a string containing the address of the scheduler, "
-                        "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
-        else:
-            raise ValueError(
-                "dask_scheduler_address must be a string containing the address of the scheduler, "
-                "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+        self.client = get_connection_info()
 
         # Wait for all workers to be available.
         self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]

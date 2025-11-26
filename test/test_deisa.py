@@ -39,7 +39,7 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.dask import Deisa
+from deisa.dask import Deisa, get_connection_info
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
@@ -128,14 +128,15 @@ class TestDeisaCtor:
     def test_deisa_ctor_client(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
         client = Client(cluster)
-        deisa = Deisa(client, mpi_comm_size=0, nb_workers=0)
+        deisa = Deisa(mpi_comm_size=0, nb_workers=0, get_connection_info=lambda: client)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
 
     def test_deisa_ctor_str(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
-        deisa = Deisa('tcp://127.0.0.1:4242', mpi_comm_size=0, nb_workers=0)
+        deisa = Deisa(mpi_comm_size=0, nb_workers=0,
+                      get_connection_info=lambda: get_connection_info('tcp://127.0.0.1:4242'))
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
@@ -143,7 +144,7 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
         f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler.json'
-        deisa = Deisa(f, mpi_comm_size=0, nb_workers=0)
+        deisa = Deisa(mpi_comm_size=0, nb_workers=0, get_connection_info=lambda: get_connection_info(f))
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
@@ -151,7 +152,7 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file_error(self):
         with pytest.raises(ValueError) as e:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
-            deisa = Deisa(f, mpi_comm_size=0, nb_workers=0)
+            deisa = Deisa(mpi_comm_size=0, nb_workers=0, get_connection_info=lambda: get_connection_info(f))
 
 
 class TestUsingDaskCluster:
@@ -243,7 +244,7 @@ class TestUsingDaskCluster:
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
-        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        deisa = Deisa(nb_mpi_ranks, nb_workers, get_connection_info=lambda: client)
         sim = TestSimulation(client,
                              global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
@@ -279,7 +280,7 @@ class TestUsingDaskCluster:
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
-        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        deisa = Deisa(nb_mpi_ranks, nb_workers, get_connection_info=lambda: client)
         sim = TestSimulation(client,
                              global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
@@ -332,7 +333,7 @@ class TestUsingDaskCluster:
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
-        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        deisa = Deisa(nb_mpi_ranks, nb_workers, get_connection_info=lambda: client)
         sim = TestSimulation(client,
                              global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
@@ -379,7 +380,7 @@ class TestUsingDaskCluster:
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
-        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        deisa = Deisa(nb_mpi_ranks, nb_workers, get_connection_info=lambda: client)
         sim = TestSimulation(client,
                              global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
@@ -450,7 +451,7 @@ class TestUsingDaskCluster:
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         nb_workers = len(cluster.workers)
 
-        deisa = Deisa(client, nb_mpi_ranks, nb_workers)
+        deisa = Deisa(nb_mpi_ranks, nb_workers, get_connection_info=lambda: client)
         sim = TestSimulation(client,
                              global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
