@@ -39,8 +39,7 @@ import dask
 import dask.array as da
 import numpy as np
 from dask.array import Array
-from dask.distributed import Queue
-from distributed import Client, Future
+from distributed import Client, Future, Queue
 
 from deisa.dask.handshake import Handshake
 
@@ -48,7 +47,7 @@ from deisa.dask.handshake import Handshake
 class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
-    def __init__(self, get_connection_info: Callable, *args, **kwargs):
+    def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
         """
         Initializes the distributed processing environment and configures workers using
         a Dask scheduler. This class handles setting up a Dask client and ensures the

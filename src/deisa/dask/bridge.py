@@ -30,14 +30,13 @@
 from typing import Callable
 
 import numpy as np
-from dask.distributed import Queue
-from distributed import Client
+from distributed import Client, Queue
 
 from deisa.dask.handshake import Handshake
 
 
 class Bridge:
-    def __init__(self, mpi_comm_size: int, mpi_rank: int,
+    def __init__(self, id: int, mpi_comm_size: int,
                  arrays_metadata: dict[str, dict],
                  get_connection_info: Callable, *args, **kwargs):
         """
@@ -45,14 +44,11 @@ class Bridge:
         system and a Dask-based framework. The class ensures proper allocation of workers
         among processes and instantiates the required communication objects like queues.
 
-        :type dask_scheduler_address: str | Client
+        :param id: Unique identifier in the computation. This may be the rank of this MPI process.
+        :type id: int
 
         :param mpi_comm_size: Total number of MPI processes involved in the computation.
         :type mpi_comm_size: int
-
-        :param mpi_rank: The rank of this MPI process, indicating its unique identifier in the
-            computation.
-        :type mpi_rank: int
 
         :param arrays_metadata: A dictionary containing metadata about the Dask arrays
                 eg: arrays_metadata = {
@@ -66,20 +62,22 @@ class Bridge:
                     }
         :type arrays_metadata: dict[str, dict]
 
-        :param get_connection_info: A function that returns a connected Dask Client.
-        :type get_connection_info: Callable
+        :param connection: A function that returns a connected Dask Client.
+        :type connection: Callable
 
-        :param kwargs: Currently unused.
+        :param kwargs: Passed to Handshake
         :type kwargs: dict
         """
-        # system_metadata: Callable[[], dict[str, dict]],
-        self.client = get_connection_info()
+        if not get_connection_info:
+            raise ValueError("get_connection_info must be provided")
+
+        self.client: Client = get_connection_info()
         self.arrays_metadata = arrays_metadata
-        self.mpi_rank = mpi_rank
+        self.mpi_rank = id
         self.futures = []
 
         # blocking until analytics is ready
-        Handshake('bridge', self.client, id=mpi_rank, max=mpi_comm_size, arrays_metadata=arrays_metadata, **kwargs)
+        Handshake('bridge', self.client, id=id, max=mpi_comm_size, arrays_metadata=arrays_metadata, **kwargs)
 
     def publish_data(self, array_name: str, data: np.ndarray, iteration: int):
         """
