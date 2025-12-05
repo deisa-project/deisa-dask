@@ -37,7 +37,7 @@ class TestSimulation:
     __test__ = False
 
     def __init__(self, client: Client, global_grid_size: tuple, mpi_parallelism: tuple,
-                 arrays_metadata: dict[str, dict]):
+                 arrays_metadata: dict[str, dict], *args, **kwargs):
         self.client = client
         self.global_grid_size = global_grid_size
         self.mpi_parallelism = mpi_parallelism
@@ -49,7 +49,7 @@ class TestSimulation:
 
         self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         self.bridges: list[Bridge] = [
-            Bridge(self.nb_mpi_ranks, rank, arrays_metadata, get_connection_info=lambda: client)
+            Bridge(self.nb_mpi_ranks, rank, arrays_metadata, get_connection_info=lambda: client, *args, **kwargs)
             for rank in range(self.nb_mpi_ranks)]
 
     def __gen_data(self, noise_level: int = 0) -> np.ndarray:
