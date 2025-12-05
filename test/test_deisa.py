@@ -36,7 +36,7 @@ import dask
 import dask.array as da
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster, Queue, Variable, Actor, Future
+from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info
