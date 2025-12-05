@@ -96,10 +96,10 @@ class TestSimulation:
 
         if send_order_fn is None:
             for i, bridge in enumerate(self.bridges):
-                bridge.publish_data(array_name, chunks[i], iteration)
+                bridge.send(array_name, chunks[i], iteration)
         else:
             send_order = send_order_fn(chunks)
             for i, chunk in enumerate(send_order):
-                self.bridges[i].publish_data(array_name, chunk, iteration)
+                self.bridges[i].send(array_name, chunk, iteration)
 
         return global_data

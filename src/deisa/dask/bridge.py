@@ -27,7 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 
-from typing import Callable
+from typing import Callable, Any
 
 import numpy as np
 from distributed import Client, Queue
@@ -79,7 +79,7 @@ class Bridge:
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=mpi_comm_size, arrays_metadata=arrays_metadata, **kwargs)
 
-    def publish_data(self, array_name: str, data: np.ndarray, iteration: int):
+    def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
         """
         Publishes data to the distributed workers and communicates metadata and data future via a queue. This method is used
         to send data to workers in a distributed computing setup and ensures that both the metadata about the data and the
@@ -115,3 +115,6 @@ class Bridge:
         q.put(to_send)
 
         # TODO: what to do if error ?
+
+    def get(self, name: str, default: Any = None, chunked: bool = False):
+        raise NotImplementedError() # TODO
