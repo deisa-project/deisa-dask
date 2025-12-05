@@ -33,6 +33,7 @@ import gc
 import os.path
 import sys
 import threading
+import time
 import traceback
 from typing import Callable
 
@@ -41,7 +42,7 @@ import dask.array as da
 import numpy as np
 from dask.array import Array
 from dask.distributed import comm, Queue, Variable
-from distributed import Client, Future
+from distributed import Client, Future, get_client
 
 
 def get_connection_info(dask_scheduler_address: str | Client) -> Client:
@@ -66,8 +67,116 @@ def get_connection_info(dask_scheduler_address: str | Client) -> Client:
     return client
 
 
+class Handshake:
+    DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
+    DEISA_WAIT_FOR_GO_VARIABLE = 'deisa_handshake_wait_for_go'
+
+    class HandshakeActor:
+        bridges = []
+        max = 0
+        arrays_metadata = {}
+        analytics_ready = False
+
+        def __init__(self):
+            self.bridges = []
+            self.max = 0
+            self.arrays_metadata = {}
+            self.analytics_ready = False
+            self.client = get_client()
+
+        def add_bridge(self, id: int, max: int) -> None:
+            if max == 0:
+                raise ValueError('max cannot be 0.')
+            elif self.max == 0:
+                self.max = max
+            elif self.max != max:
+                raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max}.')
+            elif len(self.bridges) >= max:
+                raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
+
+            self.bridges.append(id)
+
+        def set_analytics_ready(self) -> None:
+            self.analytics_ready = True
+            if self.__are_bridges_ready():
+                self.__go()
+
+        def set_arrays_metadata(self, arrays_metadata: dict) -> None:
+            self.arrays_metadata = arrays_metadata
+
+        def get_arrays_metadata(self) -> dict | Future[dict]:
+            return self.arrays_metadata
+
+        def get_max_bridges(self) -> int | Future[int]:
+            return self.max
+
+        def __are_bridges_ready(self) -> bool | Future[bool]:
+            return self.max != 0 and len(self.bridges) == self.max
+
+        def __go(self):
+            Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).set(None)
+
+    def __init__(self, who: str, client: Client, **kwargs):
+        self.client = client
+        # self.client.direct_to_workers() # TODO
+        self.handshake_actor = self.__get_handshake_actor()
+        assert self.handshake_actor is not None
+
+        if who is 'bridge':
+            self.start_bridge(**kwargs)
+        elif who is 'deisa':
+            self.start_deisa(**kwargs)
+        else:
+            raise ValueError("Expecting 'bridge' or 'deisa'.")
+
+    def start_bridge(self, id: int, max: int, arrays_metadata: dict, wait_for_go=True) -> None:
+        """
+        Bridge must wait for analytics to be ready.
+        """
+        assert self.handshake_actor is not None
+        self.handshake_actor.add_bridge(id, max)
+
+        if id == 0:
+            self.handshake_actor.set_arrays_metadata(arrays_metadata)
+
+        # wait for go
+        if wait_for_go:
+            self.__wait_for_go()
+
+    def start_deisa(self, wait_for_go=True) -> None:
+        """
+        When analytics is ready, notify all Bridges
+        """
+        assert self.handshake_actor is not None
+        self.handshake_actor.set_analytics_ready()
+
+        # wait for go
+        if wait_for_go:
+            self.__wait_for_go()
+
+    def get_arrays_metadata(self) -> dict:
+        assert self.handshake_actor is not None
+        return self.handshake_actor.get_arrays_metadata().result()
+
+    def get_nb_bridges(self) -> int:
+        assert self.handshake_actor is not None
+        return self.handshake_actor.get_max_bridges().result()
+
+    def __get_handshake_actor(self) -> HandshakeActor:
+        try:
+            return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
+        except asyncio.exceptions.TimeoutError:
+            actor_future = self.client.submit(Handshake.HandshakeActor, actor=True)
+            Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).set(actor_future)
+            return actor_future.result()
+
+    def __wait_for_go(self) -> None:
+        Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).get()
+
+
 class Bridge:
-    def __init__(self, mpi_comm_size: int, mpi_rank: int, arrays_metadata: dict[str, dict],
+    def __init__(self, mpi_comm_size: int, mpi_rank: int,
+                 arrays_metadata: dict[str, dict],
                  get_connection_info: Callable, *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
@@ -101,24 +210,14 @@ class Bridge:
         :param kwargs: Currently unused.
         :type kwargs: dict
         """
-
+        # system_metadata: Callable[[], dict[str, dict]],
         self.client = get_connection_info()
-        self.mpi_rank = mpi_rank
         self.arrays_metadata = arrays_metadata
+        self.mpi_rank = mpi_rank
         self.futures = []
 
-        # TODO: check this
-        # Note: Blocking call. Simulation will wait for the analysis code to be run.
-        # Variable("workers") is set in the Deisa class.
-        workers = Variable("workers", client=self.client).get()
-        if mpi_comm_size > len(workers):  # more processes than workers
-            self.workers = [workers[mpi_rank % len(workers)]]
-        else:
-            k = len(workers) // mpi_comm_size  # more workers than processes
-            self.workers = workers[mpi_rank * k:mpi_rank * k + k]
-
-        if self.mpi_rank == 0:
-            Queue("Arrays", client=self.client).put(self.arrays_metadata)
+        # blocking until analytics is ready
+        Handshake('bridge', self.client, id=mpi_rank, max=mpi_comm_size, arrays_metadata=arrays_metadata, **kwargs)
 
     def publish_data(self, array_name: str, data: np.ndarray, iteration: int):
         """
@@ -138,7 +237,8 @@ class Bridge:
 
         assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
-        f = self.client.scatter(data, direct=True, workers=self.workers)  # send data to workers
+        # TODO: select workers to send data to. self.client.scatter(data, direct=True, workers=self.workers)
+        f = self.client.scatter(data, direct=True)  # send data to workers
 
         # TODO: this is a memory leak. Find a way to release the futures once they are used to build a dask array in the client code.
         self.futures.append(f)
@@ -160,32 +260,26 @@ class Bridge:
 class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
-    def __init__(self, mpi_comm_size, nb_workers, get_connection_info: Callable, *args, **kwargs):
+    def __init__(self, get_connection_info: Callable, *args, **kwargs):
         """
         Initializes the distributed processing environment and configures workers using
         a Dask scheduler. This class handles setting up a Dask client and ensures the
         specified number of workers are available for distributed computation tasks.
 
         :param mpi_comm_size: Number of MPI processes for the computation.
-        :param nb_workers: Expected number of workers to be synchronized with the
-            Dask client.
         :param get_connection_info: A function that returns a connected Dask Client.
         :type get_connection_info: Callable
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        self.client = get_connection_info()
+        self.client: Client = get_connection_info()
 
-        # Wait for all workers to be available.
-        self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]
-        while len(self.workers) != nb_workers:
-            self.workers = [w_addr for w_addr in self.client.scheduler_info()["workers"].keys()]
+        # TODO: handshake
+        # blocking until all bridges are ready
+        handshake = Handshake('deisa', self.client, **kwargs)
 
-        Variable("workers", client=self.client).set(self.workers)
-
-        # print(self.workers)
-        self.mpi_comm_size = mpi_comm_size
-        self.arrays_metadata = None
+        self.mpi_comm_size = handshake.get_nb_bridges()
+        self.arrays_metadata = handshake.get_arrays_metadata()
         self.sliding_window_callback_threads: dict[str, threading.Thread] = {}
         self.sliding_window_callback_thread_lock = threading.Lock()
 
@@ -212,8 +306,8 @@ class Deisa:
     def get_array(self, name: str, timeout=None) -> tuple[Array, int]:
         """Retrieve a Dask array for a given array name."""
 
-        if self.arrays_metadata is None:
-            self.arrays_metadata = Queue("Arrays", client=self.client).get(timeout=timeout)
+        # if self.arrays_metadata is None:
+        #     self.arrays_metadata = Queue("Arrays", client=self.client).get(timeout=timeout)
         # arrays_metadata will look something like this:
         # arrays_metadata = {
         #     'global_t': {
