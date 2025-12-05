@@ -33,7 +33,6 @@ import gc
 import os.path
 import sys
 import threading
-import time
 import traceback
 from typing import Callable
 
@@ -73,13 +72,13 @@ class Handshake:
 
     class HandshakeActor:
         bridges = []
-        max = 0
+        max_bridges = 0
         arrays_metadata = {}
         analytics_ready = False
 
         def __init__(self):
             self.bridges = []
-            self.max = 0
+            self.max_bridges = 0
             self.arrays_metadata = {}
             self.analytics_ready = False
             self.client = get_client()
@@ -87,10 +86,10 @@ class Handshake:
         def add_bridge(self, id: int, max: int) -> None:
             if max == 0:
                 raise ValueError('max cannot be 0.')
-            elif self.max == 0:
-                self.max = max
-            elif self.max != max:
-                raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max}.')
+            elif self.max_bridges == 0:
+                self.max_bridges = max
+            elif self.max_bridges != max:
+                raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max_bridges}.')
             elif len(self.bridges) >= max:
                 raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
 
@@ -108,10 +107,10 @@ class Handshake:
             return self.arrays_metadata
 
         def get_max_bridges(self) -> int | Future[int]:
-            return self.max
+            return self.max_bridges
 
         def __are_bridges_ready(self) -> bool | Future[bool]:
-            return self.max != 0 and len(self.bridges) == self.max
+            return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
 
         def __go(self):
             Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).set(None)
@@ -266,7 +265,6 @@ class Deisa:
         a Dask scheduler. This class handles setting up a Dask client and ensures the
         specified number of workers are available for distributed computation tasks.
 
-        :param mpi_comm_size: Number of MPI processes for the computation.
         :param get_connection_info: A function that returns a connected Dask Client.
         :type get_connection_info: Callable
         """
@@ -274,7 +272,6 @@ class Deisa:
 
         self.client: Client = get_connection_info()
 
-        # TODO: handshake
         # blocking until all bridges are ready
         handshake = Handshake('deisa', self.client, **kwargs)
 

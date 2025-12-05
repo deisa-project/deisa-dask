@@ -144,7 +144,7 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
         f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler.json'
-        deisa = Deisa(nb_workers=0, get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
@@ -152,7 +152,7 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file_error(self):
         with pytest.raises(ValueError) as e:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
-            deisa = Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
+            Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
 
     def test_dask_actor(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
