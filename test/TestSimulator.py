@@ -49,7 +49,8 @@ class TestSimulation:
 
         self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         self.bridges: list[Bridge] = [
-            Bridge(rank, self.nb_mpi_ranks, arrays_metadata, get_connection_info=lambda: client, *args, **kwargs)
+            Bridge(id=rank, arrays_metadata=arrays_metadata,
+                   system_metadata={'connection': client, 'nb_bridges': self.nb_mpi_ranks}, *args, **kwargs)
             for rank in range(self.nb_mpi_ranks)]
 
     def __gen_data(self, noise_level: int = 0) -> np.ndarray:

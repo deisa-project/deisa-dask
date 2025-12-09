@@ -27,18 +27,18 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 
-from typing import Callable, Any
+from typing import Any
 
 import numpy as np
 from distributed import Client, Queue
 
+from deisa.dask.common import validate_system_metadata, validate_arrays_metadata
 from deisa.dask.handshake import Handshake
 
 
 class Bridge:
-    def __init__(self, id: int, mpi_comm_size: int,
-                 arrays_metadata: dict[str, dict],
-                 get_connection_info: Callable, *args, **kwargs):
+
+    def __init__(self, id: int, arrays_metadata: dict[str, dict], system_metadata: dict[str, Any], *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
         system and a Dask-based framework. The class ensures proper allocation of workers
@@ -68,16 +68,15 @@ class Bridge:
         :param kwargs: Passed to Handshake
         :type kwargs: dict
         """
-        if not get_connection_info:
-            raise ValueError("get_connection_info must be provided")
-
-        self.client: Client = get_connection_info()
-        self.arrays_metadata = arrays_metadata
+        self.system_metadata = validate_system_metadata(system_metadata)
+        self.client: Client = self.system_metadata['connection']
+        self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
         self.mpi_rank = id
         self.futures = []
 
         # blocking until analytics is ready
-        Handshake('bridge', self.client, id=id, max=mpi_comm_size, arrays_metadata=arrays_metadata, **kwargs)
+        Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
+                  arrays_metadata=self.arrays_metadata, **kwargs)
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
         """
