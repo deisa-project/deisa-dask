@@ -116,5 +116,5 @@ class Bridge:
 
         # TODO: what to do if error ?
 
-    def get(self, name: str, default: Any = None, chunked: bool = False):
-        raise NotImplementedError() # TODO
+    def get(self, name: str, default: Any = None, chunked: bool = False, delete: bool = True):
+        raise NotImplementedError()  # TODO

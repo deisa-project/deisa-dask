@@ -195,6 +195,9 @@ class Deisa:
         if thread:
             self.__stop_join_thread(thread)
 
+    def set(self, name: str, data: da.Array, chunked=False):
+        raise NotImplementedError()  # TODO
+
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
         """This will return a list of tuples (metadata, data_future) for all chunks in the queue."""
