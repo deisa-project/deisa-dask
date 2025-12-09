@@ -88,9 +88,9 @@ class Handshake:
         self.handshake_actor = self.__get_handshake_actor()
         assert self.handshake_actor is not None
 
-        if who is 'bridge':
+        if who == 'bridge':
             self.start_bridge(**kwargs)
-        elif who is 'deisa':
+        elif who == 'deisa':
             self.start_deisa(**kwargs)
         else:
             raise ValueError("Expecting 'bridge' or 'deisa'.")
