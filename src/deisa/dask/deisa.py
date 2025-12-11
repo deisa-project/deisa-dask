@@ -33,7 +33,7 @@ import gc
 import sys
 import threading
 import traceback
-from typing import Callable, Tuple, List
+from typing import Callable, Tuple, List, Iterable
 
 import dask
 import dask.array as da
@@ -231,13 +231,14 @@ class Deisa:
                                     file=sys.stderr)
                                 self.unregister_sliding_window_callback(array_name)  # TODO
 
-        if str(callback_args) not in self.sliding_window_callback_threads:
+        callback_id = str([array_name for array_name, _ in callback_args])
+        if callback_id not in self.sliding_window_callback_threads:
             thread = threading.Thread(target=queue_watcher,
-                                      name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{str(callback_args)}")
-            self.sliding_window_callback_threads[str(callback_args)] = thread
+                                      name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{callback_id}")
+            self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
 
-    def unregister_sliding_window_callback(self, array_name: str):
+    def unregister_sliding_window_callback(self, array_name: str | Iterable[str]):
         """
         Unregisters a sliding window callback for the specified array name. This method removes the
         callback thread associated with the array name. If the thread exists, it stops the thread and waits
@@ -247,7 +248,7 @@ class Deisa:
             Must be a string.
         :return: None
         """
-        thread = self.sliding_window_callback_threads.pop(array_name, None)
+        thread = self.sliding_window_callback_threads.pop(str(array_name), None)
         if thread:
             self.__stop_join_thread(thread)
 
