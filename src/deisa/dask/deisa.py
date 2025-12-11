@@ -33,7 +33,7 @@ import gc
 import sys
 import threading
 import traceback
-from typing import Callable
+from typing import Callable, Tuple, List
 
 import dask
 import dask.array as da
@@ -46,6 +46,10 @@ from deisa.dask.handshake import Handshake
 
 class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
+
+    Window = List[da.Array]
+    Callback_args = Tuple[str, int]  # array_name, window_size
+    Callback = Callable[[Window, ..., int], None]
 
     def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
         """
@@ -128,8 +132,7 @@ class Deisa:
     def __default_exception_handler(array_name, e):
         print(f"Exception from {array_name} thread: {e}", file=sys.stderr, flush=True)
 
-    def register_sliding_window_callback(self, array_name: str, callback: Callable[[list[da.Array], int], None],
-                                         window_size: int = 1,
+    def register_sliding_window_callback(self, array_name: str, callback: Callback, window_size: int = 1,
                                          exception_handler: Callable[
                                              [str, BaseException], None] = __default_exception_handler):
         """
@@ -179,6 +182,59 @@ class Deisa:
         if array_name not in self.sliding_window_callback_threads:
             thread = threading.Thread(target=queue_watcher, name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{array_name}")
             self.sliding_window_callback_threads[array_name] = thread
+            thread.start()
+
+    def register_sliding_window_callbacks(self, callback: Callback,
+                                          *callback_args: Callback_args,
+                                          exception_handler: Callable[
+                                              [str, BaseException], None] = __default_exception_handler,
+                                          when='AND'):
+
+        def queue_watcher():
+            print(f"Starting sliding window callback for arrays '{callback_args}'", flush=True)
+            current_windows = {}
+            for array_name, window_size in callback_args:
+                current_windows[array_name] = {'window': collections.deque(maxlen=window_size), 'changed': False}
+
+            t = threading.current_thread()
+            while getattr(t, "stop", False) is False:
+                for array_name, d in current_windows.items():
+                    try:
+                        darr, iteration = self.get_array(array_name, timeout='1s')
+                        d['window'].append(darr)
+                        d['changed'] = True
+
+                        if when == 'OR':
+                            windows = [list(dd['window']) for dd in current_windows.values()]
+                            callback(*windows, iteration)
+                            d['changed'] = False
+                        elif when == 'AND':
+                            all_changed = all([dd['changed'] for dd in current_windows.values()])
+                            if all_changed:
+                                windows = [list(dd['window']) for dd in current_windows.values()]
+                                callback(*windows, iteration)
+
+                                for dd in current_windows.values():
+                                    dd['changed'] = False
+
+                    except TimeoutError:
+                        pass
+                    except BaseException as e:
+                        setattr(t, "exception", (e, traceback.format_exc()))
+                        try:
+                            if exception_handler:
+                                exception_handler(array_name, e)
+                        except BaseException as e:
+                            with self.sliding_window_callback_thread_lock:
+                                print(
+                                    f"Exception thrown in exception handler for {array_name} thread: {e} Unregistering callback.",
+                                    file=sys.stderr)
+                                self.unregister_sliding_window_callback(array_name)  # TODO
+
+        if str(callback_args) not in self.sliding_window_callback_threads:
+            thread = threading.Thread(target=queue_watcher,
+                                      name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{str(callback_args)}")
+            self.sliding_window_callback_threads[str(callback_args)] = thread
             thread.start()
 
     def unregister_sliding_window_callback(self, array_name: str):

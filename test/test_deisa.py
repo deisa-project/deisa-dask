@@ -193,7 +193,7 @@ class TestDeisaCtor:
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
-        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False)
+        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False, dashboard_address=None)
         client = Client(cluster)
         yield client, cluster
         # teardown
@@ -353,6 +353,96 @@ class TestUsingDaskCluster:
             assert context['latest_data'].any() == global_data_da.any(), "callback was not called with correct data"
             assert context['latest_window_size'] == min(i,
                                                         window_size), "callback was not called with correct window size"
+
+        assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
+        deisa.close()
+
+    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
+    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
+    @pytest.mark.parametrize('nb_iterations', [1, 3])
+    @pytest.mark.parametrize('temperature_window_size', [1, 3])
+    @pytest.mark.parametrize('pressure_window_size', [1, 3])
+    def test_sliding_window_callbacks_register(self, global_temperature_grid_size: tuple,
+                                               global_pressure_grid_size: tuple,
+                                               mpi_parallelism: tuple,
+                                               nb_iterations: int,
+                                               temperature_window_size: int,
+                                               pressure_window_size: int,
+                                               env_setup):
+        print(f"global_temperature_grid_size={global_temperature_grid_size}, "
+              f"global_pressure_grid_size={global_pressure_grid_size}, "
+              f"mpi_parallelism={mpi_parallelism}, "
+              f"nb_iterations={nb_iterations}, "
+              f"temperature_window_size={temperature_window_size}, "
+              f"pressure_window_size={pressure_window_size}")
+
+        client, cluster = env_setup
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'temperature': {
+                                     'size': global_temperature_grid_size,
+                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                 },
+                                 'pressure': {
+                                     'size': global_pressure_grid_size,
+                                     'subsize': (global_pressure_grid_size[0] // mpi_parallelism[0],
+                                                 global_pressure_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        context = {
+            'counter': 0
+        }
+
+        def window_callback(temperatures: list[da.Array], pressures: list[da.Array], timestep: int):
+            print(f"hello from window_callback. iteration={timestep}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = timestep
+            context['latest_temperature'] = temperatures[-1]
+            context['latest_temperature_window_size'] = len(temperatures)
+            context['latest_pressure'] = pressures[-1]
+            context['latest_pressure_window_size'] = len(pressures)
+
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", temperature_window_size),
+                                                ("pressure", pressure_window_size),
+                                                when='AND')
+
+        for i in range(1, nb_iterations + 1):
+            print(f"iteration {i}", flush=True)
+            # # register an already registered callback. This should not do anything.
+            # deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
+
+            global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
+            global_temperature_da = da.from_array(global_temperature,
+                                                  chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                          global_temperature_grid_size[1] // mpi_parallelism[
+                                                              1]))
+            global_pressure_da = da.from_array(global_pressure,
+                                               chunks=(global_pressure_grid_size[0] // mpi_parallelism[0],
+                                                       global_pressure_grid_size[1] // mpi_parallelism[1]))
+
+            time.sleep(.1)  # wait for callback to be called
+            assert context['counter'] == i, "callback was not called"
+            assert context['latest_timestep'] == i, "callback was not called with correct timestep"
+            # temperatures
+            assert type(context['latest_temperature']) == da.Array, "callback was not called with correct data"
+            assert context[
+                       'latest_temperature'].any() == global_temperature_da.any(), "callback was not called with correct data"
+            assert context['latest_temperature_window_size'] == min(i,
+                                                                    temperature_window_size), "callback was not called with correct window size"
+            # pressures
+            assert type(context['latest_pressure']) == da.Array, "callback was not called with correct data"
+            assert context[
+                       'latest_pressure'].any() == global_pressure_da.any(), "callback was not called with correct data"
+            assert context['latest_pressure_window_size'] == min(i,
+                                                                 pressure_window_size), "callback was not called with correct window size"
 
         assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
         deisa.close()

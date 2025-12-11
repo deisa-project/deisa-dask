@@ -32,8 +32,8 @@ from typing import Any
 import numpy as np
 from distributed import Client, Queue
 
-from deisa.dask.common import validate_system_metadata, validate_arrays_metadata
 from deisa.dask.handshake import Handshake
+from deisa.dask.tools import validate_system_metadata, validate_arrays_metadata
 
 
 class Bridge:
