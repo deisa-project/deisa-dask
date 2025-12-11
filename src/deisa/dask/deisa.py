@@ -132,7 +132,7 @@ class Deisa:
     def __default_exception_handler(array_name, e):
         print(f"Exception from {array_name} thread: {e}", file=sys.stderr, flush=True)
 
-    def register_sliding_window_callback(self, array_name: str, callback: Callback, window_size: int = 1,
+    def register_sliding_window_callback(self, callback: Callback, array_name: str, window_size: int = 1,
                                          exception_handler: Callable[
                                              [str, BaseException], None] = __default_exception_handler):
         """
