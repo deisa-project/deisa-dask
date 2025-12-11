@@ -534,7 +534,7 @@ class TestUsingDaskCluster:
         deisa.register_sliding_window_callback(window_callback,
                                                 ("temperature", window_size),
                                                 ("pressure", window_size))
-        deisa.unregister_sliding_window_callback(("temperature", "pressure"))
+        deisa.unregister_sliding_window_callback("temperature", "pressure")
         sim.generate_data('temperature', iteration=1)
         sim.generate_data('pressure', iteration=1)
         time.sleep(1)

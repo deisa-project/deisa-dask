@@ -48,7 +48,7 @@ class Deisa:
     SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
 
     Window = List[da.Array]
-    Callback_args = Union[str, Tuple[str, int]]  # array_name, window_size
+    Callback_args = Union[str, Tuple[str], Tuple[str, int]]  # array_name, window_size
     Callback = Callable[..., None]
 
     def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
@@ -235,7 +235,7 @@ class Deisa:
                                     file=sys.stderr)
                                 self.unregister_sliding_window_callback(array_name)  # TODO
 
-        callback_id = str([array_name for array_name, _ in parsed])
+        callback_id = self.__get_callback_id(*parsed)
         if callback_id not in self.sliding_window_callback_threads:
             thread = threading.Thread(target=queue_watcher,
                                       name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
@@ -243,7 +243,7 @@ class Deisa:
             self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
 
-    def unregister_sliding_window_callback(self, *array_names: str):
+    def unregister_sliding_window_callback(self, *array_names: Callback_args) -> None:
         """
         Unregisters a sliding window callback for the specified array name. This method removes the
         callback thread associated with the array name. If the thread exists, it stops the thread and waits
@@ -254,7 +254,7 @@ class Deisa:
         :return: None
         """
 
-        callback_id = str([*array_names])
+        callback_id = self.__get_callback_id(*array_names)
         thread = self.sliding_window_callback_threads.pop(callback_id, None)
         if thread:
             self.__stop_join_thread(thread)
@@ -323,3 +323,22 @@ class Deisa:
 
         # Use da.block to combine blocks
         return da.block(nested)
+
+    @staticmethod
+    def __get_callback_id(*callback_args: Callback_args) -> str:
+        """Flatten callback_args to a tuple of array names."""
+        array_names = []
+        for arg in callback_args:
+            if isinstance(arg, str):
+                array_names.append(arg)
+            elif isinstance(arg, tuple):
+                if len(arg) == 1 and isinstance(arg[0], str):
+                    array_names.append(arg[0])
+                elif len(arg) == 2 and isinstance(arg[0], str) and isinstance(arg[1], int):
+                    array_names.append(arg[0])
+                else:
+                    raise TypeError(
+                        "Tuple callback_args must be either (array_name,) or (array_name, window_size: int)")
+            else:
+                raise TypeError("callback_args must be str or a tuple")
+        return str(array_names)
