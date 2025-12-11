@@ -33,7 +33,7 @@ import gc
 import sys
 import threading
 import traceback
-from typing import overload, Callable, Union, Tuple, List, Iterable
+from typing import overload, Callable, Union, Tuple, List
 
 import dask
 import dask.array as da
@@ -152,7 +152,7 @@ class Deisa:
                                          window_size: int = 1,
                                          exception_handler: Callable[
                                              [str, BaseException], None] = __default_exception_handler,
-                                         when: str = 'AND') -> None:
+                                         when: str = 'AND') -> str:
         """
             Supports:
               - (callback, "array_name", window_size=K)
@@ -242,6 +242,7 @@ class Deisa:
                                       args=(parsed,))
             self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
+        return callback_id
 
     def unregister_sliding_window_callback(self, *array_names: Callback_args) -> None:
         """
