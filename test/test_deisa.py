@@ -277,7 +277,6 @@ class TestUsingDaskCluster:
         client, cluster = env_setup
 
         sim = TestSimulation(client,
-                             global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
@@ -290,7 +289,7 @@ class TestUsingDaskCluster:
         deisa = Deisa(get_connection_info=lambda: client)
 
         for i in range(nb_iterations):
-            global_data = sim.generate_data('my_array', i, send_order_fn)
+            global_data = sim.generate_data('my_array', iteration=i, send_order_fn=send_order_fn)
             global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                                 global_grid_size[1] // mpi_parallelism[1]))
             darr, iteration = deisa.get_array('my_array')
@@ -312,7 +311,6 @@ class TestUsingDaskCluster:
         client, cluster = env_setup
 
         sim = TestSimulation(client,
-                             global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
@@ -342,7 +340,7 @@ class TestUsingDaskCluster:
             # register an already registered callback. This should not do anything.
             deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
 
-            global_data = sim.generate_data('my_array', i)
+            global_data = sim.generate_data('my_array', iteration=i)
             global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                                 global_grid_size[1] // mpi_parallelism[1]))
 
@@ -454,7 +452,6 @@ class TestUsingDaskCluster:
         window_size = 1
 
         sim = TestSimulation(client,
-                             global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
@@ -500,7 +497,6 @@ class TestUsingDaskCluster:
         mpi_parallelism = (2, 2)
 
         sim = TestSimulation(client,
-                             global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
@@ -533,7 +529,7 @@ class TestUsingDaskCluster:
 
         # default exception_handler
         deisa.register_sliding_window_callback("my_array", window_callback)
-        sim.generate_data('my_array', 1)
+        sim.generate_data('my_array', iteration=1)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 1, "callback was not called"
         assert context['exception_handler'] == 0, "callback was not called"
@@ -542,7 +538,7 @@ class TestUsingDaskCluster:
         deisa.unregister_sliding_window_callback("my_array")
         deisa.register_sliding_window_callback("my_array", window_callback,
                                                exception_handler=custom_exception_handler)
-        sim.generate_data('my_array', 2)
+        sim.generate_data('my_array', iteration=2)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 2, "callback was not called"
         assert context['exception_handler'] == 1, "callback was not called"
@@ -551,13 +547,13 @@ class TestUsingDaskCluster:
         deisa.unregister_sliding_window_callback("my_array")
         deisa.register_sliding_window_callback("my_array", window_callback,
                                                exception_handler=custom_exception_handler_raise)
-        sim.generate_data('my_array', 3)
+        sim.generate_data('my_array', iteration=3)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 3, "callback was not called"
         assert context['exception_handler'] == 2, "callback was not called"
 
         # callback unregistered due to un handled exception in custom_exception_handler_raise. Should no longer be called.
-        sim.generate_data('my_array', 4)
+        sim.generate_data('my_array', iteration=4)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 3, "callback was not called"
         assert context['exception_handler'] == 2, "callback was not called"
@@ -570,7 +566,6 @@ class TestUsingDaskCluster:
         mpi_parallelism = (2, 2)
 
         sim = TestSimulation(client,
-                             global_grid_size=global_grid_size,
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
@@ -611,7 +606,7 @@ class TestUsingDaskCluster:
                                                exception_handler=exception_handler)
 
         for i in range(1, 5):
-            sim.generate_data('my_array', i)
+            sim.generate_data('my_array', iteration=i)
             time.sleep(.1)  # wait for callback to be called
             assert context['counter'] == 4 * i, "map_blocks did not run on all blocks"
 
