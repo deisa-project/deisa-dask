@@ -414,8 +414,11 @@ class TestUsingDaskCluster:
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
-            # # register an already registered callback. This should not do anything.
-            # deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
+            # register an already registered callback. This should not do anything.
+            deisa.register_sliding_window_callbacks(window_callback,
+                                                    ("temperature", temperature_window_size),
+                                                    ("pressure", pressure_window_size),
+                                                    when='AND')
 
             global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
             global_temperature_da = da.from_array(global_temperature,
@@ -485,6 +488,65 @@ class TestUsingDaskCluster:
         deisa.register_sliding_window_callback("my_array", window_callback, window_size=window_size)
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('my_array', iteration=2)
+        time.sleep(1)
+        assert context['counter'] == 2, "callback should be called"
+        assert context['latest_timestep'] == 2, "callback should be called"
+
+        deisa.close()
+
+    def test_sliding_window_callbacks_unregister(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+        window_size = 1
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'temperature': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 },
+                                 'pressure': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        context = {
+            'counter': 0
+        }
+
+        def window_callback(temperatures: list[da.Array], pressures: list[da.Array], timestep: int):
+            print(f"hello from window_callback. iteration={timestep}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = timestep
+            context['latest_temperatures_data'] = temperatures[-1]
+            context['latest_temperatures_window_size'] = len(temperatures)
+            context['latest_pressures_data'] = pressures[-1]
+            context['latest_pressures_window_size'] = len(pressures)
+
+        # register followed by unregister
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", window_size),
+                                                ("pressure", window_size))
+        deisa.unregister_sliding_window_callback(("temperature", "pressure"))
+        sim.generate_data('temperature', iteration=1)
+        sim.generate_data('pressure', iteration=1)
+        time.sleep(1)
+        assert context['counter'] == 0, "callback should not be called"
+
+        # unregister an unknown array name
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", window_size),
+                                                ("pressure", window_size))
+        deisa.unregister_sliding_window_callback("my_unknown_array")
+        sim.generate_data('temperature', iteration=2)
+        sim.generate_data('pressure', iteration=2)
         time.sleep(1)
         assert context['counter'] == 2, "callback should be called"
         assert context['latest_timestep'] == 2, "callback should be called"

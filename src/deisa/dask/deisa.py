@@ -179,9 +179,10 @@ class Deisa:
                                 file=sys.stderr)
                             self.unregister_sliding_window_callback(array_name)
 
-        if array_name not in self.sliding_window_callback_threads:
-            thread = threading.Thread(target=queue_watcher, name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{array_name}")
-            self.sliding_window_callback_threads[array_name] = thread
+        callback_id = str(list(array_name))
+        if callback_id not in self.sliding_window_callback_threads:
+            thread = threading.Thread(target=queue_watcher, name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{callback_id}")
+            self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
 
     def register_sliding_window_callbacks(self, callback: Callback,
@@ -248,7 +249,7 @@ class Deisa:
             Must be a string.
         :return: None
         """
-        thread = self.sliding_window_callback_threads.pop(str(array_name), None)
+        thread = self.sliding_window_callback_threads.pop(str(list(array_name)), None)
         if thread:
             self.__stop_join_thread(thread)
 
