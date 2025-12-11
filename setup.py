@@ -85,6 +85,7 @@ setup(name='deisa-dask',
       extras_require={
           "test": [
               "pytest",
+              "pytest-xdist",
               "numpy",
               "deisa @ git+https://github.com/deisa-project/deisa@main"
           ]
