@@ -1,7 +1,7 @@
 import pytest
 from distributed import Client
 
-from deisa.dask.common import validate_system_metadata, validate_arrays_metadata
+from deisa.dask.tools import validate_system_metadata, validate_arrays_metadata
 
 
 class TestSystemMetadata:

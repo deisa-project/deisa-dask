@@ -70,13 +70,13 @@ class Handshake:
         def set_arrays_metadata(self, arrays_metadata: dict) -> None:
             self.arrays_metadata = arrays_metadata
 
-        def get_arrays_metadata(self) -> dict | Future[dict]:
+        def get_arrays_metadata(self) -> dict | Future:
             return self.arrays_metadata
 
-        def get_max_bridges(self) -> int | Future[int]:
+        def get_max_bridges(self) -> int | Future:
             return self.max_bridges
 
-        def __are_bridges_ready(self) -> bool | Future[bool]:
+        def __are_bridges_ready(self) -> bool | Future:
             return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
 
         def __go(self):
