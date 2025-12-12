@@ -39,7 +39,7 @@ import dask
 import dask.array as da
 import numpy as np
 from dask.array import Array
-from distributed import Client, Future, Queue
+from distributed import Client, Future, Queue, Variable, Lock
 
 from deisa.dask.handshake import Handshake
 
@@ -260,8 +260,12 @@ class Deisa:
         if thread:
             self.__stop_join_thread(thread)
 
-    def set(self, name: str, data: da.Array, chunked=False):
-        raise NotImplementedError()  # TODO
+    def set(self, name: str, data: Union[Future, object], chunked=False):
+        if chunked:
+            raise NotImplementedError()  # TODO
+        else:
+            with Lock(f'DEISA_LOCK_{name}', client=self.client):
+                Variable(f'DEISA_VARIABLE_{name}', client=self.client).set(data)
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:

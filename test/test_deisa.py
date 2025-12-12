@@ -39,7 +39,7 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.dask import Deisa, get_connection_info
+from deisa.dask import Deisa, get_connection_info, Bridge
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
@@ -671,5 +671,34 @@ class TestUsingDaskCluster:
             sim.generate_data('my_array', iteration=i)
             time.sleep(.1)  # wait for callback to be called
             assert context['counter'] == 4 * i, "map_blocks did not run on all blocks"
+
+        deisa.close()
+
+    def test_set_get(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (1, 1)
+
+        bridge = Bridge(id=0,
+                        arrays_metadata={
+                            'my_array': {
+                                'size': global_grid_size,
+                                'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                            global_grid_size[1] // mpi_parallelism[1])
+                            }
+                        },
+                        system_metadata={'connection': client, 'nb_bridges': 1},
+                        wait_for_go=False)
+
+        deisa = Deisa(get_connection_info=lambda: client)
+        deisa.set('hello', 'world', chunked=False)
+
+        assert bridge.get('hello', chunked=False, delete=False) == 'world'
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True) == 'world'
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True) is None
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi'
 
         deisa.close()
