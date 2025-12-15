@@ -30,7 +30,7 @@
 import asyncio
 
 from dask.distributed import Variable
-from distributed import Client, Future, get_client
+from distributed import Client, Future, get_client, Lock
 
 
 class Handshake:
@@ -61,6 +61,8 @@ class Handshake:
                 raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
 
             self.bridges.append(id)
+            if self.__is_everyone_ready():
+                self.__go()
 
         def set_analytics_ready(self) -> None:
             self.analytics_ready = True
@@ -78,6 +80,9 @@ class Handshake:
 
         def __are_bridges_ready(self) -> bool | Future[bool]:
             return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
+
+        def __is_everyone_ready(self) -> bool | Future:
+            return self.__are_bridges_ready() and self.analytics_ready
 
         def __go(self):
             Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).set(None)
@@ -129,12 +134,13 @@ class Handshake:
         return self.handshake_actor.get_max_bridges().result()
 
     def __get_handshake_actor(self) -> HandshakeActor:
-        try:
-            return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
-        except asyncio.exceptions.TimeoutError:
-            actor_future = self.client.submit(Handshake.HandshakeActor, actor=True)
-            Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).set(actor_future)
-            return actor_future.result()
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+            try:
+                return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
+            except asyncio.exceptions.TimeoutError:
+                actor_future = self.client.submit(Handshake.HandshakeActor, actor=True)
+                Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).set(actor_future)
+                return actor_future.result()
 
     def __wait_for_go(self) -> None:
         Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).get()
