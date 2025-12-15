@@ -694,3 +694,38 @@ class TestUsingDaskCluster:
         assert bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi'
 
         deisa.close()
+
+    def test_set_get_from_sliding_window(self, env_setup):
+        client, _ = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (1, 1)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        context = {
+            'counter': 0
+        }
+
+        def window_callback(_: list[da.Array], timestep: int):
+            print(f"hello from window_callback. iteration={timestep}", flush=True)
+            context['counter'] += 1
+            deisa.set('hello', 'world', chunked=False)
+
+        deisa.register_sliding_window_callback(window_callback, "my_array", window_size=1)
+        sim.generate_data('my_array', iteration=1)
+        time.sleep(.1)
+        assert context['counter'] == 1
+        assert sim.bridges[0].get('hello', chunked=False, delete=False) == 'world'
+
+        deisa.close()
