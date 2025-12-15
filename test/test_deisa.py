@@ -675,18 +675,10 @@ class TestUsingDaskCluster:
         deisa.close()
 
     def test_set_get(self, env_setup):
-        client, cluster = env_setup
-        global_grid_size = (8, 8)
-        mpi_parallelism = (1, 1)
+        client, _ = env_setup
 
         bridge = Bridge(id=0,
-                        arrays_metadata={
-                            'my_array': {
-                                'size': global_grid_size,
-                                'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                            global_grid_size[1] // mpi_parallelism[1])
-                            }
-                        },
+                        arrays_metadata={},
                         system_metadata={'connection': client, 'nb_bridges': 1},
                         wait_for_go=False)
 
