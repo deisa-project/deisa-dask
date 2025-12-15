@@ -33,7 +33,7 @@ import gc
 import sys
 import threading
 import traceback
-from typing import overload, Callable, Union, Tuple, List
+from typing import overload, Callable, Union, Tuple, List, Final
 
 import dask
 import dask.array as da
@@ -43,10 +43,12 @@ from distributed import Client, Future, Queue, Variable, Lock
 
 from deisa.dask.handshake import Handshake
 
+SLIDING_WINDOW_THREAD_PREFIX: Final[str] = "deisa_sliding_window_callback_"
+LOCK_PREFIX: Final[str] = "deisa_lock_"
+VARIABLE_PREFIX: Final[str] = "deisa_variable_"
+
 
 class Deisa:
-    SLIDING_WINDOW_THREAD_PREFIX = "deisa_sliding_window_callback_"
-
     Window = List[da.Array]
     Callback_args = Union[str, Tuple[str], Tuple[str, int]]  # array_name, window_size
     Callback = Callable[..., None]
@@ -233,12 +235,12 @@ class Deisa:
                                 print(
                                     f"Exception thrown in exception handler for {array_name} thread: {e} Unregistering callback.",
                                     file=sys.stderr)
-                                self.unregister_sliding_window_callback(array_name)  # TODO
+                                self.unregister_sliding_window_callback(array_name)
 
         callback_id = self.__get_callback_id(*parsed)
         if callback_id not in self.sliding_window_callback_threads:
             thread = threading.Thread(target=queue_watcher,
-                                      name=f"{Deisa.SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
+                                      name=f"{SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
                                       args=(parsed,))
             self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
@@ -264,8 +266,8 @@ class Deisa:
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            with Lock(f'DEISA_LOCK_{name}', client=self.client):
-                Variable(f'DEISA_VARIABLE_{name}', client=self.client).set(data)
+            with Lock(f'{LOCK_PREFIX}{name}', client=self.client):
+                Variable(f'{VARIABLE_PREFIX}{name}', client=self.client).set(data)
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
