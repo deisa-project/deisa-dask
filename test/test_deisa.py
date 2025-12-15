@@ -729,3 +729,22 @@ class TestUsingDaskCluster:
         assert sim.bridges[0].get('hello', chunked=False, delete=False) == 'world'
 
         deisa.close()
+
+    def test_set_delete_get(self, env_setup):
+        client, _ = env_setup
+
+        bridge = Bridge(id=0,
+                        arrays_metadata={},
+                        system_metadata={'connection': client, 'nb_bridges': 1},
+                        wait_for_go=False)
+
+        deisa = Deisa(get_connection_info=lambda: client)
+        deisa.set('hello', 'world', chunked=False)
+
+        assert bridge.get('hello', chunked=False, delete=False) == 'world'
+        time.sleep(.1)
+        deisa.delete('hello')
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=False, default=None) is None
+
+        deisa.close()

@@ -269,6 +269,10 @@ class Deisa:
             with Lock(f'{LOCK_PREFIX}{name}', client=self.client):
                 Variable(f'{VARIABLE_PREFIX}{name}', client=self.client).set(data)
 
+    def delete(self, key: str) -> None:
+        with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+            Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
+
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
         """This will return a list of tuples (metadata, data_future) for all chunks in the queue."""
