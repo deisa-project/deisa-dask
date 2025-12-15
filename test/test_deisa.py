@@ -39,7 +39,7 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.dask import Deisa, get_connection_info
+from deisa.dask import Deisa, get_connection_info, Bridge
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
@@ -408,17 +408,17 @@ class TestUsingDaskCluster:
             context['latest_pressure_window_size'] = len(pressures)
 
         deisa.register_sliding_window_callback(window_callback,
-                                                ("temperature", temperature_window_size),
-                                                ("pressure", pressure_window_size),
-                                                when='AND')
+                                               ("temperature", temperature_window_size),
+                                               ("pressure", pressure_window_size),
+                                               when='AND')
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
             # register an already registered callback. This should not do anything.
             deisa.register_sliding_window_callback(window_callback,
-                                                    ("temperature", temperature_window_size),
-                                                    ("pressure", pressure_window_size),
-                                                    when='AND')
+                                                   ("temperature", temperature_window_size),
+                                                   ("pressure", pressure_window_size),
+                                                   when='AND')
 
             global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
             global_temperature_da = da.from_array(global_temperature,
@@ -532,8 +532,8 @@ class TestUsingDaskCluster:
 
         # register followed by unregister
         deisa.register_sliding_window_callback(window_callback,
-                                                ("temperature", window_size),
-                                                ("pressure", window_size))
+                                               ("temperature", window_size),
+                                               ("pressure", window_size))
         deisa.unregister_sliding_window_callback("temperature", "pressure")
         sim.generate_data('temperature', iteration=1)
         sim.generate_data('pressure', iteration=1)
@@ -542,8 +542,8 @@ class TestUsingDaskCluster:
 
         # unregister an unknown array name
         deisa.register_sliding_window_callback(window_callback,
-                                                ("temperature", window_size),
-                                                ("pressure", window_size))
+                                               ("temperature", window_size),
+                                               ("pressure", window_size))
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('temperature', iteration=2)
         sim.generate_data('pressure', iteration=2)
@@ -671,5 +671,61 @@ class TestUsingDaskCluster:
             sim.generate_data('my_array', iteration=i)
             time.sleep(.1)  # wait for callback to be called
             assert context['counter'] == 4 * i, "map_blocks did not run on all blocks"
+
+        deisa.close()
+
+    def test_set_get(self, env_setup):
+        client, _ = env_setup
+
+        bridge = Bridge(id=0,
+                        arrays_metadata={},
+                        system_metadata={'connection': client, 'nb_bridges': 1},
+                        wait_for_go=False)
+
+        deisa = Deisa(get_connection_info=lambda: client)
+        deisa.set('hello', 'world', chunked=False)
+
+        assert bridge.get('hello', chunked=False, delete=False) == 'world'
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True) == 'world'
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True) is None
+        time.sleep(.1)
+        assert bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi'
+
+        deisa.close()
+
+    def test_set_get_from_sliding_window(self, env_setup):
+        client, _ = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (1, 1)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        context = {
+            'counter': 0
+        }
+
+        def window_callback(_: list[da.Array], timestep: int):
+            print(f"hello from window_callback. iteration={timestep}", flush=True)
+            context['counter'] += 1
+            deisa.set('hello', 'world', chunked=False)
+
+        deisa.register_sliding_window_callback(window_callback, "my_array", window_size=1)
+        sim.generate_data('my_array', iteration=1)
+        time.sleep(.1)
+        assert context['counter'] == 1
+        assert sim.bridges[0].get('hello', chunked=False, delete=False) == 'world'
 
         deisa.close()
