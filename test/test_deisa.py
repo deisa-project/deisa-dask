@@ -407,18 +407,18 @@ class TestUsingDaskCluster:
             context['latest_pressure'] = pressures[-1]
             context['latest_pressure_window_size'] = len(pressures)
 
-        deisa.register_sliding_window_callback(window_callback,
-                                               ("temperature", temperature_window_size),
-                                               ("pressure", pressure_window_size),
-                                               when='AND')
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", temperature_window_size),
+                                                ("pressure", pressure_window_size),
+                                                when='AND')
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
             # register an already registered callback. This should not do anything.
-            deisa.register_sliding_window_callback(window_callback,
-                                                   ("temperature", temperature_window_size),
-                                                   ("pressure", pressure_window_size),
-                                                   when='AND')
+            deisa.register_sliding_window_callbacks(window_callback,
+                                                    ("temperature", temperature_window_size),
+                                                    ("pressure", pressure_window_size),
+                                                    when='AND')
 
             global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
             global_temperature_da = da.from_array(global_temperature,
@@ -531,9 +531,9 @@ class TestUsingDaskCluster:
             context['latest_pressures_window_size'] = len(pressures)
 
         # register followed by unregister
-        deisa.register_sliding_window_callback(window_callback,
-                                               ("temperature", window_size),
-                                               ("pressure", window_size))
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", window_size),
+                                                ("pressure", window_size))
         deisa.unregister_sliding_window_callback("temperature", "pressure")
         sim.generate_data('temperature', iteration=1)
         sim.generate_data('pressure', iteration=1)
@@ -541,9 +541,9 @@ class TestUsingDaskCluster:
         assert context['counter'] == 0, "callback should not be called"
 
         # unregister an unknown array name
-        deisa.register_sliding_window_callback(window_callback,
-                                               ("temperature", window_size),
-                                               ("pressure", window_size))
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", window_size),
+                                                ("pressure", window_size))
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('temperature', iteration=2)
         sim.generate_data('pressure', iteration=2)

@@ -33,12 +33,13 @@ import gc
 import sys
 import threading
 import traceback
-from typing import overload, Callable, Union, Tuple, List, Final
+from typing import Callable, Union, Tuple, List, Final
 
 import dask
 import dask.array as da
 import numpy as np
 from dask.array import Array
+from deisa.common.interface import IDeisa, SupportsSlidingWindow
 from distributed import Client, Future, Queue, Variable, Lock
 
 from deisa.dask.handshake import Handshake
@@ -46,12 +47,11 @@ from deisa.dask.handshake import Handshake
 SLIDING_WINDOW_THREAD_PREFIX: Final[str] = "deisa_sliding_window_callback_"
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
+DEFAULT_SLIDING_WINDOW_SIZE: int = 1
 
 
-class Deisa:
-    Window = List[da.Array]
+class Deisa(IDeisa):
     Callback_args = Union[str, Tuple[str], Tuple[str, int]]  # array_name, window_size
-    Callback = Callable[..., None]
 
     def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
         """
@@ -64,6 +64,7 @@ class Deisa:
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
+        super().__init__(get_connection_info, *args, **kwargs)
         self.client: Client = get_connection_info()
 
         # blocking until all bridges are ready
@@ -134,65 +135,78 @@ class Deisa:
     def __default_exception_handler(array_name, e):
         print(f"Exception from {array_name} thread: {e}", file=sys.stderr, flush=True)
 
-    @overload
-    def register_sliding_window_callback(self, callback: Callback,
-                                         array_name: str, *, window_size: int = 1,
-                                         exception_handler: Callable[
-                                             [str, BaseException], None] = __default_exception_handler) -> None:
-        ...
-
-    @overload
-    def register_sliding_window_callback(self, callback: Callback,
-                                         *callback_args: Callback_args,
-                                         exception_handler: Callable[
-                                             [str, BaseException], None] = __default_exception_handler,
-                                         when='AND') -> None:
-        ...
-
-    def register_sliding_window_callback(self, callback: Callback,
-                                         *callback_args: Callback_args,
-                                         window_size: int = 1,
-                                         exception_handler: Callable[
-                                             [str, BaseException], None] = __default_exception_handler,
-                                         when: str = 'AND') -> str:
+    def register_sliding_window_callback(self,
+                                         callback: SupportsSlidingWindow.Callback,
+                                         array_name: str, window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
+                                         exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler) -> str:
         """
-            Supports:
-              - (callback, "array_name", window_size=K)
-              - (callback, ("name1", k1), ("name2", k2), ..., when='AND')
-              - mixed: (callback, "a", ("b", 3)) -> "a" gets default window_size
-            """
+        Register a sliding-window callback for a single array.
+        """
+        parsed = [(array_name, window_size)]
+        return self._register_sliding_window_callbacks_impl(
+            callback,
+            parsed,
+            exception_handler=exception_handler,
+            when='AND')
+
+    def register_sliding_window_callbacks(self,
+                                          callback: SupportsSlidingWindow.Callback,
+                                          *callback_args: Callback_args,
+                                          exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
+                                          when='AND') -> str:
+        """
+        Register a sliding-window callback for one or more arrays.
+
+        Supports:
+          - "array"
+          - ("array", window_size)
+          - mixed forms
+        """
         if not callback_args:
-            raise TypeError("register_sliding_window_callback requires at least one array name or (name, window) tuple")
+            raise TypeError(
+                "register_sliding_window_callbacks requires at least one array name "
+                "or (name, window_size) tuple"
+            )
 
         parsed: List[Tuple[str, int]] = []
 
-        # single-string convenience: (callback, "my_array", window_size=...)
-        if len(callback_args) == 1 and isinstance(callback_args[0], str):
-            parsed.append((callback_args[0], int(window_size)))
-        else:
-            # general case: one or more of str or (str, int)
-            for arg in callback_args:
-                if isinstance(arg, str):
-                    # use the function-level window_size for bare strings
-                    parsed.append((arg, int(window_size)))
-                elif isinstance(arg, tuple):
-                    if len(arg) != 2:
-                        raise TypeError("tuple callback_args must be of length 2: (array_name: str, window_size: int)")
+        for arg in callback_args:
+            if isinstance(arg, str):
+                parsed.append((arg, DEFAULT_SLIDING_WINDOW_SIZE))
+            elif isinstance(arg, tuple):
+                if len(arg) == 1:
+                    parsed.append((arg[0], DEFAULT_SLIDING_WINDOW_SIZE))
+                elif len(arg) == 2:
                     name, ws = arg
-                    if not isinstance(name, str):
-                        raise TypeError("first element of tuple must be str (array name)")
-                    if not isinstance(ws, int):
-                        # allow things that can be casted to int, but be explicit
-                        raise TypeError("second element of tuple must be int (window_size)")
+                    if not isinstance(name, str) or not isinstance(ws, int):
+                        raise TypeError("tuple must be (str, int)")
                     parsed.append((name, ws))
                 else:
-                    raise TypeError("callback_args must be either str or (str, int) tuples")
+                    raise TypeError("tuple must be (str,) or (str, int)")
+            else:
+                raise TypeError("callback_args must be str or tuple")
 
-        # validate of `when`
+        return self._register_sliding_window_callbacks_impl(
+            callback,
+            parsed,
+            exception_handler=exception_handler,
+            when=when)
+
+    def _register_sliding_window_callbacks_impl(self,
+                                                callback: SupportsSlidingWindow.Callback,
+                                                parsed: List[Tuple[str, int]],
+                                                *,
+                                                exception_handler: SupportsSlidingWindow.ExceptionHandler,
+                                                when: str) -> str:
+        """
+        Supports:
+          - (callback, "array_name", window_size=K)
+          - (callback, ("name1", k1), ("name2", k2), ..., when='AND')
+          - mixed: (callback, "a", ("b", 3)) -> "a" gets default window_size
+        """
         if when not in ('AND', 'OR'):
             raise ValueError("when must be 'AND' or 'OR'")
 
-        # validate that array_name is known
         for array_name, _ in parsed:
             if array_name not in self.arrays_metadata:
                 raise ValueError(f'unknown array name: {array_name}')
@@ -200,10 +214,13 @@ class Deisa:
         def queue_watcher(arrays: List[Tuple[str, int]]):
             current_windows = {}
             for array_name, window_size in arrays:
-                current_windows[array_name] = {'window': collections.deque(maxlen=window_size), 'changed': False}
+                current_windows[array_name] = {
+                    'window': collections.deque(maxlen=window_size),
+                    'changed': False,
+                }
 
             t = threading.current_thread()
-            while getattr(t, "stop", False) is False:
+            while not getattr(t, "stop", False):
                 for array_name, d in current_windows.items():
                     try:
                         darr, iteration = self.get_array(array_name, timeout='1s')
@@ -214,12 +231,11 @@ class Deisa:
                             windows = [list(dd['window']) for dd in current_windows.values()]
                             callback(*windows, iteration)
                             d['changed'] = False
-                        elif when == 'AND':
-                            all_changed = all([dd['changed'] for dd in current_windows.values()])
-                            if all_changed:
+
+                        else:  # AND
+                            if all(dd['changed'] for dd in current_windows.values()):
                                 windows = [list(dd['window']) for dd in current_windows.values()]
                                 callback(*windows, iteration)
-
                                 for dd in current_windows.values():
                                     dd['changed'] = False
 
@@ -228,22 +244,26 @@ class Deisa:
                     except BaseException as e:
                         setattr(t, "exception", (e, traceback.format_exc()))
                         try:
-                            if exception_handler:
-                                exception_handler(array_name, e)
-                        except BaseException as e:
+                            exception_handler(array_name, e)
+                        except BaseException:
                             with self.sliding_window_callback_thread_lock:
                                 print(
-                                    f"Exception thrown in exception handler for {array_name} thread: {e} Unregistering callback.",
-                                    file=sys.stderr)
+                                    f"Exception thrown in exception handler for {array_name}. "
+                                    f"Unregistering callback.",
+                                    file=sys.stderr,
+                                )
                                 self.unregister_sliding_window_callback(array_name)
 
         callback_id = self.__get_callback_id(*parsed)
         if callback_id not in self.sliding_window_callback_threads:
-            thread = threading.Thread(target=queue_watcher,
-                                      name=f"{SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
-                                      args=(parsed,))
+            thread = threading.Thread(
+                target=queue_watcher,
+                name=f"{SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
+                args=(parsed,),
+            )
             self.sliding_window_callback_threads[callback_id] = thread
             thread.start()
+
         return callback_id
 
     def unregister_sliding_window_callback(self, *array_names: Callback_args) -> None:
