@@ -213,29 +213,27 @@ class Deisa(IDeisa):
 
         def queue_watcher(arrays: List[Tuple[str, int]]):
             current_windows = {}
-            for array_name, window_size in arrays:
-                current_windows[array_name] = {
+            for arr_name, window_size in arrays:
+                current_windows[arr_name] = {
                     'window': collections.deque(maxlen=window_size),
                     'changed': False,
                 }
 
             t = threading.current_thread()
             while not getattr(t, "stop", False):
-                for array_name, d in current_windows.items():
+                for arr_name, d in current_windows.items():
                     try:
-                        darr, iteration = self.get_array(array_name, timeout='1s')
+                        darr, iteration = self.get_array(arr_name, timeout='1s')
                         d['window'].append(darr)
                         d['changed'] = True
+                        windows = [list(dd['window']) for dd in current_windows.values()]
 
                         if when == 'OR':
-                            windows = [list(dd['window']) for dd in current_windows.values()]
-                            callback(*windows, iteration)
+                            callback(*windows, timestep=iteration)
                             d['changed'] = False
-
                         else:  # AND
                             if all(dd['changed'] for dd in current_windows.values()):
-                                windows = [list(dd['window']) for dd in current_windows.values()]
-                                callback(*windows, iteration)
+                                callback(*windows, timestep=iteration)
                                 for dd in current_windows.values():
                                     dd['changed'] = False
 
@@ -244,15 +242,15 @@ class Deisa(IDeisa):
                     except BaseException as e:
                         setattr(t, "exception", (e, traceback.format_exc()))
                         try:
-                            exception_handler(array_name, e)
+                            exception_handler(arr_name, e)
                         except BaseException:
                             with self.sliding_window_callback_thread_lock:
                                 print(
-                                    f"Exception thrown in exception handler for {array_name}. "
+                                    f"Exception thrown in exception handler for {arr_name}. "
                                     f"Unregistering callback.",
                                     file=sys.stderr,
                                 )
-                                self.unregister_sliding_window_callback(array_name)
+                                self.unregister_sliding_window_callback(arr_name)
 
         callback_id = self.__get_callback_id(*parsed)
         if callback_id not in self.sliding_window_callback_threads:
