@@ -262,12 +262,12 @@ class Deisa:
         if thread:
             self.__stop_join_thread(thread)
 
-    def set(self, name: str, data: Union[Future, object], chunked=False):
+    def set(self, key: str, data: Union[Future, object], chunked=False):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            with Lock(f'{LOCK_PREFIX}{name}', client=self.client):
-                Variable(f'{VARIABLE_PREFIX}{name}', client=self.client).set(data)
+            with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+                Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).set(data)
 
     def delete(self, key: str) -> None:
         with Lock(f'{LOCK_PREFIX}{key}', client=self.client):

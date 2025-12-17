@@ -30,12 +30,12 @@
 from typing import Any
 
 import numpy as np
+from deisa.common import validate_system_metadata, validate_arrays_metadata
 from distributed import Client, Queue, Variable, Lock
 from distributed.utils import TimeoutError
 
 from deisa.dask.deisa import LOCK_PREFIX, VARIABLE_PREFIX
 from deisa.dask.handshake import Handshake
-from deisa.dask.tools import validate_system_metadata, validate_arrays_metadata
 
 
 class Bridge:
@@ -117,16 +117,16 @@ class Bridge:
 
         # TODO: what to do if error ?
 
-    def get(self, name: str, default: Any = None, chunked: bool = False, delete: bool = True):
+    def get(self, key: str, default: Any = None, chunked: bool = False, delete: bool = True):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
             try:
-                with Lock(f'{LOCK_PREFIX}{name}', client=self.client):
-                    return Variable(f'{VARIABLE_PREFIX}{name}', client=self.client).get(timeout=0)
+                with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+                    return Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).get(timeout=0)
             except TimeoutError:
                 return default
             finally:
                 if delete:
-                    with Lock(f'{LOCK_PREFIX}{name}', client=self.client):
-                        Variable(f'{VARIABLE_PREFIX}{name}', client=self.client).delete()
+                    with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+                        Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()

@@ -78,6 +78,7 @@ setup(name='deisa-dask',
       packages=find_namespace_packages(where='src', include=['deisa.dask']),
 
       install_requires=[
+          "deisa @ git+https://github.com/deisa-project/deisa@main",    # TODO set version when released
           'dask',
           'distributed'
       ],
@@ -87,7 +88,6 @@ setup(name='deisa-dask',
               "pytest",
               "pytest-xdist",
               "numpy",
-              "deisa @ git+https://github.com/deisa-project/deisa@main"
           ]
       },
       test_suite='test',
