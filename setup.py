@@ -27,34 +27,21 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 
-import os
-
 from setuptools import setup, find_namespace_packages
 
-
-def find_version(*file_paths):
-    def read(*parts):
-        here = os.path.abspath(os.path.dirname(__file__))
-        with open(os.path.join(here, *parts)) as fp:
-            return fp.read().strip()
-
-    import re
-    version_file = read(*file_paths)
-    version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_file, re.M)
-    if version_match:
-        return version_match.group(1)
-    raise RuntimeError("Unable to find version string.")
-
+def read_version():
+    ns = {}
+    with open("src/deisa/dask/__version__.py") as f:
+        exec(f.read(), ns)
+    return ns["__version__"]
 
 def readme():
     with open('README.md', 'r') as f:
         return f.read()
 
 
-version = find_version("src/deisa/dask", "__version__.py")
-
 setup(name='deisa-dask',
-      version=version,
+      version=read_version(),
 
       description='Deisa: Dask-Enabled In Situ Analytics',
       long_description=readme(),
@@ -78,7 +65,7 @@ setup(name='deisa-dask',
       packages=find_namespace_packages(where='src', include=['deisa.dask']),
 
       install_requires=[
-          "deisa @ git+https://github.com/deisa-project/deisa@main",    # TODO set version when released
+          "deisa @ git+https://github.com/deisa-project/deisa@main",  # TODO set version when released
           'dask',
           'distributed'
       ],
