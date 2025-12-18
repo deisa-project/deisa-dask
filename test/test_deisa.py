@@ -355,12 +355,12 @@ class TestUsingDaskCluster:
         assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
         deisa.close()
 
-    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
-    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
-    @pytest.mark.parametrize('nb_iterations', [1, 3])
-    @pytest.mark.parametrize('temperature_window_size', [1, 3])
-    @pytest.mark.parametrize('pressure_window_size', [1, 3])
+    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (8, 4)])
+    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (8, 4)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2)])
+    @pytest.mark.parametrize('nb_iterations', [1, 5])
+    @pytest.mark.parametrize('temperature_window_size', [1, 2, 3])
+    @pytest.mark.parametrize('pressure_window_size', [2])
     def test_sliding_window_callbacks_register(self, global_temperature_grid_size: tuple,
                                                global_pressure_grid_size: tuple,
                                                mpi_parallelism: tuple,

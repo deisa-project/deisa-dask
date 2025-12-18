@@ -33,7 +33,7 @@ import gc
 import sys
 import threading
 import traceback
-from typing import Callable, Union, Tuple, List, Final
+from typing import Callable, Union, Tuple, List, Final, Literal
 
 import dask
 import dask.array as da
@@ -121,9 +121,9 @@ class Deisa(IDeisa):
         for m in l:
             assert type(m) is dict, "Metadata must be a dictionary."
             assert type(m['future']) is Future, "Data future must be a Dask future."
-            m["da"] = da.from_delayed(dask.delayed(m['future']), m["shape"], dtype=m["dtype"])
+            m['da'] = da.from_delayed(dask.delayed(m['future']), m['shape'], dtype=m['dtype'])
             res.append(m)
-            iteration = m["iteration"]
+            iteration = m['iteration']
 
         # create dask array from blocks
         res.sort(key=lambda x: x['rank'])  # sort by mpi rank
@@ -153,7 +153,7 @@ class Deisa(IDeisa):
                                           callback: SupportsSlidingWindow.Callback,
                                           *callback_args: Callback_args,
                                           exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
-                                          when='AND') -> str:
+                                          when: Literal['AND', 'OR'] = 'AND') -> str:
         """
         Register a sliding-window callback for one or more arrays.
 
