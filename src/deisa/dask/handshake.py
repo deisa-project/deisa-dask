@@ -69,7 +69,7 @@ class Handshake:
             if self.__are_bridges_ready():
                 self.__go()
 
-        def set_arrays_metadata(self, arrays_metadata: dict) -> None:
+        def set_arrays_metadata(self, arrays_metadata: dict) -> None | Future:
             self.arrays_metadata = arrays_metadata
 
         def get_arrays_metadata(self) -> dict | Future:
@@ -108,7 +108,7 @@ class Handshake:
         self.handshake_actor.add_bridge(id, max)
 
         if id == 0:
-            self.handshake_actor.set_arrays_metadata(arrays_metadata)
+            self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
 
         # wait for go
         if wait_for_go:
