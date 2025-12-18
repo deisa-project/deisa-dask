@@ -125,11 +125,11 @@ class Bridge(IBridge):
             raise NotImplementedError()  # TODO
         else:
             try:
-                with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+                with Lock(f'{LOCK_PREFIX}{key}'):
                     return Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).get(timeout=0)
             except TimeoutError:
                 return default
             finally:
                 if delete:
-                    with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+                    with Lock(f'{LOCK_PREFIX}{key}'):
                         Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()

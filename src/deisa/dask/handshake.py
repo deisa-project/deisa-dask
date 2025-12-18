@@ -134,7 +134,7 @@ class Handshake:
         return self.handshake_actor.get_max_bridges().result()
 
     def __get_handshake_actor(self) -> HandshakeActor:
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
             try:
                 return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
             except asyncio.exceptions.TimeoutError:

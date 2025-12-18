@@ -284,11 +284,11 @@ class Deisa(IDeisa):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+            with Lock(f'{LOCK_PREFIX}{key}'):
                 Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).set(data)
 
     def delete(self, key: str) -> None:
-        with Lock(f'{LOCK_PREFIX}{key}', client=self.client):
+        with Lock(f'{LOCK_PREFIX}{key}'):
             Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
 
     @staticmethod
