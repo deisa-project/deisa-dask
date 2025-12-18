@@ -2,6 +2,13 @@
 # Copyright (c) 2025 Commissariat a l'énergie atomique et aux énergies alternatives (CEA)
 # SPDX-License-Identifier: MIT
 ###################################################################################################
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("deisa-dask")  # installed version
+except PackageNotFoundError:
+    from .__version__ import __version__  # fallback
+
 import os
 
 from distributed import Client

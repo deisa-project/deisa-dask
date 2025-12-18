@@ -35,7 +35,7 @@ def start_bridge_handshake(address: str, id: int, max: int):
 def test_handshake_deisa_first(env_setup, nb_bridge: int):
     client, cluster = env_setup
     addr = cluster.scheduler.address
-    print(f"cluster={cluster}, addr={addr}", flush=True)
+    print(f"cluster={cluster}, addr={addr}, nb_bridge={nb_bridge}", flush=True)
 
     processes: List[Process] = []
 

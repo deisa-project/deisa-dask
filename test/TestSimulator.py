@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+from typing import Tuple
 
 import numpy as np
 from distributed import Client
@@ -36,26 +37,20 @@ from deisa.dask import Bridge
 class TestSimulation:
     __test__ = False
 
-    def __init__(self, client: Client, global_grid_size: tuple, mpi_parallelism: tuple,
-                 arrays_metadata: dict[str, dict], *args, **kwargs):
+    def __init__(self, client: Client, arrays_metadata: dict[str, dict], mpi_parallelism: tuple, *args, **kwargs):
         self.client = client
-        self.global_grid_size = global_grid_size
+        self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
-        self.local_grid_size = (global_grid_size[0] // mpi_parallelism[0],
-                                global_grid_size[1] // mpi_parallelism[1])
-
-        assert global_grid_size[0] % mpi_parallelism[0] == 0, "cannot compute local grid size for x dimension"
-        assert global_grid_size[1] % mpi_parallelism[1] == 0, "cannot compute local grid size for y dimension"
-
-        self.nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+        nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         self.bridges: list[Bridge] = [
-            Bridge(rank, self.nb_mpi_ranks, arrays_metadata, get_connection_info=lambda: client, *args, **kwargs)
-            for rank in range(self.nb_mpi_ranks)]
+            Bridge(id=rank, arrays_metadata=arrays_metadata,
+                   system_metadata={'connection': client, 'nb_bridges': nb_mpi_ranks}, *args, **kwargs)
+            for rank in range(nb_mpi_ranks)]
 
-    def __gen_data(self, noise_level: int = 0) -> np.ndarray:
+    def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
-        x = np.linspace(-1, 1, self.global_grid_size[0])
-        y = np.linspace(-1, 1, self.global_grid_size[1])
+        x = np.linspace(-1, 1, self.arrays_metadata[array_name]['size'][0])
+        y = np.linspace(-1, 1, self.arrays_metadata[array_name]['size'][1])
         X, Y = np.meshgrid(x, y, indexing='ij')
 
         # Generate 2D Gaussian (bell curve)
@@ -88,18 +83,26 @@ class TestSimulation:
 
         return blocks
 
-    def generate_data(self, array_name: str, iteration: int, send_order_fn=None) -> np.ndarray:
-        global_data = self.__gen_data(noise_level=iteration)
-        chunks = self.__split_array_equal_chunks(global_data)
+    def generate_data(self, *array_names: str, iteration: int, send_order_fn=None) -> np.ndarray | Tuple[np.ndarray]:
+        global_datas = []
+        for array_name in array_names:
+            global_data = self.__gen_data(array_name, noise_level=iteration)
+            global_datas.append(global_data)
+            chunks = self.__split_array_equal_chunks(global_data)
 
-        assert len(chunks) == len(self.bridges)
+            assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
 
-        if send_order_fn is None:
-            for i, bridge in enumerate(self.bridges):
-                bridge.send(array_name, chunks[i], iteration)
+            if send_order_fn is None:
+                for i, bridge in enumerate(self.bridges):
+                    print(f"sending data for array={array_name} to bridge id={bridge.mpi_rank}")
+                    bridge.send(array_name, chunks[i], iteration)
+            else:
+                send_order = send_order_fn(chunks)
+                for i, chunk in enumerate(send_order):
+                    self.bridges[i].send(array_name, chunk, iteration)
+
+        assert len(global_datas) == len(array_names)
+        if len(global_datas) == 1:
+            return global_datas[0]
         else:
-            send_order = send_order_fn(chunks)
-            for i, chunk in enumerate(send_order):
-                self.bridges[i].send(array_name, chunk, iteration)
-
-        return global_data
+            return tuple(global_datas)

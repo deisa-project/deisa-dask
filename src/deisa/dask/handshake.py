@@ -69,16 +69,16 @@ class Handshake:
             if self.__are_bridges_ready():
                 self.__go()
 
-        def set_arrays_metadata(self, arrays_metadata: dict) -> None:
+        def set_arrays_metadata(self, arrays_metadata: dict) -> None | Future:
             self.arrays_metadata = arrays_metadata
 
-        def get_arrays_metadata(self) -> dict | Future[dict]:
+        def get_arrays_metadata(self) -> dict | Future:
             return self.arrays_metadata
 
-        def get_max_bridges(self) -> int | Future[int]:
+        def get_max_bridges(self) -> int | Future:
             return self.max_bridges
 
-        def __are_bridges_ready(self) -> bool | Future[bool]:
+        def __are_bridges_ready(self) -> bool | Future:
             return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
 
         def __is_everyone_ready(self) -> bool | Future:
@@ -93,9 +93,9 @@ class Handshake:
         self.handshake_actor = self.__get_handshake_actor()
         assert self.handshake_actor is not None
 
-        if who is 'bridge':
+        if who == 'bridge':
             self.start_bridge(**kwargs)
-        elif who is 'deisa':
+        elif who == 'deisa':
             self.start_deisa(**kwargs)
         else:
             raise ValueError("Expecting 'bridge' or 'deisa'.")
@@ -108,7 +108,7 @@ class Handshake:
         self.handshake_actor.add_bridge(id, max)
 
         if id == 0:
-            self.handshake_actor.set_arrays_metadata(arrays_metadata)
+            self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
 
         # wait for go
         if wait_for_go:
@@ -134,7 +134,7 @@ class Handshake:
         return self.handshake_actor.get_max_bridges().result()
 
     def __get_handshake_actor(self) -> HandshakeActor:
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
             try:
                 return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
             except asyncio.exceptions.TimeoutError:
