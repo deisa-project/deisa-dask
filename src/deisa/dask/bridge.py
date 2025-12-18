@@ -30,7 +30,7 @@
 from typing import Any
 
 import numpy as np
-from deisa.common import validate_system_metadata, validate_arrays_metadata, IBridge
+from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge
 from distributed import Client, Queue, Variable, Lock
 from distributed.utils import TimeoutError
 

@@ -65,7 +65,7 @@ setup(name='deisa-dask',
       packages=find_namespace_packages(where='src', include=['deisa.dask']),
 
       install_requires=[
-          "deisa @ git+https://github.com/deisa-project/deisa@main",  # TODO set version when released
+          "deisa-core==0.1.0",
           'dask',
           'distributed'
       ],

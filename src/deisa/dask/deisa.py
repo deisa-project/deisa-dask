@@ -39,7 +39,7 @@ import dask
 import dask.array as da
 import numpy as np
 from dask.array import Array
-from deisa.common.interface import IDeisa, SupportsSlidingWindow
+from deisa.core.interface import IDeisa, SupportsSlidingWindow
 from distributed import Client, Future, Queue, Variable, Lock
 
 from deisa.dask.handshake import Handshake
