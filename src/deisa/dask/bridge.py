@@ -26,13 +26,18 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-
-from typing import Any
+import uuid
+from numbers import Number
+from typing import Any, Iterator
 
 import numpy as np
+from dask.tokenize import tokenize
 from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge
-from distributed import Client, Queue, Variable, Lock
+from distributed import Client, Queue, Variable, Lock, Future
+from distributed.protocol import to_serialize
 from distributed.utils import TimeoutError
+from distributed.utils_comm import scatter_to_workers
+from tlz import valmap
 
 from deisa.dask.deisa import LOCK_PREFIX, VARIABLE_PREFIX
 from deisa.dask.handshake import Handshake
@@ -76,6 +81,7 @@ class Bridge(IBridge):
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
         self.mpi_rank = id
         self.futures = []
+        self.workers = list(self.client.scheduler_info()["workers"].keys())
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
@@ -101,8 +107,8 @@ class Bridge(IBridge):
 
         assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
-        # TODO: select workers to send data to. self.client.scatter(data, direct=True, workers=self.workers)
-        f = self.client.scatter(data, direct=True)  # send data to workers
+        # TODO: select workers to send data to.
+        f = self.__better_scatter(data, workers=self.workers)   # send data to workers
 
         # TODO: this is a memory leak. Find a way to release the futures once they are used to build a dask array in the client code.
         self.futures.append(f)
@@ -133,3 +139,61 @@ class Bridge(IBridge):
                 if delete:
                     with Lock(f'{LOCK_PREFIX}{key}'):
                         Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
+
+    def __better_scatter(self, data: np.ndarray, workers=None, hash=True, asynchronous=None):
+        if workers is None:
+            raise ValueError("Must specify workers.")
+
+        return self.client.sync(
+            self.__scatter,
+            data,
+            workers=workers,
+            asynchronous=asynchronous,
+            hash=hash)
+
+    async def __scatter(self, data, workers=None, hash=True):
+        if isinstance(workers, (str, Number)):
+            workers = [workers]
+        if isinstance(data, type(range(0))):
+            data = list(data)
+
+        input_type = type(data)
+        names = False
+        unpack = False
+        if isinstance(data, Iterator):
+            data = list(data)
+        if isinstance(data, (set, frozenset)):
+            data = list(data)
+        if not isinstance(data, (dict, list, tuple, set, frozenset)):
+            unpack = True
+            data = [data]
+        if isinstance(data, (list, tuple)):
+            if hash:
+                names = [type(x).__name__ + "-" + tokenize(x) for x in data]
+            else:
+                names = [type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
+            data = dict(zip(names, data))
+
+        assert isinstance(data, dict)
+
+        types = valmap(type, data)
+        data2 = valmap(to_serialize, data)
+
+        _, who_has, nbytes = await scatter_to_workers(workers, data2, self.client.rpc)
+
+        # TODO: maybe the workers can update the scheduler ?
+        await self.client.scheduler.update_data(
+            who_has=who_has, nbytes=nbytes, client=self.client.id
+        )
+
+        out = {k: Future(k, self.client) for k in data}
+        for key, typ in types.items():
+            self.client.futures[key].finish(type=typ)
+
+        if issubclass(input_type, (list, tuple, set, frozenset)):
+            out = input_type(out[k] for k in names)
+
+        if unpack:
+            assert len(out) == 1
+            out = list(out.values())[0]
+        return out
