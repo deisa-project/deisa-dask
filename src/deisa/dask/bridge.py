@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -28,7 +28,7 @@
 # =============================================================================
 import uuid
 from numbers import Number
-from typing import Any, Iterator
+from typing import Any, Iterator, List
 
 import numpy as np
 from dask.tokenize import tokenize
@@ -80,12 +80,18 @@ class Bridge(IBridge):
         self.client: Client = self.system_metadata['connection']
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
         self.mpi_rank = id
-        self.futures = []
         self.workers = list(self.client.scheduler_info()["workers"].keys())
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
                   arrays_metadata=self.arrays_metadata, **kwargs)
+
+    def __del__(self):
+        self.client.close()
+        self.system_metadata.clear()
+
+    def close(self):
+        self.__del__()
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
         """
@@ -108,10 +114,7 @@ class Bridge(IBridge):
         assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
         # TODO: select workers to send data to.
-        f = self.__better_scatter(data, workers=self.workers)   # send data to workers
-
-        # TODO: this is a memory leak. Find a way to release the futures once they are used to build a dask array in the client code.
-        self.futures.append(f)
+        f = self._better_scatter(data, workers=self.workers)  # send data to workers
 
         to_send = {
             'rank': self.mpi_rank,
@@ -140,16 +143,15 @@ class Bridge(IBridge):
                     with Lock(f'{LOCK_PREFIX}{key}'):
                         Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
 
-    def __better_scatter(self, data: np.ndarray, workers=None, hash=True, asynchronous=None):
+    def _better_scatter(self, data: np.ndarray, workers: List[str] = None):
         if workers is None:
-            raise ValueError("Must specify workers.")
+            workers = self.workers
 
         return self.client.sync(
             self.__scatter,
             data,
             workers=workers,
-            asynchronous=asynchronous,
-            hash=hash)
+            hash=True)
 
     async def __scatter(self, data, workers=None, hash=True):
         if isinstance(workers, (str, Number)):
