@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -26,8 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-
-import asyncio
 
 from dask.distributed import Variable
 from distributed import Client, Future, get_client, Lock
@@ -134,10 +132,16 @@ class Handshake:
         return self.handshake_actor.get_max_bridges().result()
 
     def __get_handshake_actor(self) -> HandshakeActor:
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
-            try:
-                return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get(timeout=0).result()
-            except asyncio.exceptions.TimeoutError:
+        def check_variable(dask_scheduler, name):
+            ext = dask_scheduler.extensions["variables"]
+            v = ext.variables.get(name)
+            return v is not None
+
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+            is_set = self.client.run_on_scheduler(check_variable, name=Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE)
+            if is_set:
+                return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get().result()
+            else:
                 actor_future = self.client.submit(Handshake.HandshakeActor, actor=True)
                 Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).set(actor_future)
                 return actor_future.result()
