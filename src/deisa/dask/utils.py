@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2015-2023 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -27,63 +27,29 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 
-from setuptools import setup, find_namespace_packages
 
-def read_version():
-    ns = {}
-    with open("src/deisa/dask/__version__.py") as f:
-        exec(f.read(), ns)
-    return ns["__version__"]
+import os
 
-def readme():
-    with open('README.md', 'r') as f:
-        return f.read()
+from distributed import Client
 
 
-setup(name='deisa-dask',
-      version=read_version(),
+def get_connection_info(dask_scheduler_address: str | Client) -> Client:
+    if isinstance(dask_scheduler_address, Client):
+        client = dask_scheduler_address
+    elif isinstance(dask_scheduler_address, str):
+        try:
+            client = Client(address=dask_scheduler_address)
+        except ValueError:
+            # try scheduler_file
+            if os.path.isfile(dask_scheduler_address):
+                client = Client(scheduler_file=dask_scheduler_address)
+            else:
+                raise ValueError(
+                    "dask_scheduler_address must be a string containing the address of the scheduler, "
+                    "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+    else:
+        raise ValueError(
+            "dask_scheduler_address must be a string containing the address of the scheduler, "
+            "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
 
-      description='Deisa: Dask-Enabled In Situ Analytics',
-      long_description=readme(),
-      long_description_content_type='text/markdown',
-      license='MIT',
-
-      url='https://github.com/deisa-project/deisa-dask',
-      project_urls={
-          'Bug Reports': 'https://github.com/deisa-project/deisa-dask/issues',
-          'Source': 'https://github.com/deisa-project/deisa-dask',
-      },
-
-      author='Benoît Martin',
-      author_email='bmartin@cea.fr',
-
-      python_requires='>=3.10',
-
-      keywords='deisa in-situ',
-
-      package_dir={'': 'src'},
-      packages=find_namespace_packages(where='src', include=['deisa.dask']),
-
-      install_requires=[
-          "deisa-core==0.2.0",
-          'dask',
-          'distributed',
-          "toolz", # version constraint from distributed
-      ],
-
-      extras_require={
-          "test": [
-              "pytest",
-              "pytest-xdist",
-              "numpy",
-          ]
-      },
-      test_suite='test',
-
-      classifiers=[
-          "Programming Language :: Python :: 3.10",
-          "License :: OSI Approved :: MIT License",
-          "Operating System :: OS Independent",
-          "Development Status :: 3 - Alpha"
-      ]
-      )
+    return client
