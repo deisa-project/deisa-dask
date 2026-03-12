@@ -151,7 +151,7 @@ class Bridge(IBridge):
             self.__scatter,
             data,
             workers=workers,
-            hash=True)
+            hash=False)
 
     async def __scatter(self, data, workers=None, hash=True):
         if isinstance(workers, (str, Number)):
