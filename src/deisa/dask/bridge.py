@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge
-from distributed import Client, Queue, Variable, Lock
+from distributed import Client, Variable, Lock, fire_and_forget
 from distributed.utils import TimeoutError
 
 from deisa.dask.deisa import LOCK_PREFIX, VARIABLE_PREFIX
@@ -78,8 +78,10 @@ class Bridge(IBridge):
         self.futures = []
 
         # blocking until analytics is ready
-        Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
-                  arrays_metadata=self.arrays_metadata, **kwargs)
+        handshake = Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
+                              arrays_metadata=self.arrays_metadata, **kwargs)
+
+        self.pubsub_actor = handshake.get_pubsub_actor()
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
         """
@@ -104,19 +106,18 @@ class Bridge(IBridge):
         # TODO: select workers to send data to. self.client.scatter(data, direct=True, workers=self.workers)
         f = self.client.scatter(data, direct=True)  # send data to workers
 
-        # TODO: this is a memory leak. Find a way to release the futures once they are used to build a dask array in the client code.
-        self.futures.append(f)
+        fire_and_forget(f)  # don't release the future
 
         to_send = {
+            'array_name': array_name,
             'rank': self.mpi_rank,
             'shape': data.shape,
-            'dtype': data.dtype,
+            'dtype': str(data.dtype),
             'iteration': iteration,
-            'future': f
+            'future': f.key
         }
 
-        q = Queue(array_name, client=self.client)
-        q.put(to_send)
+        self.pubsub_actor.publish(to_send)
 
         # TODO: what to do if error ?
 

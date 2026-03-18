@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -32,8 +32,7 @@ import collections
 import gc
 import sys
 import threading
-import traceback
-from typing import Callable, Union, Tuple, List, Final, Literal
+from typing import Callable, Union, Tuple, List, Final, Literal, Any
 
 import dask
 import dask.array as da
@@ -72,14 +71,42 @@ class Deisa(IDeisa):
 
         self.mpi_comm_size = handshake.get_nb_bridges()
         self.arrays_metadata = handshake.get_arrays_metadata()
+        self.pubsub_actor = handshake.get_pubsub_actor()
+
+        self.received_metadata = dict[str, list[dict[str, Any]]]()  # array_name: list[metadata]
+        self.current_sliding_windows = {}
+
+        # example of arrays_metadata:
+        # arrays_metadata = {
+        #     'global_t': {
+        #         'size': [20, 20],
+        #         'subsize': [10, 10],
+        #         'sliding_window_callbacks': {}
+        #     }
+        #     'global_p': {
+        #         'size': [100, 100],
+        #         'subsize': [50, 50],
+        #         'sliding_window_callbacks': {}
+        #     }
+
         self.sliding_window_callback_threads: dict[str, threading.Thread] = {}
         self.sliding_window_callback_thread_lock = threading.Lock()
 
     def __del__(self):
-        if hasattr(self, 'sliding_window_callback_threads'):  # may not be the case if an exception is thrown in ctor
-            for thread in self.sliding_window_callback_threads.values():
-                self.__stop_join_thread(thread)
-            gc.collect()
+        print("Deisa.__del__", flush=True)
+
+        try:
+
+            if hasattr(self,
+                       'sliding_window_callback_threads'):  # may not be the case if an exception is thrown in ctor
+                for thread in self.sliding_window_callback_threads.values():
+                    self.__stop_join_thread(thread)
+                gc.collect()
+
+        except Exception as e:
+            print(f"Exception in Deisa.__del__: {e}", file=sys.stderr, flush=True)
+
+        print("Deisa.__del__ done", flush=True)
 
     @staticmethod
     def __stop_join_thread(thread: threading.Thread):
@@ -98,8 +125,6 @@ class Deisa(IDeisa):
     def get_array(self, name: str, timeout=None) -> tuple[Array, int]:
         """Retrieve a Dask array for a given array name."""
 
-        # if self.arrays_metadata is None:
-        #     self.arrays_metadata = Queue("Arrays", client=self.client).get(timeout=timeout)
         # arrays_metadata will look something like this:
         # arrays_metadata = {
         #     'global_t': {
@@ -111,8 +136,17 @@ class Deisa(IDeisa):
         #         'subsize': [50, 50]
         #     }
 
-        if self.arrays_metadata.get(name) is None:
+        if name not in self.arrays_metadata:
             raise ValueError(f"Array '{name}' is not known.")
+
+        titi = self.client.get_events(name)
+        events = self.client.get_events(name)
+        if len(events) > 0:
+            print(f"events: {events}", flush=True)
+
+        else:
+            print(f"no events", flush=True)
+            # TODO
 
         res = []
         iteration = 0
@@ -197,7 +231,7 @@ class Deisa(IDeisa):
                                                 parsed: List[Tuple[str, int]],
                                                 *,
                                                 exception_handler: SupportsSlidingWindow.ExceptionHandler,
-                                                when: str) -> str:
+                                                when: Literal['AND', 'OR']) -> str:
         """
         Supports:
           - (callback, "array_name", window_size=K)
@@ -211,58 +245,102 @@ class Deisa(IDeisa):
             if array_name not in self.arrays_metadata:
                 raise ValueError(f'unknown array name: {array_name}')
 
-        def queue_watcher(arrays: List[Tuple[str, int]]):
-            current_windows = {}
-            for arr_name, window_size in arrays:
-                current_windows[arr_name] = {
-                    'window': collections.deque(maxlen=window_size),
-                    'changed': False,
+        for arr_name, window_size in parsed:
+            if arr_name not in self.current_sliding_windows:
+                self.current_sliding_windows[arr_name] = {
+                    "window": collections.deque(maxlen=window_size),
+                    "changed": False,
                 }
 
-            t = threading.current_thread()
-            while not getattr(t, "stop", False):
-                for arr_name, d in current_windows.items():
-                    try:
-                        darr, iteration = self.get_array(arr_name, timeout='1s')
-                        d['window'].append(darr)
-                        d['changed'] = True
-                        windows = [list(dd['window']) for dd in current_windows.values()]
+        async def topic_handler(event):
+            """
+            Runs when the aggregator publishes a COMPLETE iteration
+            (possibly multiple arrays depending on AND/OR).
+            """
+            try:
+                _, payload = event
+                print(f"topic_handler: {payload}", flush=True)
 
-                        if when == 'OR':
-                            callback(*windows, timestep=iteration)
-                            d['changed'] = False
-                        else:  # AND
-                            if all(dd['changed'] for dd in current_windows.values()):
-                                callback(*windows, timestep=iteration)
-                                for dd in current_windows.values():
-                                    dd['changed'] = False
+                iteration = payload["iteration"]
+                when = payload["when"]
+                arrays_payload = payload["arrays"]
 
-                    except TimeoutError:
-                        pass
-                    except BaseException as e:
-                        setattr(t, "exception", (e, traceback.format_exc()))
-                        try:
-                            exception_handler(arr_name, e)
-                        except BaseException:
-                            with self.sliding_window_callback_thread_lock:
-                                print(
-                                    f"Exception thrown in exception handler for {arr_name}. "
-                                    f"Unregistering callback.",
-                                    file=sys.stderr,
-                                )
-                                self.unregister_sliding_window_callback(arr_name)
+                # ---- reconstruct all arrays in this event ----
+                reconstructed = {}
 
-        callback_id = self.__get_callback_id(*parsed)
-        if callback_id not in self.sliding_window_callback_threads:
-            thread = threading.Thread(
-                target=queue_watcher,
-                name=f"{SLIDING_WINDOW_THREAD_PREFIX}{callback_id}",
-                args=(parsed,),
-            )
-            self.sliding_window_callback_threads[callback_id] = thread
-            thread.start()
+                for array_name, metadata in arrays_payload.items():
+                    parts = metadata["parts"]
 
-        return callback_id
+                    # deterministic ordering
+                    parts = sorted(parts, key=lambda p: p["rank"])
+
+                    darr_chunks = [
+                        da.from_delayed(
+                            dask.delayed(Future(p["future"], client=self.client)),
+                            p["shape"],
+                            dtype=p["dtype"],
+                        )
+                        for p in parts
+                    ]
+
+                    darr = self.__tile_dask_blocks(
+                        darr_chunks,
+                        self.arrays_metadata[array_name]["size"]
+                    )
+
+                    reconstructed[array_name] = darr
+
+                    # ---- update sliding window ----
+                    d = self.current_sliding_windows[array_name]
+                    d["window"].append(darr)
+                    d["changed"] = True
+
+                    print(f"[ITER {iteration}] {array_name} shape={darr.shape}", flush=True)
+
+                # ---- build windows snapshot (ordered!) ----
+                # IMPORTANT: keep consistent ordering across calls
+                ordered_array_names = list(self.current_sliding_windows.keys())
+
+                windows = [
+                    list(self.current_sliding_windows[name]["window"])
+                    for name in ordered_array_names
+                ]
+
+                # ---- trigger callback ----
+                if when == "OR":
+                    callback(*windows, timestep=iteration)
+
+                    # reset only arrays that changed in this event
+                    for name in reconstructed:
+                        self.current_sliding_windows[name]["changed"] = False
+
+                else:  # AND
+                    if all(self.current_sliding_windows[name]["changed"] for name in ordered_array_names):
+                        callback(*windows, timestep=iteration)
+
+                        for name in ordered_array_names:
+                            self.current_sliding_windows[name]["changed"] = False
+
+            except BaseException as e:
+                try:
+                    # safer: array_name may not exist if failure early
+                    exception_handler("unknown", e)
+                except BaseException:
+                    import sys
+                    print(
+                        "Exception thrown in exception handler",
+                        file=sys.stderr
+                    )
+
+        # register with pubsub actor
+        array_names = self.__get_array_names(*parsed)
+        topic = self.pubsub_actor.register_callback(array_names, when).result()
+
+        print(f"Registering callback for topic={topic}", flush=True)
+        # register with scheduler to be called when arrays are ready
+        self.client.subscribe_topic(topic, topic_handler)
+
+        return topic
 
     def unregister_sliding_window_callback(self, *array_names: Callback_args) -> None:
         """
@@ -275,7 +353,7 @@ class Deisa(IDeisa):
         :return: None
         """
 
-        callback_id = self.__get_callback_id(*array_names)
+        callback_id = self.__get_array_names(*array_names)
         thread = self.sliding_window_callback_threads.pop(callback_id, None)
         if thread:
             self.__stop_join_thread(thread)
@@ -354,7 +432,7 @@ class Deisa(IDeisa):
         return da.block(nested)
 
     @staticmethod
-    def __get_callback_id(*callback_args: Callback_args) -> str:
+    def __get_array_names(*callback_args: Callback_args) -> List[str]:
         """Flatten callback_args to a tuple of array names."""
         array_names = []
         for arg in callback_args:
@@ -370,4 +448,95 @@ class Deisa(IDeisa):
                         "Tuple callback_args must be either (array_name,) or (array_name, window_size: int)")
             else:
                 raise TypeError("callback_args must be str or a tuple")
-        return str(array_names)
+        return array_names
+
+    @staticmethod
+    def __in_client_loop(client):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        return loop is client.loop.asyncio_loop
+
+    @staticmethod
+    def run_task_sync(coro, loop):
+        container = {}
+        done = threading.Event()
+
+        def callback():
+            task = asyncio.create_task(coro)
+
+            async def wrapper():
+                try:
+                    container['result'] = await task
+                finally:
+                    done.set()
+
+            asyncio.create_task(wrapper())
+
+        loop.call_soon_threadsafe(callback)
+        done.wait()
+        return container.get('result')
+
+    # async def topic_handler(event):
+    #     """
+    #     Runs when the bridge publishes an event.
+    #     """
+    #     try:
+    #         # metadata = {
+    #         #     'array_name': array_name,
+    #         #     'rank': self.mpi_rank,
+    #         #     'shape': data.shape,
+    #         #     'dtype': str(data.dtype),
+    #         #     'iteration': iteration,
+    #         #     'future': f.key
+    #         # }
+    #         _, metadata = event
+    #         array_name = metadata['array_name']
+    #
+    #         if 'array_name' not in metadata:
+    #             raise ValueError(f"Metadata must contain 'array_name' key.")
+    #
+    #         if array_name not in self.received_metadata:
+    #             self.received_metadata[array_name] = []
+    #
+    #         received_array_metadata = self.received_metadata[array_name]
+    #
+    #         received_array_metadata.append(metadata)
+    #
+    #         # will return None if did not receive all the chunks
+    #         res = await self.__get_array(array_name, received_array_metadata)
+    #         if res:
+    #             darr, iteration = res
+    #             assert isinstance(darr, Array), "darr must be a Dask array."
+    #             assert isinstance(iteration, int), "iteration must be an integer."
+    #
+    #             print(f"__get_array: {darr.shape=}, {iteration=}", flush=True)
+    #
+    #             # remove iteration from received_metadata
+    #             self.received_metadata[array_name] = [m for m in received_array_metadata if
+    #                                                   m["iteration"] != iteration]
+    #
+    #             d = self.current_sliding_windows[array_name]
+    #             d["window"].append(darr)
+    #             d["changed"] = True
+    #
+    #             # convert deque to list
+    #             windows = [list(dd["window"]) for dd in self.current_sliding_windows.values()]
+    #
+    #             if when == "OR":
+    #                 callback(*windows, timestep=iteration)
+    #                 d["changed"] = False
+    #
+    #             else:  # AND
+    #                 if all(dd["changed"] for dd in self.current_sliding_windows.values()):
+    #                     callback(*windows, timestep=iteration)
+    #                     for dd in self.current_sliding_windows.values():
+    #                         dd["changed"] = False
+    #
+    #     except BaseException as e:
+    #         try:
+    #             exception_handler(arr_name, e)
+    #         except BaseException:
+    #             print(f"Exception thrown in exception handler for {arr_name}", file=sys.stderr)

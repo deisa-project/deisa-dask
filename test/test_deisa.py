@@ -322,6 +322,8 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
+        time.sleep(1)  # wait for bridges and deisa to be ready
+
         context = {
             'counter': 0
         }
@@ -393,6 +395,8 @@ class TestUsingDaskCluster:
                              },
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(1)  # wait for bridges and deisa to be ready
 
         context = {
             'counter': 0
