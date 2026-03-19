@@ -31,6 +31,7 @@ import os.path
 import random
 import sys
 import time
+from typing import List
 
 import dask
 import dask.array as da
@@ -322,7 +323,7 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
-        time.sleep(1)  # wait for bridges and deisa to be ready
+        time.sleep(.2)  # wait for bridges and deisa to be ready
 
         context = {
             'counter': 0
@@ -396,13 +397,13 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
-        time.sleep(1)  # wait for bridges and deisa to be ready
+        time.sleep(.2)  # wait for bridges and deisa to be ready
 
         context = {
             'counter': 0
         }
-
-        def window_callback(temperatures: list[da.Array], pressures: list[da.Array], timestep: int):
+        # def __call__(self, *window: List[da.Array], timestep: int) -> None: ...
+        def window_callback(temperatures: List[da.Array], pressures: List[da.Array], timestep: int):
             print(f"hello from window_callback. iteration={timestep}", flush=True)
             context['counter'] += 1
             context['latest_timestep'] = timestep

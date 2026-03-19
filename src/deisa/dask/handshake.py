@@ -30,7 +30,7 @@
 from dask.distributed import Variable
 from distributed import Client, Future, get_client, Lock
 
-from deisa.dask.pubsub import get_pubsub_actor
+from deisa.dask.pubsub import get_pubsub_actor, PubSubActor
 
 
 class Handshake:
@@ -101,13 +101,14 @@ class Handshake:
             raise ValueError("Expecting 'bridge' or 'deisa'.")
 
         self.pubsub_actor = get_pubsub_actor(self.client, nb_bridges=self.get_nb_bridges())
+        assert self.pubsub_actor is not None
 
     def start_bridge(self, id: int, max: int, arrays_metadata: dict, wait_for_go=True) -> None:
         """
         Bridge must wait for analytics to be ready.
         """
         assert self.handshake_actor is not None
-        self.handshake_actor.add_bridge(id, max)
+        self.handshake_actor.add_bridge(id, max).result()
 
         if id == 0:
             self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
@@ -121,7 +122,7 @@ class Handshake:
         When analytics is ready, notify all Bridges
         """
         assert self.handshake_actor is not None
-        self.handshake_actor.set_analytics_ready()
+        self.handshake_actor.set_analytics_ready().result()
 
         # wait for go
         if wait_for_go:
@@ -153,5 +154,6 @@ class Handshake:
     def __wait_for_go(self) -> None:
         Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).get()
 
-    def get_pubsub_actor(self):
+    def get_pubsub_actor(self) -> PubSubActor:
+        assert self.pubsub_actor is not None
         return self.pubsub_actor

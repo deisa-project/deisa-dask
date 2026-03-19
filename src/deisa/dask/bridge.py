@@ -117,7 +117,7 @@ class Bridge(IBridge):
             'future': f.key
         }
 
-        self.pubsub_actor.publish(to_send)
+        self.pubsub_actor.publish(to_send).result()
 
         # TODO: what to do if error ?
 
