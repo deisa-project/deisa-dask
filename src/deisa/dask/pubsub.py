@@ -26,8 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-
-
+import asyncio
 from collections import defaultdict, deque
 from typing import Dict, Tuple
 from typing import List
@@ -57,16 +56,8 @@ class PubSubActor:
 
         self.available_iterations = defaultdict(set)
         self.emitted = set()
+        self._conditions = defaultdict(asyncio.Condition)
 
-    # -------------------------
-    # Topic helper
-    # -------------------------
-    def _make_topic(self, arrays, when) -> str:
-        return f"{when}|" + "|".join(sorted(arrays))
-
-    # -------------------------
-    # Publish
-    # -------------------------
     async def publish(self, msg: dict):
         array_name = msg["array_name"]
         iteration = msg["iteration"]
@@ -90,6 +81,11 @@ class PubSubActor:
             self.completed[array_name].append((iteration, aggregated))
             self.available_iterations[array_name].add(iteration)
 
+            # notify waiters
+            cond = self._conditions[array_name]
+            async with cond:
+                cond.notify_all()
+
             del self.partial_metadata[array_name][iteration]
 
             await self._maybe_trigger_callbacks(array_name, iteration)
@@ -106,14 +102,15 @@ class PubSubActor:
             "parts": parts,
         }
 
-    # -------------------------
-    # Register callbacks
-    # -------------------------
+    @staticmethod
+    def make_topic(arrays, when) -> str:
+        return f"{when}|" + "|".join(sorted(arrays))
+
     async def register_callback(self, arrays: List[str], when) -> str:
         """
         when can be none is arrays contains only one array
         """
-        topic = self._make_topic(arrays, when)
+        topic = self.make_topic(arrays, when)
         self.callbacks[topic] = {
             "arrays": sorted(arrays),
             "when": when,
@@ -123,9 +120,6 @@ class PubSubActor:
     async def unregister_callback(self, topic: str):
         self.callbacks.pop(topic, None)
 
-    # -------------------------
-    # Callback logic
-    # -------------------------
     async def _maybe_trigger_callbacks(self, array_name, iteration):
         for topic, cb in self.callbacks.items():
             arrays = cb["arrays"]
@@ -158,12 +152,10 @@ class PubSubActor:
                     payload["arrays"][a] = data
                     break
 
+        # send to the scheduler. This will trigger the topic handler, which contains the user's callback
         print(f"log_event topic={topic} iteration={iteration}", flush=True)
         await self.client.log_event(topic, payload)
 
-    # -------------------------
-    # Polling API (unchanged)
-    # -------------------------
     async def subscribe(self, topic: str, subscriber_id: str):
         if self.completed[topic]:
             last_iter = self.completed[topic][-1][0]
@@ -172,30 +164,49 @@ class PubSubActor:
 
         self.offsets[(topic, subscriber_id)] = last_iter + 1
 
-    async def get_since(self, topic: str, subscriber_id: str):
-        key = (topic, subscriber_id)
+    async def get(self, array_name: str, iteration: int = None):
+        """
+        Blocking get:
+          - if iteration is provided → wait until that iteration is available
+          - otherwise → wait for next completed iteration
+        """
 
-        if key not in self.offsets:
-            raise ValueError("Not subscribed")
+        if array_name not in self.completed:
+            raise ValueError(f"array_name {array_name} not found")
 
-        last_iter = self.offsets[key]
+        cond = self._conditions[array_name]
 
-        results = [
-            data
-            for it, data in self.completed[topic]
-            if it >= last_iter
-        ]
+        # retrieve specific iteration
+        if iteration is not None:
+            async with cond:
+                while True:
+                    for it, data in self.completed[array_name]:
+                        if it == iteration:
+                            return data
 
-        if self.completed[topic]:
-            self.offsets[key] = self.completed[topic][-1][0] + 1
+                    # detect eviction
+                    if self.completed[array_name]:
+                        oldest = self.completed[array_name][0][0]
+                        if iteration < oldest:
+                            raise ValueError(f"Iteration {iteration} has been evicted (oldest={oldest})")
 
-        return results
+                    await cond.wait()
 
-    async def get_iteration(self, topic: str, iteration: int):
-        for it, data in self.completed[topic]:
-            if it == iteration:
-                return data
-        return None
+        # No iteration specified, wait for the next iteration
+        async with cond:
+            if self.completed[array_name]:
+                last_seen = self.completed[array_name][-1][0]
+            else:
+                last_seen = -1
+
+            while True:
+                if self.completed[array_name]:
+                    latest_it, data = self.completed[array_name][-1]
+
+                    if latest_it > last_seen:
+                        return data
+
+                await cond.wait()
 
 
 def get_pubsub_actor(client: Client, *args, **kwargs) -> PubSubActor:
@@ -212,7 +223,3 @@ def get_pubsub_actor(client: Client, *args, **kwargs) -> PubSubActor:
             actor_future = client.submit(PubSubActor, *args, **kwargs, actor=True)
             Variable(PubSubActor.DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE, client=client).set(actor_future)
             return actor_future.result()
-
-
-def get_topic_key(array_names: List[str], when: str) -> str:
-    return str({'arrays': sorted(array_names), 'when': when})

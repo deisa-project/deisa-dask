@@ -43,7 +43,6 @@ from distributed import Client, Future, Queue, Variable, Lock
 
 from deisa.dask.handshake import Handshake
 
-SLIDING_WINDOW_THREAD_PREFIX: Final[str] = "deisa_sliding_window_callback_"
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
@@ -51,6 +50,7 @@ DEFAULT_SLIDING_WINDOW_SIZE: int = 1
 
 class Deisa(IDeisa):
     Callback_args = Union[str, Tuple[str], Tuple[str, int]]  # array_name, window_size
+    Callback_id = str
 
     def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
         """
@@ -89,40 +89,13 @@ class Deisa(IDeisa):
         #         'sliding_window_callbacks': {}
         #     }
 
-        self.sliding_window_callback_threads: dict[str, threading.Thread] = {}
-        self.sliding_window_callback_thread_lock = threading.Lock()
-
     def __del__(self):
         print("Deisa.__del__", flush=True)
-
-        try:
-
-            if hasattr(self,
-                       'sliding_window_callback_threads'):  # may not be the case if an exception is thrown in ctor
-                for thread in self.sliding_window_callback_threads.values():
-                    self.__stop_join_thread(thread)
-                gc.collect()
-
-        except Exception as e:
-            print(f"Exception in Deisa.__del__: {e}", file=sys.stderr, flush=True)
-
-        print("Deisa.__del__ done", flush=True)
-
-    @staticmethod
-    def __stop_join_thread(thread: threading.Thread):
-        thread.stop = True
-        thread.join()
-
-        # exc = getattr(thread, "exception", None)
-        # if exc:
-        #     # print(f"Exception encountered: {exc['traceback']}", file=sys.stderr, flush=True)
-        #     # raise exc['exception']
-        #     pass
 
     def close(self):
         self.__del__()
 
-    def get_array(self, name: str, timeout=None) -> tuple[Array, int]:
+    def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
         """Retrieve a Dask array for a given array name."""
 
         # arrays_metadata will look something like this:
@@ -139,40 +112,38 @@ class Deisa(IDeisa):
         if name not in self.arrays_metadata:
             raise ValueError(f"Array '{name}' is not known.")
 
-        titi = self.client.get_events(name)
-        events = self.client.get_events(name)
-        if len(events) > 0:
-            print(f"events: {events}", flush=True)
+        payload = self.pubsub_actor.get(array_name=name, iteration=iteration).result()
+        iteration = payload["iteration"]
+        # array_name = payload["array_name"]
+        parts = payload["parts"]
 
-        else:
-            print(f"no events", flush=True)
-            # TODO
+        parts = sorted(parts, key=lambda p: p["rank"])
 
-        res = []
-        iteration = 0
-        l = self.client.sync(self.__get_all_chunks, Queue(name, client=self.client),
-                             self.mpi_comm_size, timeout=timeout)
-        for m in l:
-            assert type(m) is dict, "Metadata must be a dictionary."
-            assert type(m['future']) is Future, "Data future must be a Dask future."
-            m['da'] = da.from_delayed(dask.delayed(m['future']), m['shape'], dtype=m['dtype'])
-            res.append(m)
-            iteration = m['iteration']
+        darr_chunks = [
+            da.from_delayed(
+                dask.delayed(Future(p["future"], client=self.client)),
+                p["shape"],
+                dtype=p["dtype"],
+            )
+            for p in parts
+        ]
 
-        # create dask array from blocks
-        res.sort(key=lambda x: x['rank'])  # sort by mpi rank
-        chunks = [item['da'] for item in res]  # extract ordered dask arrays
-        darr = self.__tile_dask_blocks(chunks, self.arrays_metadata[name]['size'])
+        darr = self.__tile_dask_blocks(
+            darr_chunks,
+            self.arrays_metadata[name]["size"]
+        )
+
+        print(f"[ITER {iteration}] {name} shape={darr.shape}", flush=True)
         return darr, iteration
 
     @staticmethod
-    def __default_exception_handler(array_name, e):
-        print(f"Exception from {array_name} thread: {e}", file=sys.stderr, flush=True)
+    def __default_exception_handler(callback_id: Callback_id, e):
+        print(f"Exception thrown for callback id {callback_id}: {e}", file=sys.stderr, flush=True)
 
     def register_sliding_window_callback(self,
                                          callback: SupportsSlidingWindow.Callback,
                                          array_name: str, window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
-                                         exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler) -> str:
+                                         exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler) -> Callback_id:
         """
         Register a sliding-window callback for a single array.
         """
@@ -187,7 +158,7 @@ class Deisa(IDeisa):
                                           callback: SupportsSlidingWindow.Callback,
                                           *callback_args: Callback_args,
                                           exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
-                                          when: Literal['AND', 'OR'] = 'AND') -> str:
+                                          when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
         """
         Register a sliding-window callback for one or more arrays.
 
@@ -231,7 +202,7 @@ class Deisa(IDeisa):
                                                 parsed: List[Tuple[str, int]],
                                                 *,
                                                 exception_handler: SupportsSlidingWindow.ExceptionHandler,
-                                                when: Literal['AND', 'OR']) -> str:
+                                                when: Literal['AND', 'OR']) -> Callback_id:
         """
         Supports:
           - (callback, "array_name", window_size=K)
@@ -342,21 +313,14 @@ class Deisa(IDeisa):
 
         return topic
 
-    def unregister_sliding_window_callback(self, *array_names: Callback_args) -> None:
-        """
-        Unregisters a sliding window callback for the specified array name. This method removes the
-        callback thread associated with the array name. If the thread exists, it stops the thread and waits
-        for it to finish execution.
-
-        :param array_name: The name of the array for which the sliding window callback is to be unregistered.
-            Must be a string.
-        :return: None
-        """
-
-        callback_id = self.__get_array_names(*array_names)
-        thread = self.sliding_window_callback_threads.pop(callback_id, None)
-        if thread:
-            self.__stop_join_thread(thread)
+    def unregister_sliding_window_callback(self, callback_id: Callback_id) -> None:
+        # unregister from pubsub actor
+        self.pubsub_actor.unregister_callback(callback_id).result()
+        try:
+            # unregister from scheduler. The topic handler will no longer be called.
+            self.client.unsubscribe_topic(callback_id)
+        except ValueError:
+            pass
 
     def set(self, key: str, data: Union[Future, object], chunked=False):
         if chunked:
