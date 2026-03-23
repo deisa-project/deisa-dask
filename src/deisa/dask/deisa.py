@@ -228,6 +228,12 @@ class Deisa(IDeisa):
             Runs when the aggregator publishes a COMPLETE iteration
             (possibly multiple arrays depending on AND/OR).
             """
+            def call_callback(callback, *args, **kwargs):
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(*args, **kwargs))
+                else:
+                    callback(*args, **kwargs)
+
             try:
                 _, payload = event
                 print(f"topic_handler: {payload}", flush=True)
@@ -279,7 +285,7 @@ class Deisa(IDeisa):
 
                 # ---- trigger callback ----
                 if when == "OR":
-                    callback(*windows, timestep=iteration)
+                    call_callback(callback, *windows, timestep=iteration)
 
                     # reset only arrays that changed in this event
                     for name in reconstructed:
@@ -287,7 +293,7 @@ class Deisa(IDeisa):
 
                 else:  # AND
                     if all(self.current_sliding_windows[name]["changed"] for name in ordered_array_names):
-                        callback(*windows, timestep=iteration)
+                        call_callback(callback, *windows, timestep=iteration)
 
                         for name in ordered_array_names:
                             self.current_sliding_windows[name]["changed"] = False

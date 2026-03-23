@@ -647,13 +647,15 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
+        time.sleep(.2)
+
         def map_block_function(block, block_info=None):
             print("map_block_function() block_info=" + str(block_info), flush=True)
             return np.array([[1]])
 
         context = {'counter': 0}
 
-        def window_callback(window: list[da.Array], timestep: int):
+        async def window_callback(window: list[da.Array], timestep: int):
             print(f"hello from window_callback. iteration={timestep}", flush=True)
 
             darr = window[-1]
@@ -663,15 +665,17 @@ class TestUsingDaskCluster:
                                       global_grid_size[1] // mpi_parallelism[1])
 
             meta = np.array([[0]])
-            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
+            res = darr.map_blocks(map_block_function, dtype=int, meta=meta)
+            res = client.compute(res)
+            res = await res
 
             context['counter'] += res.sum()
 
-        def exception_handler(array_name, e):
-            print(f"exception_handler. array_name={array_name}, e={e}", flush=True, file=sys.stderr)
+        def exception_handler(callback_id, e: Exception):
+            print(f"exception_handler. callback_id={callback_id}, e={e}", flush=True, file=sys.stderr)
             # pytest.fail(str(e))   # TODO
 
-        deisa.register_sliding_window_callback(window_callback, "my_array",
+        deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                window_size=1,
                                                exception_handler=exception_handler)
 
