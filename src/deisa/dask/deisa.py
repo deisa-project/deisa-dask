@@ -75,6 +75,7 @@ class Deisa(IDeisa):
 
         self.received_metadata = dict[str, list[dict[str, Any]]]()  # array_name: list[metadata]
         self.current_sliding_windows = {}
+        self._variables = {}
 
         # example of arrays_metadata:
         # arrays_metadata = {
@@ -91,6 +92,7 @@ class Deisa(IDeisa):
 
     def __del__(self):
         print("Deisa.__del__", flush=True)
+        self.client.close()
 
     def close(self):
         self.__del__()
@@ -112,7 +114,7 @@ class Deisa(IDeisa):
         if name not in self.arrays_metadata:
             raise ValueError(f"Array '{name}' is not known.")
 
-        payload = self.pubsub_actor.get(array_name=name, iteration=iteration).result()
+        payload = self.pubsub_actor.get_array(array_name=name, iteration=iteration).result()
         iteration = payload["iteration"]
         # array_name = payload["array_name"]
         parts = payload["parts"]
@@ -223,6 +225,10 @@ class Deisa(IDeisa):
                     "changed": False,
                 }
 
+        # register with pubsub actor
+        array_names = self.__get_array_names(*parsed)
+        callback_id = self.pubsub_actor.register_callback(array_names, when).result()
+
         async def topic_handler(event):
             """
             Runs when the aggregator publishes a COMPLETE iteration
@@ -236,7 +242,7 @@ class Deisa(IDeisa):
 
             try:
                 _, payload = event
-                print(f"topic_handler: {payload}", flush=True)
+                print(f"[Deisa] topic_handler(): {payload}", flush=True)
 
                 iteration = payload["iteration"]
                 when = payload["when"]
@@ -267,15 +273,12 @@ class Deisa(IDeisa):
 
                     reconstructed[array_name] = darr
 
-                    # ---- update sliding window ----
+                    # update sliding window
                     d = self.current_sliding_windows[array_name]
                     d["window"].append(darr)
                     d["changed"] = True
 
-                    print(f"[ITER {iteration}] {array_name} shape={darr.shape}", flush=True)
-
-                # ---- build windows snapshot (ordered!) ----
-                # IMPORTANT: keep consistent ordering across calls
+                # keep consistent ordering across calls
                 ordered_array_names = list(self.current_sliding_windows.keys())
 
                 windows = [
@@ -283,7 +286,7 @@ class Deisa(IDeisa):
                     for name in ordered_array_names
                 ]
 
-                # ---- trigger callback ----
+                # trigger callback
                 if when == "OR":
                     call_callback(callback, *windows, timestep=iteration)
 
@@ -301,43 +304,37 @@ class Deisa(IDeisa):
             except BaseException as e:
                 try:
                     # safer: array_name may not exist if failure early
-                    exception_handler("unknown", e)
+                    exception_handler(callback_id, e)
                 except BaseException:
-                    import sys
-                    print(
-                        "Exception thrown in exception handler",
-                        file=sys.stderr
-                    )
+                    print(f"Exception thrown in exception handler. Unregistering callback id {callback_id}",
+                          file=sys.stderr, flush=True)
+                    self.unregister_sliding_window_callback(callback_id)
 
-        # register with pubsub actor
-        array_names = self.__get_array_names(*parsed)
-        topic = self.pubsub_actor.register_callback(array_names, when).result()
-
-        print(f"Registering callback for topic={topic}", flush=True)
+        print(f"[Deisa] _register_sliding_window_callbacks_impl() for callback_id={callback_id}", flush=True)
         # register with scheduler to be called when arrays are ready
-        self.client.subscribe_topic(topic, topic_handler)
+        self.client.subscribe_topic(callback_id, topic_handler)
 
-        return topic
+        return callback_id
 
     def unregister_sliding_window_callback(self, callback_id: Callback_id) -> None:
-        # unregister from pubsub actor
-        self.pubsub_actor.unregister_callback(callback_id).result()
         try:
+            # unregister from pubsub actor
+            # self.pubsub_actor.unregister_callback(callback_id).result()   # TODO: why does this sometimes hang ?
             # unregister from scheduler. The topic handler will no longer be called.
             self.client.unsubscribe_topic(callback_id)
-        except ValueError:
+        except BaseException:
             pass
 
     def set(self, key: str, data: Union[Future, object], chunked=False):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            with Lock(f'{LOCK_PREFIX}{key}'):
-                Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).set(data)
+            key = f"{VARIABLE_PREFIX}{key}"
+            self.pubsub_actor.set(key, data)
 
-    def delete(self, key: str) -> None:
-        with Lock(f'{LOCK_PREFIX}{key}'):
-            Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
+    def delete(self, key: str):
+        key = f"{VARIABLE_PREFIX}{key}"
+        self.pubsub_actor.delete(key)
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:

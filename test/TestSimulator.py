@@ -94,7 +94,7 @@ class TestSimulation:
 
             if send_order_fn is None:
                 for i, bridge in enumerate(self.bridges):
-                    print(f"sending data for array={array_name} to bridge id={bridge.mpi_rank}")
+                    print(f"[TestSimulator] generate_data for array={array_name} to bridge id={bridge.mpi_rank}")
                     bridge.send(array_name, chunks[i], iteration)
             else:
                 send_order = send_order_fn(chunks)

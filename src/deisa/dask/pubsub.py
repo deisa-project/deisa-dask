@@ -28,7 +28,7 @@
 # =============================================================================
 import asyncio
 from collections import defaultdict, deque
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any
 from typing import List
 
 from dask.distributed import get_client, Client
@@ -39,11 +39,13 @@ class PubSubActor:
     DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE = 'deisa_pubsub_actor_future'
 
     def __init__(self, nb_bridges: int, maxlen: int = 10):
-        print(f"pubsub: init {nb_bridges} {maxlen}", flush=True)
+        print(f"[PubSubActor] __init__(nb_bridges={nb_bridges}, maxlen={maxlen})", flush=True)
 
         self.client: Client = get_client()
         self.nb_bridges = nb_bridges
         self.maxlen = maxlen
+
+        self.kvs = defaultdict(None)
 
         self.partial_metadata = defaultdict(lambda: defaultdict(dict))
         self.completed = defaultdict(lambda: deque(maxlen=maxlen))
@@ -59,6 +61,7 @@ class PubSubActor:
         self._conditions = defaultdict(asyncio.Condition)
 
     async def publish(self, msg: dict):
+        print(f"[PubSubActor] publish(msg={msg})", flush=True)
         array_name = msg["array_name"]
         iteration = msg["iteration"]
         rank = msg["rank"]
@@ -153,7 +156,7 @@ class PubSubActor:
                     break
 
         # send to the scheduler. This will trigger the topic handler, which contains the user's callback
-        print(f"log_event topic={topic} iteration={iteration}", flush=True)
+        print(f"[PubSubActor] _emit() client.log_event topic={topic} iteration={iteration}", flush=True)
         await self.client.log_event(topic, payload)
 
     async def subscribe(self, topic: str, subscriber_id: str):
@@ -164,7 +167,7 @@ class PubSubActor:
 
         self.offsets[(topic, subscriber_id)] = last_iter + 1
 
-    async def get(self, array_name: str, iteration: int = None):
+    async def get_array(self, array_name: str, iteration: int = None):
         """
         Blocking get:
           - if iteration is provided → wait until that iteration is available
@@ -208,6 +211,14 @@ class PubSubActor:
 
                 await cond.wait()
 
+    async def set(self, key, value):
+        self.kvs[key] = value
+
+    async def get(self, key) -> Any:
+        return self.kvs.get(key, None)
+
+    async def delete(self, key):
+        self.kvs.pop(key, None)
 
 def get_pubsub_actor(client: Client, *args, **kwargs) -> PubSubActor:
     def check_variable(dask_scheduler, name):
@@ -215,7 +226,7 @@ def get_pubsub_actor(client: Client, *args, **kwargs) -> PubSubActor:
         v = ext.variables.get(name)
         return v is not None
 
-    with Lock(PubSubActor.DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE, client=client):
+    with Lock(PubSubActor.DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE):
         is_set = client.run_on_scheduler(check_variable, name=PubSubActor.DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE)
         if is_set:
             return Variable(PubSubActor.DEISA_PUBSUB_ACTOR_FUTURE_VARIABLE, client=client).get().result()

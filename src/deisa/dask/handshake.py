@@ -142,7 +142,7 @@ class Handshake:
             v = ext.variables.get(name)
             return v is not None
 
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
             is_set = self.client.run_on_scheduler(check_variable, name=Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE)
             if is_set:
                 return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get().result()

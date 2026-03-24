@@ -125,12 +125,10 @@ class Bridge(IBridge):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            try:
-                with Lock(f'{LOCK_PREFIX}{key}'):
-                    return Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).get(timeout=0)
-            except TimeoutError:
-                return default
-            finally:
-                if delete:
-                    with Lock(f'{LOCK_PREFIX}{key}'):
-                        Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
+            key = f"{VARIABLE_PREFIX}{key}"
+            res = self.pubsub_actor.get(key).result()
+            if res is None:
+                res = default
+            if delete:
+                self.pubsub_actor.delete(key).result()
+            return res

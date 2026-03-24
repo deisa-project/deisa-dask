@@ -41,6 +41,7 @@ from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
+from deisa.dask.pubsub import PubSubActor
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
@@ -336,18 +337,42 @@ class TestUsingDaskCluster:
             context['latest_data'] = window[-1]
             context['latest_window_size'] = len(window)
 
-        deisa.register_sliding_window_callback(window_callback, "my_array", window_size=window_size)
+        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
             # register an already registered callback. This should not do anything.
-            deisa.register_sliding_window_callback(window_callback, "my_array", window_size=window_size)
+            deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+
+            topic = PubSubActor.make_topic(['my_array'], 'AND')
+            assert cluster.scheduler._broker._topics.get(topic, None) is not None, "topic was not registered"
 
             global_data = sim.generate_data('my_array', iteration=i)
             global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                                 global_grid_size[1] // mpi_parallelism[1]))
 
-            time.sleep(.1)  # wait for callback to be called
+            # time.sleep(1)  # wait for callback to be called
+
+            topic = PubSubActor.make_topic(['my_array'], 'AND')
+            i = 0
+            while (True):
+                done = False
+                events = client.get_events(topic)
+                for _, event in events:
+                    i = i + 1
+                    print(f"{i},", flush=True, end=' ')
+                    if event['iteration'] == i:
+                        print(f"done")
+                        done = True
+                        break
+                    if i == 10:
+                        raise TimeoutError("timeout")
+
+                if done:
+                    break
+                time.sleep(.1)
+
+            print(f"checking values for iteration {i} ...", flush=True)
             assert context['counter'] == i, "callback was not called"
             assert context['latest_timestep'] == i, "callback was not called with correct timestep"
             assert type(context['latest_data']) == da.Array, "callback was not called with correct data"
@@ -472,7 +497,7 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
-        time.sleep(.2)
+        time.sleep(.2)  # wait for bridges and deisa to be ready
 
         context = {
             'counter': 0
@@ -486,14 +511,16 @@ class TestUsingDaskCluster:
             context['latest_window_size'] = len(window)
 
         # register followed by unregister
-        callback_id = deisa.register_sliding_window_callback(window_callback, "my_array", window_size=window_size)
+        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        assert callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback(callback_id)
         sim.generate_data('my_array', iteration=1)
         time.sleep(.1)
         assert context['counter'] == 0, "callback should not be called"
 
         # unregister an unknown array name
-        deisa.register_sliding_window_callback(window_callback, "my_array", window_size=window_size)
+        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        assert callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('my_array', iteration=2)
         time.sleep(.1)
@@ -578,6 +605,8 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
 
+        time.sleep(.2)  # wait for bridges and deisa to be ready
+
         context = {
             'counter': 0,
             'exception_handler': 0
@@ -598,7 +627,8 @@ class TestUsingDaskCluster:
             raise RuntimeError("Throw from user exception handler.")
 
         # default exception_handler
-        callback_id = deisa.register_sliding_window_callback(window_callback, "my_array")
+        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array')
+        assert callback_id is not None, "callback was not registered"
         sim.generate_data('my_array', iteration=1)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 1, "callback was not called"
@@ -606,8 +636,9 @@ class TestUsingDaskCluster:
 
         # custom error handler
         deisa.unregister_sliding_window_callback(callback_id)
-        callback_id = deisa.register_sliding_window_callback(window_callback, "my_array",
+        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                              exception_handler=custom_exception_handler)
+        assert callback_id is not None, "callback was not registered"
         sim.generate_data('my_array', iteration=2)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 2, "callback was not called"
@@ -615,14 +646,15 @@ class TestUsingDaskCluster:
 
         # custom error handler that throws
         deisa.unregister_sliding_window_callback(callback_id)
-        deisa.register_sliding_window_callback(window_callback, "my_array",
-                                               exception_handler=custom_exception_handler_raise)
+        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
+                                                             exception_handler=custom_exception_handler_raise)
+        assert callback_id is not None, "callback was not registered"
         sim.generate_data('my_array', iteration=3)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 3, "callback was not called"
         assert context['exception_handler'] == 2, "callback was not called"
 
-        # callback unregistered due to un handled exception in custom_exception_handler_raise. Should no longer be called.
+        # callback unregistered due to unhandled exception in custom_exception_handler_raise. Should no longer be called.
         sim.generate_data('my_array', iteration=4)
         time.sleep(1)  # wait for callback to be called
         assert context['counter'] == 3, "callback was not called"
@@ -698,11 +730,8 @@ class TestUsingDaskCluster:
         deisa.set('hello', 'world', chunked=False)
 
         assert bridge.get('hello', chunked=False, delete=False) == 'world'
-        time.sleep(.1)
         assert bridge.get('hello', chunked=False, delete=True) == 'world'
-        time.sleep(.1)
         assert bridge.get('hello', chunked=False, delete=True) is None
-        time.sleep(.1)
         assert bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi'
 
         deisa.close()
@@ -725,6 +754,8 @@ class TestUsingDaskCluster:
 
         deisa = Deisa(get_connection_info=lambda: client)
 
+        time.sleep(.2)
+
         context = {
             'counter': 0
         }
@@ -734,7 +765,7 @@ class TestUsingDaskCluster:
             context['counter'] += 1
             deisa.set('hello', 'world', chunked=False)
 
-        deisa.register_sliding_window_callback(window_callback, "my_array", window_size=1)
+        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
         sim.generate_data('my_array', iteration=1)
         time.sleep(.1)
         assert context['counter'] == 1
@@ -751,12 +782,12 @@ class TestUsingDaskCluster:
                         wait_for_go=False)
 
         deisa = Deisa(get_connection_info=lambda: client)
-        deisa.set('hello', 'world', chunked=False)
 
+        time.sleep(.2)
+
+        deisa.set('hello', 'world', chunked=False)
         assert bridge.get('hello', chunked=False, delete=False) == 'world'
-        time.sleep(.1)
         deisa.delete('hello')
-        time.sleep(.1)
         assert bridge.get('hello', chunked=False, delete=False, default=None) is None
 
         deisa.close()
