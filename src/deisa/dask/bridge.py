@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -30,17 +30,19 @@
 from typing import Any
 
 import numpy as np
-from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge
-from distributed import Client, Variable, Lock, fire_and_forget
-from distributed.utils import TimeoutError
+from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
+from distributed import Client, fire_and_forget, Variable
+from mpi4py import MPI
 
-from deisa.dask.deisa import LOCK_PREFIX, VARIABLE_PREFIX
+from deisa.dask.deisa import VARIABLE_PREFIX
 from deisa.dask.handshake import Handshake
 
 
 class Bridge(IBridge):
 
-    def __init__(self, id: int, arrays_metadata: dict[str, dict], system_metadata: dict[str, Any], *args, **kwargs):
+    def __init__(self, id: int,
+                 arrays_metadata: dict[str, dict], system_metadata: dict[str, Any],
+                 comm: ICommunicator = None, *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
         system and a Dask-based framework. The class ensures proper allocation of workers
@@ -74,14 +76,16 @@ class Bridge(IBridge):
         self.system_metadata = validate_system_metadata(system_metadata)
         self.client: Client = self.system_metadata['connection']
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self.mpi_rank = id
-        self.futures = []
+        self.id = id
+
+        if comm is None:
+            self.comm = MPI.COMM_WORLD
+        else:
+            self.comm = comm
 
         # blocking until analytics is ready
-        handshake = Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
-                              arrays_metadata=self.arrays_metadata, **kwargs)
-
-        self.pubsub_actor = handshake.get_pubsub_actor()
+        Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
+                  arrays_metadata=self.arrays_metadata, **kwargs)
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
         """
@@ -110,25 +114,45 @@ class Bridge(IBridge):
 
         to_send = {
             'array_name': array_name,
-            'rank': self.mpi_rank,
-            'shape': data.shape,
-            'dtype': str(data.dtype),
+            'id': self.id,
             'iteration': iteration,
             'future': f.key
         }
+        gathered_data = self.comm.gather(to_send, root=0)
+        print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)
 
-        self.pubsub_actor.publish(to_send).result()
+        if gathered_data is not None:
+            to_send = {
+                'array_name': array_name,
+                'iteration': iteration,
+
+                'futures': [{
+                    'future': d['future'],
+                    'id': d['id'],
+                    'shape': data.shape,  # TODO: remove
+                    'dtype': str(data.dtype),  # TODO: remove
+                } for d in gathered_data]
+            }
+            self.client.log_event(array_name, to_send)
 
         # TODO: what to do if error ?
 
     def get(self, key: str, default: Any = None, chunked: bool = False, delete: bool = True):
+        def get_variable(dask_scheduler, name):
+            ext = dask_scheduler.extensions["variables"]
+            v = ext.variables.get(name)
+            return v if v is not None else None
+
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            key = f"{VARIABLE_PREFIX}{key}"
-            res = self.pubsub_actor.get(key).result()
-            if res is None:
-                res = default
-            if delete:
-                self.pubsub_actor.delete(key).result()
-            return res
+            var_name = f"{VARIABLE_PREFIX}{key}"
+            is_set = self.client.run_on_scheduler(get_variable, name=var_name)
+            if is_set:
+                var = Variable(var_name, client=self.client)
+                res = var.get()
+                if delete:
+                    var.delete()
+                return res
+            else:
+                return default

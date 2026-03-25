@@ -29,9 +29,9 @@
 
 import asyncio
 import collections
-import gc
 import sys
 import threading
+import time
 from typing import Callable, Union, Tuple, List, Final, Literal, Any
 
 import dask
@@ -39,12 +39,13 @@ import dask.array as da
 import numpy as np
 from dask.array import Array
 from deisa.core.interface import IDeisa, SupportsSlidingWindow
-from distributed import Client, Future, Queue, Variable, Lock
+from distributed import Client, Future, Queue, Variable
 
 from deisa.dask.handshake import Handshake
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
+CALLBACK_PREFIX: Final[str] = "deisa_cb_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
 
 
@@ -71,11 +72,11 @@ class Deisa(IDeisa):
 
         self.mpi_comm_size = handshake.get_nb_bridges()
         self.arrays_metadata = handshake.get_arrays_metadata()
-        self.pubsub_actor = handshake.get_pubsub_actor()
 
         self.received_metadata = dict[str, list[dict[str, Any]]]()  # array_name: list[metadata]
         self.current_sliding_windows = {}
-        self._variables = {}
+        self._callbacks = {}  # callback_id -> metadata
+        self._callback_seq = 0  # unique counter
 
         # example of arrays_metadata:
         # arrays_metadata = {
@@ -114,29 +115,50 @@ class Deisa(IDeisa):
         if name not in self.arrays_metadata:
             raise ValueError(f"Array '{name}' is not known.")
 
-        payload = self.pubsub_actor.get_array(array_name=name, iteration=iteration).result()
-        iteration = payload["iteration"]
-        # array_name = payload["array_name"]
-        parts = payload["parts"]
+        start = time.time()
 
-        parts = sorted(parts, key=lambda p: p["rank"])
+        while True:
+            events = self.client.get_events(name)
 
-        darr_chunks = [
-            da.from_delayed(
-                dask.delayed(Future(p["future"], client=self.client)),
-                p["shape"],
-                dtype=p["dtype"],
-            )
-            for p in parts
-        ]
+            if events:
+                # events: List[(ts, payload)]
+                payloads = [e[1] for e in events]
 
-        darr = self.__tile_dask_blocks(
-            darr_chunks,
-            self.arrays_metadata[name]["size"]
-        )
+                # Filter by iteration if requested
+                if iteration is not None:
+                    payloads = [p for p in payloads if p["iteration"] == iteration]
 
-        print(f"[ITER {iteration}] {name} shape={darr.shape}", flush=True)
-        return darr, iteration
+                if payloads:
+                    # Take latest iteration if not specified
+                    payload = max(payloads, key=lambda p: p["iteration"])
+                    iteration = payload["iteration"]
+                    parts = payload["futures"]
+
+                    # reconstruct array
+                    parts = sorted(parts, key=lambda p: p["id"])
+
+                    darr_chunks = [
+                        da.from_delayed(
+                            dask.delayed(Future(p["future"], client=self.client)),
+                            shape=p["shape"],
+                            dtype=p["dtype"],
+                        )
+                        for p in parts
+                    ]
+
+                    darr = self.__tile_dask_blocks(
+                        darr_chunks,
+                        self.arrays_metadata[name]["size"]
+                    )
+
+                    print(f"[ITER {iteration}] {name} shape={darr.shape}", flush=True)
+                    return darr, iteration
+
+            # timeout handling
+            if timeout is not None and (time.time() - start) > timeout:
+                raise TimeoutError(f"Timeout waiting for array '{name}' iteration={iteration}")
+
+            time.sleep(0.01)  # avoid busy spin
 
     @staticmethod
     def __default_exception_handler(callback_id: Callback_id, e):
@@ -211,6 +233,7 @@ class Deisa(IDeisa):
           - (callback, ("name1", k1), ("name2", k2), ..., when='AND')
           - mixed: (callback, "a", ("b", 3)) -> "a" gets default window_size
         """
+
         if when not in ('AND', 'OR'):
             raise ValueError("when must be 'AND' or 'OR'")
 
@@ -218,6 +241,7 @@ class Deisa(IDeisa):
             if array_name not in self.arrays_metadata:
                 raise ValueError(f'unknown array name: {array_name}')
 
+        # ---- init sliding windows (shared storage) ----
         for arr_name, window_size in parsed:
             if arr_name not in self.current_sliding_windows:
                 self.current_sliding_windows[arr_name] = {
@@ -225,60 +249,56 @@ class Deisa(IDeisa):
                     "changed": False,
                 }
 
-        # register with pubsub actor
         array_names = self.__get_array_names(*parsed)
-        callback_id = self.pubsub_actor.register_callback(array_names, when).result()
+
+        # create unique callback id
+        callback_id = self._next_callback_id()
+
+        # store callback metadata
+        self._callbacks[callback_id] = {
+            "callback": callback,
+            "parsed": parsed,
+            "when": when,
+            "exception_handler": exception_handler,
+            "array_names": array_names,
+        }
 
         async def topic_handler(event):
-            """
-            Runs when the aggregator publishes a COMPLETE iteration
-            (possibly multiple arrays depending on AND/OR).
-            """
-            def call_callback(callback, *args, **kwargs):
-                if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(*args, **kwargs))
+            def call_callback(cb, *args, **kwargs):
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(*args, **kwargs))
                 else:
-                    callback(*args, **kwargs)
+                    cb(*args, **kwargs)
 
             try:
                 _, payload = event
-                print(f"[Deisa] topic_handler(): {payload}", flush=True)
+                print(f"[Deisa] topic_handler({callback_id}): {payload}", flush=True)
 
+                array_name = payload["array_name"]
                 iteration = payload["iteration"]
-                when = payload["when"]
-                arrays_payload = payload["arrays"]
+                futures = payload["futures"]
 
-                # ---- reconstruct all arrays in this event ----
-                reconstructed = {}
+                parts = sorted(futures, key=lambda p: p['id'])
 
-                for array_name, metadata in arrays_payload.items():
-                    parts = metadata["parts"]
-
-                    # deterministic ordering
-                    parts = sorted(parts, key=lambda p: p["rank"])
-
-                    darr_chunks = [
-                        da.from_delayed(
-                            dask.delayed(Future(p["future"], client=self.client)),
-                            p["shape"],
-                            dtype=p["dtype"],
-                        )
-                        for p in parts
-                    ]
-
-                    darr = self.__tile_dask_blocks(
-                        darr_chunks,
-                        self.arrays_metadata[array_name]["size"]
+                darr_chunks = [
+                    da.from_delayed(
+                        dask.delayed(Future(p["future"], client=self.client)),
+                        p["shape"],
+                        dtype=p["dtype"],
                     )
+                    for p in parts
+                ]
 
-                    reconstructed[array_name] = darr
+                darr = self.__tile_dask_blocks(
+                    darr_chunks,
+                    self.arrays_metadata[array_name]["size"]
+                )
 
-                    # update sliding window
-                    d = self.current_sliding_windows[array_name]
-                    d["window"].append(darr)
-                    d["changed"] = True
+                # update sliding window
+                d = self.current_sliding_windows[array_name]
+                d["window"].append(darr)
+                d["changed"] = True
 
-                # keep consistent ordering across calls
                 ordered_array_names = list(self.current_sliding_windows.keys())
 
                 windows = [
@@ -286,13 +306,10 @@ class Deisa(IDeisa):
                     for name in ordered_array_names
                 ]
 
-                # trigger callback
+                # trigger logic
                 if when == "OR":
                     call_callback(callback, *windows, timestep=iteration)
-
-                    # reset only arrays that changed in this event
-                    for name in reconstructed:
-                        self.current_sliding_windows[name]["changed"] = False
+                    d["changed"] = False
 
                 else:  # AND
                     if all(self.current_sliding_windows[name]["changed"] for name in ordered_array_names):
@@ -303,25 +320,43 @@ class Deisa(IDeisa):
 
             except BaseException as e:
                 try:
-                    # safer: array_name may not exist if failure early
                     exception_handler(callback_id, e)
                 except BaseException:
-                    print(f"Exception thrown in exception handler. Unregistering callback id {callback_id}",
-                          file=sys.stderr, flush=True)
+                    print(f"Exception in exception handler. Unregistering {callback_id}", file=sys.stderr, flush=True)
                     self.unregister_sliding_window_callback(callback_id)
 
-        print(f"[Deisa] _register_sliding_window_callbacks_impl() for callback_id={callback_id}", flush=True)
-        # register with scheduler to be called when arrays are ready
-        self.client.subscribe_topic(callback_id, topic_handler)
+        print(f"[Deisa] register callback_id={callback_id}", flush=True)
+
+        # subscribe (one handler per registration!)
+        for array_name in array_names:
+            self.client.subscribe_topic(array_name, topic_handler)
 
         return callback_id
 
     def unregister_sliding_window_callback(self, callback_id: Callback_id) -> None:
+        meta = self._callbacks.pop(callback_id, None)
+        if meta is None:
+            return  # already removed or unknown id
+
+        array_names = meta.get("array_names", [])
+
+        # unsubscribe from all topics
+        for array_name in array_names:
+            try:
+                self.client.unsubscribe_topic(array_name)
+            except BaseException:
+                # don't fail hard during cleanup
+                pass
+
+        # cleanup sliding window state (only if no other callback depends on it)
         try:
-            # unregister from pubsub actor
-            # self.pubsub_actor.unregister_callback(callback_id).result()   # TODO: why does this sometimes hang ?
-            # unregister from scheduler. The topic handler will no longer be called.
-            self.client.unsubscribe_topic(callback_id)
+            for arr_name, _ in meta["parsed"]:
+                still_used = any(arr_name in [a for a, _ in other["parsed"]]
+                                 for other in self._callbacks.values())
+
+                if not still_used:
+                    self.current_sliding_windows.pop(arr_name, None)
+
         except BaseException:
             pass
 
@@ -329,12 +364,22 @@ class Deisa(IDeisa):
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            key = f"{VARIABLE_PREFIX}{key}"
-            self.pubsub_actor.set(key, data)
+            var = Variable(f'{VARIABLE_PREFIX}{key}', client=self.client)
+            if self.client.asynchronous:
+                self.client.loop.add_callback(var.set, data)
+            else:
+                var.set(data)
 
-    def delete(self, key: str):
-        key = f"{VARIABLE_PREFIX}{key}"
-        self.pubsub_actor.delete(key)
+    def delete(self, key: str) -> None:
+        var = Variable(f'{VARIABLE_PREFIX}{key}', client=self.client)
+        if self.client.asynchronous:
+            self.client.loop.add_callback(var.delete)
+        else:
+            var.delete()
+
+    def _next_callback_id(self):
+        self._callback_seq += 1
+        return f"{CALLBACK_PREFIX}{self._callback_seq}"
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
@@ -445,6 +490,10 @@ class Deisa(IDeisa):
         loop.call_soon_threadsafe(callback)
         done.wait()
         return container.get('result')
+
+    @staticmethod
+    def make_topic(arrays, when) -> str:
+        return f"{when}|" + "|".join(sorted(arrays))
 
     # async def topic_handler(event):
     #     """
