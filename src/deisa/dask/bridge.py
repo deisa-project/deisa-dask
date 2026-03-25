@@ -32,20 +32,22 @@ from typing import Any, Iterator, List
 
 import numpy as np
 from dask.tokenize import tokenize
-from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge
-from distributed import Client, Queue, Variable, Lock, Future
+from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
+from distributed import Client, Variable, Future, fire_and_forget
 from distributed.protocol import to_serialize
-from distributed.utils import TimeoutError
 from distributed.utils_comm import scatter_to_workers
+from mpi4py import MPI
 from tlz import valmap
 
-from deisa.dask.deisa import LOCK_PREFIX, VARIABLE_PREFIX
+from deisa.dask.deisa import VARIABLE_PREFIX
 from deisa.dask.handshake import Handshake
 
 
 class Bridge(IBridge):
 
-    def __init__(self, id: int, arrays_metadata: dict[str, dict], system_metadata: dict[str, Any], *args, **kwargs):
+    def __init__(self, id: int,
+                 arrays_metadata: dict[str, dict], system_metadata: dict[str, Any],
+                 comm: ICommunicator = None, *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
         system and a Dask-based framework. The class ensures proper allocation of workers
@@ -79,8 +81,13 @@ class Bridge(IBridge):
         self.system_metadata = validate_system_metadata(system_metadata)
         self.client: Client = self.system_metadata['connection']
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self.mpi_rank = id
+        self.id = id
         self.workers = list(self.client.scheduler_info()["workers"].keys())
+
+        if comm is None:
+            self.comm = MPI.COMM_WORLD
+        else:
+            self.comm = comm
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
@@ -116,32 +123,52 @@ class Bridge(IBridge):
         # TODO: select workers to send data to.
         f = self._better_scatter(data, workers=self.workers)  # send data to workers
 
-        to_send = {
-            'rank': self.mpi_rank,
-            'shape': data.shape,
-            'dtype': data.dtype,
-            'iteration': iteration,
-            'future': f
-        }
+        fire_and_forget(f)  # tell scheduler to not release future
 
-        q = Queue(array_name, client=self.client)
-        q.put(to_send)
+        to_send = {
+            'array_name': array_name,
+            'id': self.id,
+            'iteration': iteration,
+            'future': f.key
+        }
+        gathered_data = self.comm.gather(to_send, root=0)
+        print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)
+
+        if gathered_data is not None:
+            to_send = {
+                'array_name': array_name,
+                'iteration': iteration,
+
+                'futures': [{
+                    'future': d['future'],
+                    'id': d['id'],
+                    'shape': data.shape,  # TODO: remove
+                    'dtype': str(data.dtype),  # TODO: remove
+                } for d in gathered_data]
+            }
+            self.client.log_event(array_name, to_send)
 
         # TODO: what to do if error ?
 
     def get(self, key: str, default: Any = None, chunked: bool = False, delete: bool = True):
+        def get_variable(dask_scheduler, name):
+            ext = dask_scheduler.extensions["variables"]
+            v = ext.variables.get(name)
+            return v if v is not None else None
+
         if chunked:
             raise NotImplementedError()  # TODO
         else:
-            try:
-                with Lock(f'{LOCK_PREFIX}{key}'):
-                    return Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).get(timeout=0)
-            except TimeoutError:
-                return default
-            finally:
+            var_name = f"{VARIABLE_PREFIX}{key}"
+            is_set = self.client.run_on_scheduler(get_variable, name=var_name)
+            if is_set:
+                var = Variable(var_name, client=self.client)
+                res = var.get()
                 if delete:
-                    with Lock(f'{LOCK_PREFIX}{key}'):
-                        Variable(f'{VARIABLE_PREFIX}{key}', client=self.client).delete()
+                    var.delete()
+                return res
+            else:
+                return default
 
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None):
         if workers is None:

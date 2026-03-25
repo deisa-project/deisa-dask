@@ -103,7 +103,7 @@ class Handshake:
         Bridge must wait for analytics to be ready.
         """
         assert self.handshake_actor is not None
-        self.handshake_actor.add_bridge(id, max)
+        self.handshake_actor.add_bridge(id, max).result()
 
         if id == 0:
             self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
@@ -117,7 +117,7 @@ class Handshake:
         When analytics is ready, notify all Bridges
         """
         assert self.handshake_actor is not None
-        self.handshake_actor.set_analytics_ready()
+        self.handshake_actor.set_analytics_ready().result()
 
         # wait for go
         if wait_for_go:
@@ -137,7 +137,7 @@ class Handshake:
             v = ext.variables.get(name)
             return v is not None
 
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client):
+        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
             is_set = self.client.run_on_scheduler(check_variable, name=Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE)
             if is_set:
                 return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get().result()
