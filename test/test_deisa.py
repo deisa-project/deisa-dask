@@ -1,5 +1,5 @@
 # =============================================================================
-# Copyright (C) 2025 Commissariat a l'energie atomique et aux energies alternatives (CEA)
+# Copyright (C) 2026 Commissariat a l'energie atomique et aux energies alternatives (CEA)
 #
 # All rights reserved.
 #
@@ -41,35 +41,7 @@ from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
-
-
-def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
-    """
-    Wait until predicate() is True for nb_checks consecutive evaluations.
-
-    Args:
-        predicate: callable returning bool
-        timeout: max time to wait (seconds)
-        interval: delay between checks
-        nb_checks: number of consecutive successful checks required
-
-    Returns:
-        True if condition satisfied, False otherwise
-    """
-    start = time.time()
-    consecutive = 0
-
-    while time.time() - start < timeout:
-        if predicate():
-            consecutive += 1
-            if consecutive >= nb_checks:
-                return True
-        else:
-            consecutive = 0  # reset if the condition breaks
-
-        time.sleep(interval)
-
-    return False
+from utils import wait_for
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])

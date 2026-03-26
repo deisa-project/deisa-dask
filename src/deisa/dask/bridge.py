@@ -153,7 +153,7 @@ class Bridge(IBridge):
                 self._inflight_futures.append(d['future-info']['future'])
 
             # only update the scheduler with who has what and register the future once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client.id)
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
 
             to_send = {
                 'array_name': array_name,
