@@ -26,6 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import collections
+import math
 import uuid
 from numbers import Number
 from typing import Any, Iterator, List
@@ -33,7 +35,7 @@ from typing import Any, Iterator, List
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Client, Variable, Future, fire_and_forget
+from distributed import Client, Variable, Future
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from mpi4py import MPI
@@ -84,6 +86,11 @@ class Bridge(IBridge):
         self.id = id
         self.workers = list(self.client.scheduler_info()["workers"].keys())
 
+        # for each array, compute total number of chunks and sum. For headroom, x10 iterations.
+        maxlen = 10 * (sum(math.prod(s // ss for s, ss in zip(meta['size'], meta['subsize']))
+                           for meta in self.arrays_metadata.values()))
+        self._inflight_futures = collections.deque(maxlen=maxlen)
+
         if comm is None:
             self.comm = MPI.COMM_WORLD
         else:
@@ -120,27 +127,40 @@ class Bridge(IBridge):
 
         assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
+        # Send data to worker
         # TODO: select workers to send data to.
-        f = self._better_scatter(data, workers=self.workers)  # send data to workers
+        res = self._better_scatter(data, workers=self.workers, hash=False)  # send data to workers
 
-        fire_and_forget(f)  # tell scheduler to not release future
-
+        # Barrier. Wait for all bridges.
         to_send = {
             'array_name': array_name,
             'id': self.id,
             'iteration': iteration,
-            'future': f.key
+            'future-info': res
         }
         gathered_data = self.comm.gather(to_send, root=0)
-        print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)
+        print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)  # TODO: use logger
 
         if gathered_data is not None:
+            # aggregate who has what
+            who_has = {}
+            nbytes = {}
+            for d in gathered_data:
+                who_has = {**who_has, **d['future-info']['who_has']}
+                nbytes = {**nbytes, **d['future-info']['nbytes']}
+
+                # TODO: might be an issue: if analytics is slow, future may be released before use, leading to FutureCancelledError
+                self._inflight_futures.append(d['future-info']['future'])
+
+            # only update the scheduler with who has what and register the future once
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client.id)
+
             to_send = {
                 'array_name': array_name,
                 'iteration': iteration,
 
                 'futures': [{
-                    'future': d['future'],
+                    'future': d['future-info']['future'].key,
                     'id': d['id'],
                     'shape': data.shape,  # TODO: remove
                     'dtype': str(data.dtype),  # TODO: remove
@@ -170,7 +190,7 @@ class Bridge(IBridge):
             else:
                 return default
 
-    def _better_scatter(self, data: np.ndarray, workers: List[str] = None):
+    def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         if workers is None:
             workers = self.workers
 
@@ -178,9 +198,9 @@ class Bridge(IBridge):
             self.__scatter,
             data,
             workers=workers,
-            hash=False)
+            hash=hash)
 
-    async def __scatter(self, data, workers=None, hash=True):
+    async def __scatter(self, data, workers=None, hash=False):
         if isinstance(workers, (str, Number)):
             workers = [workers]
         if isinstance(data, type(range(0))):
@@ -210,12 +230,18 @@ class Bridge(IBridge):
 
         _, who_has, nbytes = await scatter_to_workers(workers, data2, self.client.rpc)
 
-        # TODO: maybe the workers can update the scheduler ?
-        await self.client.scheduler.update_data(
-            who_has=who_has, nbytes=nbytes, client=self.client.id
-        )
+        # await self.client.scheduler.update_data(
+        #     who_has=who_has, nbytes=nbytes, client=self.client.id
+        # )
 
-        out = {k: Future(k, self.client) for k in data}
+        out = {
+            k: {
+                'future': Future(k, self.client),
+                'who_has': who_has,
+                'nbytes': nbytes
+            }
+            for k in data
+        }
         for key, typ in types.items():
             self.client.futures[key].finish(type=typ)
 
