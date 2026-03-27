@@ -65,7 +65,7 @@ setup(name='deisa-dask',
       packages=find_namespace_packages(where='src', include=['deisa.dask']),
 
       install_requires=[
-          "deisa-core==0.2.0",
+          "deisa-core>=0.3.0",
           'dask',
           'distributed',
           "toolz", # version constraint from distributed
