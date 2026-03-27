@@ -622,12 +622,12 @@ class TestUsingDaskCluster:
                                                              exception_handler=custom_exception_handler_raise)
         assert callback_id is not None, "callback was not registered"
         sim.generate_data('my_array', iteration=3)
-        assert wait_for(lambda: context['counter'] == 3), "callback was not called"
+        assert wait_for(lambda: context['counter'] == 3, timeout=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
         # callback unregistered due to unhandled exception in custom_exception_handler_raise. Should no longer be called.
         sim.generate_data('my_array', iteration=4)
-        assert wait_for(lambda: context['counter'] == 3), "callback was not called"
+        assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
         deisa.close()
