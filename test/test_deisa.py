@@ -428,6 +428,8 @@ class TestUsingDaskCluster:
                                                     ("pressure", pressure_window_size),
                                                     when='AND')
 
+            time.sleep(.5)
+
             global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
             global_temperature_da = da.from_array(global_temperature,
                                                   chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
