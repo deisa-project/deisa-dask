@@ -38,15 +38,14 @@ from deisa.core import validate_system_metadata, validate_arrays_metadata, IBrid
 from distributed import Client, Variable, Future
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
-from mpi4py import MPI
 from tlz import valmap
 
+from deisa.dask.communicator import resolve_comm
 from deisa.dask.deisa import VARIABLE_PREFIX
 from deisa.dask.handshake import Handshake
 
 
 class Bridge(IBridge):
-
     def __init__(self, id: int,
                  arrays_metadata: dict[str, dict], system_metadata: dict[str, Any],
                  comm: ICommunicator = None, *args, **kwargs):
@@ -91,10 +90,10 @@ class Bridge(IBridge):
                            for meta in self.arrays_metadata.values()))
         self._inflight_futures = collections.deque(maxlen=maxlen)
 
-        if comm is None:
-            self.comm = MPI.COMM_WORLD
-        else:
-            self.comm = comm
+        # TODO: handle 3 cases for Comm:
+        # - if comm is None: use_mpi_if_available or no MPI
+        # - if comm is an MPI Comm: use it
+        self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True)
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],

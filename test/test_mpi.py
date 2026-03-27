@@ -6,6 +6,8 @@ from typing import Tuple
 
 import pytest
 
+from deisa.dask.communicator import DaskComm
+
 
 def mpi_gather_test():
     from mpi4py import MPI
@@ -26,7 +28,8 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     from deisa.dask import Bridge
     from deisa.dask import get_connection_info
 
-    comm = MPI.COMM_WORLD
+    # comm = MPI.COMM_WORLD
+    comm = DaskComm(get_connection_info(scheduler_address), int(np.prod(parallelism)))
     rank = comm.Get_rank()
     size = comm.Get_size()
 

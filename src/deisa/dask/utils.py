@@ -30,7 +30,7 @@
 
 import os
 
-from distributed import Client
+from distributed import Client, Lock, Variable
 
 
 def get_connection_info(dask_scheduler_address: str | Client) -> Client:
@@ -53,3 +53,20 @@ def get_connection_info(dask_scheduler_address: str | Client) -> Client:
             "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
 
     return client
+
+def _get_actor(client: Client, clazz, **kwargs):
+    def check_variable(dask_scheduler, name):
+        ext = dask_scheduler.extensions["variables"]
+        v = ext.variables.get(name)
+        return v is not None
+
+    key = f"deisa_actor_{clazz}"
+
+    with Lock(key):
+        is_set = client.run_on_scheduler(check_variable, name=key)
+        if is_set:
+            return Variable(key, client=client).get().result()
+        else:
+            actor_future = client.submit(clazz, actor=True, **kwargs)
+            Variable(key, client=client).set(actor_future)
+            return actor_future.result()
