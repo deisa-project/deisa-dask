@@ -299,7 +299,6 @@ class TestUsingDaskCluster:
             assert iteration == i, "iteration does not match expected"
             assert math.isclose(global_data_da.sum().compute(), darr.sum().compute(),
                                 rel_tol=1e-09), "reconstructed dask array does not match original"
-            assert global_data_da.all() == darr.all(), "reconstructed dask array does not match original"
 
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])

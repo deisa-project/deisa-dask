@@ -72,6 +72,12 @@ def has_mpirun():
     return shutil.which("mpirun") is not None
 
 
+def is_xdist():
+    import os
+    return "PYTEST_XDIST_WORKER" in os.environ
+
+
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('i', [1, 2, 4, 8])
 def test_mpi_gather(i):
@@ -84,6 +90,7 @@ def test_mpi_gather(i):
     assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
 
 
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32)])  # TODO: more sizes
 @pytest.mark.parametrize('parallelism', [(2, 2)])  # TODO: different decomposition

@@ -33,6 +33,7 @@ from deisa.core import ICommunicator
 from distributed import Client
 
 from deisa.dask import Bridge
+from deisa.dask.communicator import DaskComm
 
 
 class FakeComm(ICommunicator):
@@ -57,12 +58,11 @@ class TestSimulation:
         self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
-        self.comm = FakeComm(nb_mpi_ranks)
         self.bridges: list[Bridge] = [
             Bridge(id=rank,
                    arrays_metadata=arrays_metadata,
                    system_metadata={'connection': client, 'nb_bridges': nb_mpi_ranks},
-                   comm=self.comm,
+                   comm=DaskComm(self.client, nb_mpi_ranks),
                    *args, **kwargs)
             for rank in range(nb_mpi_ranks)]
 
@@ -112,12 +112,12 @@ class TestSimulation:
             assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
 
             if send_order_fn is None:
-                for i, bridge in enumerate(self.bridges):
+                for i, bridge in reversed(list(enumerate(self.bridges))):
                     print(f"[TestSimulator] generate_data for array={array_name} to bridge id={bridge.id}")
                     bridge.send(array_name, chunks[i], iteration)
             else:
                 send_order = send_order_fn(chunks)
-                for i, chunk in enumerate(send_order):
+                for i, (_, chunk) in zip(reversed(range(len(send_order))), enumerate(send_order)):
                     self.bridges[i].send(array_name, chunk, iteration)
 
         assert len(global_datas) == len(array_names)

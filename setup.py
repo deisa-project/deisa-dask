@@ -69,6 +69,7 @@ setup(name='deisa-dask',
           'dask',
           'distributed',
           "toolz", # version constraint from distributed
+          "uuid"
       ],
 
       extras_require={
@@ -76,6 +77,9 @@ setup(name='deisa-dask',
               "pytest",
               "pytest-xdist",
               "numpy",
+          ],
+          "mpi": [
+              "mpi4py"
           ]
       },
       test_suite='test',
