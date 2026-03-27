@@ -22,14 +22,18 @@ def mpi_gather_test():
         assert data == list(range(size)), f"Unexpected gather result: {data}"
 
 
-def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tuple):
+def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tuple, comm: str):
     from mpi4py import MPI
     import numpy as np
     from deisa.dask import Bridge
     from deisa.dask import get_connection_info
 
-    # comm = MPI.COMM_WORLD
-    comm = DaskComm(get_connection_info(scheduler_address), int(np.prod(parallelism)))
+    if comm == 'mpi':
+        comm = MPI.COMM_WORLD
+    elif comm == 'dask':
+        comm = DaskComm(get_connection_info(scheduler_address), int(np.prod(parallelism)))
+    else:
+        raise ValueError(f"Invalid comm: {comm}")
     rank = comm.Get_rank()
     size = comm.Get_size()
 
@@ -83,7 +87,8 @@ def test_mpi_gather(i):
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32)])  # TODO: more sizes
 @pytest.mark.parametrize('parallelism', [(2, 2)])  # TODO: different decomposition
-def test_mpi_bridge(global_size, parallelism):
+@pytest.mark.parametrize('comm', ['mpi', 'dask'])
+def test_mpi_bridge(global_size, parallelism, comm):
     from distributed import Client
     import numpy as np
 
@@ -100,6 +105,7 @@ def test_mpi_bridge(global_size, parallelism):
            "--scheduler-address", cluster.scheduler.address,
            "--global-size", str(global_size),
            "--parallelism", str(parallelism),
+           "--comm", comm
            ]
     print(f"cmd={cmd}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -132,6 +138,7 @@ if __name__ == "__main__":
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
     parser.add_argument("--parallelism", default="(2, 2)")
+    parser.add_argument("--comm", default="dask")
 
     args = parser.parse_args()
 
@@ -152,9 +159,10 @@ if __name__ == "__main__":
         try:
             parallelism = eval(args.parallelism)
             global_size = eval(args.global_size)
-            print(f"global_size={global_size}, parallelism={parallelism}", flush=True)
+            print(f"global_size={global_size}, parallelism={parallelism}, comm={args.comm}", flush=True)
             mpi_bridge_main(scheduler_address=args.scheduler_address,
-                            parallelism=parallelism, global_size=global_size)
+                            parallelism=parallelism, global_size=global_size,
+                            comm=args.comm)
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)
             sys.exit(1)
