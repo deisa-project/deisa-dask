@@ -437,7 +437,7 @@ class TestUsingDaskCluster:
                                                chunks=(global_pressure_grid_size[0] // mpi_parallelism[0],
                                                        global_pressure_grid_size[1] // mpi_parallelism[1]))
 
-            assert wait_for(lambda: context['counter'] == i), "callback was not called"
+            assert wait_for(lambda: context['counter'] == i, timeout=10), "callback was not called"
             assert wait_for(lambda: context['latest_timestep'] == i), "callback was not called with correct timestep"
             # temperatures
             assert wait_for(
