@@ -30,6 +30,8 @@
 from dask.distributed import Variable
 from distributed import Client, Future, get_client, Lock
 
+from deisa.dask.utils import _get_actor
+
 
 class Handshake:
     DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
@@ -88,7 +90,7 @@ class Handshake:
     def __init__(self, who: str, client: Client, **kwargs):
         self.client = client
         # self.client.direct_to_workers() # TODO
-        self.handshake_actor = self.__get_handshake_actor()
+        self.handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
         assert self.handshake_actor is not None
 
         if who == 'bridge':
@@ -130,21 +132,6 @@ class Handshake:
     def get_nb_bridges(self) -> int:
         assert self.handshake_actor is not None
         return self.handshake_actor.get_max_bridges().result()
-
-    def __get_handshake_actor(self) -> HandshakeActor:
-        def check_variable(dask_scheduler, name):
-            ext = dask_scheduler.extensions["variables"]
-            v = ext.variables.get(name)
-            return v is not None
-
-        with Lock(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE):
-            is_set = self.client.run_on_scheduler(check_variable, name=Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE)
-            if is_set:
-                return Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).get().result()
-            else:
-                actor_future = self.client.submit(Handshake.HandshakeActor, actor=True)
-                Variable(Handshake.DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE, client=self.client).set(actor_future)
-                return actor_future.result()
 
     def __wait_for_go(self) -> None:
         Variable(Handshake.DEISA_WAIT_FOR_GO_VARIABLE, client=self.client).get()
