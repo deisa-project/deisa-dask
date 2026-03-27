@@ -93,7 +93,9 @@ class Bridge(IBridge):
         # TODO: handle 3 cases for Comm:
         # - if comm is None: use_mpi_if_available or no MPI
         # - if comm is an MPI Comm: use it
-        self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True)
+        self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
+                                                client=self.client,
+                                                size=self.system_metadata['nb_bridges'])
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
