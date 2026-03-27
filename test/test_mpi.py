@@ -66,8 +66,9 @@ def has_mpirun():
 
 
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
-def test_mpi_gather():
-    cmd = ["mpirun", "-n", "4", sys.executable, "-u", __file__, "--mpi-gather"]
+@pytest.mark.parametrize('i', [1, 2, 4, 8])
+def test_mpi_gather(i):
+    cmd = ["mpirun", "-n", str(i), "--oversubscribe", sys.executable, "-u", __file__, "--mpi-gather"]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     print("STDOUT:\n", result.stdout, flush=True)
@@ -84,7 +85,7 @@ def test_mpi_bridge(global_size, parallelism):
     import numpy as np
 
     from distributed import LocalCluster
-    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1')
+    cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
 
     print(f"client={client}", flush=True)
@@ -98,7 +99,7 @@ def test_mpi_bridge(global_size, parallelism):
            "--parallelism", str(parallelism),
            ]
     print(f"cmd={cmd}", flush=True)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
     print(f"result={result}", flush=True)
     print("STDOUT:\n", result.stdout, flush=True)
