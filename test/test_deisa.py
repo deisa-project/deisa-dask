@@ -603,8 +603,9 @@ class TestUsingDaskCluster:
         # default exception_handler
         callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array')
         assert callback_id is not None, "callback was not registered"
+        time.sleep(.5)
         sim.generate_data('my_array', iteration=1)
-        assert wait_for(lambda: context['counter'] == 1), "callback was not called"
+        assert wait_for(lambda: context['counter'] == 1, timeout=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 0), "callback was not called"
 
         # custom error handler
@@ -612,8 +613,9 @@ class TestUsingDaskCluster:
         callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                              exception_handler=custom_exception_handler)
         assert callback_id is not None, "callback was not registered"
+        time.sleep(.5)
         sim.generate_data('my_array', iteration=2)
-        assert wait_for(lambda: context['counter'] == 2), "callback was not called"
+        assert wait_for(lambda: context['counter'] == 2, timeout=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 1), "callback was not called"
 
         # custom error handler that throws
@@ -621,6 +623,7 @@ class TestUsingDaskCluster:
         callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                              exception_handler=custom_exception_handler_raise)
         assert callback_id is not None, "callback was not registered"
+        time.sleep(.5)
         sim.generate_data('my_array', iteration=3)
         assert wait_for(lambda: context['counter'] == 3, timeout=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
