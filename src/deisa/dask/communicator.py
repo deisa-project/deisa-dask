@@ -29,6 +29,7 @@
 import time
 from typing import Any, Optional
 
+import uuid
 from deisa.core import ICommunicator
 from distributed import Client
 
@@ -67,9 +68,12 @@ class DaskComm(ICommunicator):
         self._rank = None
         self._actor = _get_actor(client, CommActor, size=size)
 
+        self.Get_rank()
+
     def Get_rank(self) -> int:
         if self._rank is None:
-            self._rank = self._actor.register(self.client.id).result()
+            cid = str(uuid.uuid4())
+            self._rank = self._actor.register(cid).result()
         return self._rank
 
     def Get_size(self) -> int:
