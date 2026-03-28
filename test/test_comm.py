@@ -92,14 +92,16 @@ def test_mpi_gather(i):
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
-@pytest.mark.parametrize('global_size', [(32, 32)])  # TODO: more sizes
-@pytest.mark.parametrize('parallelism', [(2, 2)])  # TODO: different decomposition
+@pytest.mark.parametrize('parallelism', [(1, 1), (2, 2)])
 @pytest.mark.parametrize('comm', ['mpi', 'dask'])
-def test_mpi_bridge(global_size, parallelism, comm):
+def test_mpi_bridge(parallelism, comm):
     from distributed import Client
     import numpy as np
 
     from distributed import LocalCluster
+
+    global_size = (32, 32)
+
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
 

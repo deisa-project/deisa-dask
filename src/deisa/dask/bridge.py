@@ -90,7 +90,7 @@ class Bridge(IBridge):
                            for meta in self.arrays_metadata.values()))
         self._inflight_futures = collections.deque(maxlen=maxlen)
 
-        # TODO: handle 3 cases for Comm:
+        # handle 3 cases for Comm:
         # - if comm is None: use_mpi_if_available or no MPI
         # - if comm is an MPI Comm: use it
         self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
@@ -139,10 +139,12 @@ class Bridge(IBridge):
             'iteration': iteration,
             'future-info': res
         }
+        print(f"[Bridge {self.id}] send() to_send={to_send}", flush=True)
         gathered_data = self.comm.gather(to_send, root=0)
         print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)  # TODO: use logger
 
         if gathered_data is not None:
+            # rank 0 (root=0 in comm.gather)
             # aggregate who has what
             who_has = {}
             nbytes = {}
