@@ -161,7 +161,7 @@ class Bridge(IBridge):
                 'iteration': iteration,
 
                 'futures': [{
-                    'future': d['future-info']['future'].key,
+                    'future': d['future-info']['future'],
                     'id': d['id'],
                     'shape': data.shape,  # TODO: remove
                     'dtype': str(data.dtype),  # TODO: remove
@@ -237,7 +237,7 @@ class Bridge(IBridge):
 
         out = {
             k: {
-                'future': Future(k, self.client),
+                'future': Future(k, self.client).key,
                 'who_has': who_has,
                 'nbytes': nbytes
             }
