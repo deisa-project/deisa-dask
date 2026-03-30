@@ -28,8 +28,9 @@
 # =============================================================================
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Optional, List, Sequence
 
+import numpy as np
 from deisa.core import ICommunicator
 from distributed import Client
 
@@ -66,7 +67,7 @@ def resolve_comm(comm, cart_coord_dims=None, use_mpi_if_available=True, *args, *
             try:
                 from mpi4py import MPI
                 mpi_comm = MPI.COMM_WORLD
-                dims = MPI.Compute_dims(mpi_comm.Get_size(), cart_coord_dims)
+                dims = MPI.Compute_dims(mpi_comm.Get_size(), dims=cart_coord_dims)
                 cart_comm = mpi_comm.Create_cart(dims)
                 return cart_comm
             except ImportError:
@@ -80,9 +81,16 @@ def resolve_comm(comm, cart_coord_dims=None, use_mpi_if_available=True, *args, *
 
 
 class DaskComm(ICommunicator):
-    def __init__(self, client: Client, size: int):
+    def __init__(self, client: Client, size: int, cart_coord_dims: Optional[Sequence[int]] = None):
         self.client = client
         self.size = size
+
+        # Cartesian topology
+        if cart_coord_dims is None:
+            # simple fallback: 1D
+            cart_coord_dims = (size,)
+        self.dims = tuple(cart_coord_dims)
+
         self._seq = 0
         self._rank = None
         self._actor = _get_actor(client, CommActor, size=size)
@@ -97,6 +105,9 @@ class DaskComm(ICommunicator):
 
     def Get_size(self) -> int:
         return self.size
+
+    def Get_coords(self, rank) -> List[int]:
+        return self._actor.get_coords(rank, dims=self.dims).result()
 
     def gather(self, data: Any, root: int = 0) -> Optional[list[Any]]:
         seq = self._seq
@@ -152,10 +163,6 @@ class CommActor:
     def gather_get(self, seq: int):
         return self.gathers.pop(seq, [])
 
-    def get_coords(self, rank):
-        coords = []
-        r = rank
-        for d in reversed(self.dims):
-            coords.append(r % d)
-            r //= d
-        return tuple(reversed(coords))
+    # cartesian topology
+    def get_coords(self, rank: int, dims):
+        return tuple(int(c) for c in np.unravel_index(rank, dims))

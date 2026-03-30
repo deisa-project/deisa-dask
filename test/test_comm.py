@@ -35,7 +35,12 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
         dims = MPI.Compute_dims(comm.Get_size(), len(global_size))
         comm = comm.Create_cart(dims)
     elif comm == 'dask':
-        comm = DaskComm(get_connection_info(scheduler_address), int(np.prod(parallelism)))
+        comm = DaskComm(client=get_connection_info(scheduler_address),
+                        size=int(np.prod(parallelism)))
+    elif comm == 'dask-cart':
+        comm = DaskComm(client=get_connection_info(scheduler_address),
+                        size=int(np.prod(parallelism)),
+                        dims=parallelism)
     else:
         raise ValueError(f"Invalid comm: {comm}")
     rank = comm.Get_rank()
@@ -97,7 +102,7 @@ def test_mpi_gather(i):
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
-@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world', 'dask'])
+@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world', 'dask', 'dask-cart'])
 def test_mpi_bridge(global_size: Tuple, parallelism: int, comm):
     from distributed import Client
     import numpy as np

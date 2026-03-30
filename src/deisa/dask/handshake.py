@@ -100,7 +100,7 @@ class Handshake:
         else:
             raise ValueError("Expecting 'bridge' or 'deisa'.")
 
-    def start_bridge(self, id: int, max: int, arrays_metadata: dict, wait_for_go=True) -> None:
+    def start_bridge(self, id: int, max: int, arrays_metadata: dict, wait_for_go=True, *args, **kwargs) -> None:
         """
         Bridge must wait for analytics to be ready.
         """
@@ -114,7 +114,7 @@ class Handshake:
         if wait_for_go:
             self.__wait_for_go()
 
-    def start_deisa(self, wait_for_go=True) -> None:
+    def start_deisa(self, wait_for_go=True, *args, **kwargs) -> None:
         """
         When analytics is ready, notify all Bridges
         """

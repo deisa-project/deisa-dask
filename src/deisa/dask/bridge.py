@@ -57,9 +57,6 @@ class Bridge(IBridge):
         :param id: Unique identifier in the computation. This may be the rank of this MPI process.
         :type id: int
 
-        :param mpi_comm_size: Total number of MPI processes involved in the computation.
-        :type mpi_comm_size: int
-
         :param arrays_metadata: A dictionary containing metadata about the Dask arrays
                 eg: arrays_metadata = {
                     'global_t': {
@@ -72,10 +69,10 @@ class Bridge(IBridge):
                     }
         :type arrays_metadata: dict[str, dict]
 
-        :param connection: A function that returns a connected Dask Client.
-        :type connection: Callable
+        :param args: Passed to Communicator
+        type: args: tuple
 
-        :param kwargs: Passed to Handshake
+        :param kwargs: Passed to Handshake and Communicator
         :type kwargs: dict
         """
         super().__init__(id, arrays_metadata, system_metadata, *args, **kwargs)
@@ -92,7 +89,8 @@ class Bridge(IBridge):
 
         self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
                                                 client=self.client,
-                                                size=self.system_metadata['nb_bridges'])
+                                                size=self.system_metadata['nb_bridges'],
+                                                *args, **kwargs)
 
         # blocking until analytics is ready
         Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
