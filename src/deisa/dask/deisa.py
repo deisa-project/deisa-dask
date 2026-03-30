@@ -135,7 +135,7 @@ class Deisa(IDeisa):
                     parts = payload["futures"]
 
                     # reconstruct array
-                    parts = sorted(parts, key=lambda p: p["id"])
+                    parts = sorted(parts, key=lambda p: p["placement"])
 
                     darr_chunks = [
                         da.from_delayed(
@@ -278,7 +278,7 @@ class Deisa(IDeisa):
                 iteration = payload["iteration"]
                 futures = payload["futures"]
 
-                parts = sorted(futures, key=lambda p: p['id'])
+                parts = sorted(futures, key=lambda p: p['placement'])
 
                 darr_chunks = [
                     da.from_delayed(

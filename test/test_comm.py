@@ -28,8 +28,12 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     from deisa.dask import Bridge
     from deisa.dask import get_connection_info
 
-    if comm == 'mpi':
+    if comm == 'mpi-comm-world':
         comm = MPI.COMM_WORLD
+    elif comm == 'mpi-comm-cart':
+        comm = MPI.COMM_WORLD
+        dims = MPI.Compute_dims(comm.Get_size(), len(global_size))
+        comm = comm.Create_cart(dims)
     elif comm == 'dask':
         comm = DaskComm(get_connection_info(scheduler_address), int(np.prod(parallelism)))
     else:
@@ -46,13 +50,13 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
 
     arrays_metadata = {
         'temperature': {
-            'size': (global_size[0], global_size[1]),
-            'subsize': (global_size[0] // parallelism[0],
-                        global_size[1] // parallelism[1])
+            'size': global_size,
+            'subsize': tuple(g // p for g, p in zip(global_size, parallelism))
         }
     }
 
-    print(f"MPI {rank} of {size} started. scheduler_address={scheduler_address}", flush=True)
+    print(f"MPI {rank} of {size} started. scheduler_address={scheduler_address}, arrays_metadata={arrays_metadata}",
+          flush=True)
 
     bridge = Bridge(id=rank,
                     arrays_metadata=arrays_metadata,
@@ -60,8 +64,7 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
                     comm=comm,
                     wait_for_go=False)
 
-    to_send = np.ones((global_size[0] // parallelism[0],
-                       global_size[1] // parallelism[1]), dtype=np.float64)
+    to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
 
     bridge.send('temperature', to_send, iteration=1)
 
@@ -92,15 +95,14 @@ def test_mpi_gather(i):
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
-@pytest.mark.parametrize('parallelism', [(1, 1), (2, 2)])
-@pytest.mark.parametrize('comm', ['mpi', 'dask'])
-def test_mpi_bridge(parallelism, comm):
+@pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
+@pytest.mark.parametrize('parallelism', [1, 2])  # per dim
+@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world', 'dask'])
+def test_mpi_bridge(global_size: Tuple, parallelism: int, comm):
     from distributed import Client
     import numpy as np
 
     from distributed import LocalCluster
-
-    global_size = (32, 32)
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
@@ -108,6 +110,8 @@ def test_mpi_bridge(parallelism, comm):
     print(f"client={client}", flush=True)
 
     client.wait_for_workers(2, timeout=10)
+
+    parallelism = (parallelism,) * len(global_size)
 
     cmd = ["mpirun", "-n", str(np.prod(parallelism)), "--oversubscribe", sys.executable, "-u", __file__,
            "--mpi-bridge",

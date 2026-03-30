@@ -90,9 +90,6 @@ class Bridge(IBridge):
                            for meta in self.arrays_metadata.values()))
         self._inflight_futures = collections.deque(maxlen=maxlen)
 
-        # handle 3 cases for Comm:
-        # - if comm is None: use_mpi_if_available or no MPI
-        # - if comm is an MPI Comm: use it
         self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
                                                 client=self.client,
                                                 size=self.system_metadata['nb_bridges'])
@@ -134,10 +131,8 @@ class Bridge(IBridge):
 
         # Barrier. Wait for all bridges.
         to_send = {
-            'array_name': array_name,
-            'id': self.id,
-            'iteration': iteration,
-            'future-info': res
+            'future-info': res,
+            'placement': self.comm.Get_coords(self.comm.Get_rank()) if hasattr(self.comm, 'Get_coords') else self.id
         }
         print(f"[Bridge {self.id}] send() to_send={to_send}", flush=True)
         gathered_data = self.comm.gather(to_send, root=0)
@@ -164,9 +159,9 @@ class Bridge(IBridge):
 
                 'futures': [{
                     'future': d['future-info']['future'],
-                    'id': d['id'],
-                    'shape': data.shape,  # TODO: remove
-                    'dtype': str(data.dtype),  # TODO: remove
+                    'shape': data.shape,
+                    'dtype': str(data.dtype),
+                    'placement': d['placement']
                 } for d in gathered_data]
             }
             self.client.log_event(array_name, to_send)

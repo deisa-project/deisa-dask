@@ -27,9 +27,9 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import time
+import uuid
 from typing import Any, Optional
 
-import uuid
 from deisa.core import ICommunicator
 from distributed import Client
 
@@ -44,12 +44,31 @@ def is_mpi_comm(comm):
         return False
 
 
-def resolve_comm(comm, use_mpi_if_available=True, *args, **kwargs) -> ICommunicator:
+def is_running_on_mpi():
+    try:
+        import mpi4py
+        mpi4py.rc.initialize = False
+        from mpi4py import MPI
+        return MPI.Is_initialized() and MPI.COMM_WORLD.Get_size() > 1
+    except ImportError:
+        return False
+
+
+def resolve_comm(comm, cart_coord_dims=None, use_mpi_if_available=True, *args, **kwargs) -> ICommunicator:
+    """
+    1 comm per array
+    handle 3 cases for Comm:
+    - if comm is None: use_mpi_if_available or no MPI
+    - if comm is an MPI Comm: use it
+    """
     if comm is None:
-        if use_mpi_if_available:
+        if use_mpi_if_available and is_running_on_mpi():
             try:
                 from mpi4py import MPI
-                return MPI.COMM_WORLD
+                mpi_comm = MPI.COMM_WORLD
+                dims = MPI.Compute_dims(mpi_comm.Get_size(), cart_coord_dims)
+                cart_comm = mpi_comm.Create_cart(dims)
+                return cart_comm
             except ImportError:
                 return DaskComm(*args, **kwargs)
         return DaskComm(*args, **kwargs)
@@ -132,3 +151,11 @@ class CommActor:
 
     def gather_get(self, seq: int):
         return self.gathers.pop(seq, [])
+
+    def get_coords(self, rank):
+        coords = []
+        r = rank
+        for d in reversed(self.dims):
+            coords.append(r % d)
+            r //= d
+        return tuple(reversed(coords))
