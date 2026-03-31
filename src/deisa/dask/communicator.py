@@ -81,7 +81,7 @@ def resolve_comm(comm, cart_coord_dims=None, use_mpi_if_available=True, *args, *
 
 
 class DaskComm(ICommunicator):
-    def __init__(self, client: Client, size: int, cart_coord_dims: Optional[Sequence[int]] = None):
+    def __init__(self, client: Client, size: int, cart_coord_dims: Optional[Sequence[int]] = None, *args, **kwargs):
         self.client = client
         self.size = size
 
