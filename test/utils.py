@@ -28,6 +28,8 @@
 # =============================================================================
 import time
 
+import dask.array as da
+
 
 def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
     """
@@ -56,3 +58,9 @@ def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
         time.sleep(interval)
 
     return False
+
+
+def dask_array_element_wise_equal(a, b):
+    assert type(a) == da.Array, "a must be a dask array"
+    assert type(b) == da.Array, "b must be a dask array"
+    return (a == b).all().compute(), "a and b are not equal"

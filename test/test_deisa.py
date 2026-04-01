@@ -340,8 +340,6 @@ class TestUsingDaskCluster:
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
-            # register an already registered callback. This should not do anything.
-            deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
             global_data = sim.generate_data('my_array', iteration=i)
             global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                                 global_grid_size[1] // mpi_parallelism[1]))
@@ -350,9 +348,7 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['counter'] == i), "callback was not called"
 
             assert wait_for(lambda: context['latest_timestep'] == i), "callback was not called with correct timestep"
-            assert wait_for(lambda: type(context['latest_data']) == da.Array), \
-                "callback was not called with correct data"
-            assert wait_for(lambda: context['latest_data'].any() == global_data_da.any()), \
+            assert wait_for(lambda: dask_array_element_wise_equal(context['latest_data'], global_data_da)), \
                 "callback was not called with correct data"
             assert wait_for(lambda: context['latest_window_size'] == min(i, window_size)), \
                 "callback was not called with correct window size"
@@ -366,12 +362,14 @@ class TestUsingDaskCluster:
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('temperature_window_size', [1, 2, 3])
     @pytest.mark.parametrize('pressure_window_size', [2])
+    @pytest.mark.parametrize('density_window_size', [1])
     def test_sliding_window_callbacks_register(self, global_temperature_grid_size: tuple,
                                                global_pressure_grid_size: tuple,
                                                mpi_parallelism: tuple,
                                                nb_iterations: int,
                                                temperature_window_size: int,
                                                pressure_window_size: int,
+                                               density_window_size: int,
                                                env_setup):
         print(f"global_temperature_grid_size={global_temperature_grid_size}, "
               f"global_pressure_grid_size={global_pressure_grid_size}, "
@@ -394,7 +392,12 @@ class TestUsingDaskCluster:
                                      'size': global_pressure_grid_size,
                                      'subsize': (global_pressure_grid_size[0] // mpi_parallelism[0],
                                                  global_pressure_grid_size[1] // mpi_parallelism[1])
-                                 }
+                                 },
+                                 'density': {
+                                     'size': global_temperature_grid_size,
+                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                 },
                              },
                              wait_for_go=False)
         deisa = Deisa(get_connection_info=lambda: client)
@@ -406,8 +409,8 @@ class TestUsingDaskCluster:
         }
 
         # def __call__(self, *window: List[da.Array], timestep: int) -> None: ...
-        def window_callback(temperatures: List[da.Array], pressures: List[da.Array], timestep: int):
-            print(f"hello from window_callback. iteration={timestep}", flush=True)
+        def window_callback_2(temperatures: List[da.Array], pressures: List[da.Array], timestep: int):
+            print(f"hello from window_callback_2. iteration={timestep}", flush=True)
             context['counter'] += 1
             context['latest_timestep'] = timestep
             context['latest_temperature'] = temperatures[-1]
@@ -415,20 +418,31 @@ class TestUsingDaskCluster:
             context['latest_pressure'] = pressures[-1]
             context['latest_pressure_window_size'] = len(pressures)
 
-        deisa.register_sliding_window_callbacks(window_callback,
-                                                ("temperature", temperature_window_size),
-                                                ("pressure", pressure_window_size),
-                                                when='AND')
+        def window_callback_3(temperatures: List[da.Array], pressures: List[da.Array], density: List[da.Array],
+                              timestep: int):
+            print(f"hello from window_callback_3. iteration={timestep}", flush=True)
+            window_callback_2(temperatures, pressures, timestep)
+            context['latest_density'] = density[-1]
+            context['latest_density_window_size'] = len(density)
+
+        callback_id = deisa.register_sliding_window_callbacks(window_callback_2,
+                                                              ("temperature", temperature_window_size),
+                                                              ("pressure", pressure_window_size),
+                                                              when='AND')
+        assert callback_id is not None, "callback was not registered"
+
+        # register a callback with different number of arrays
+        callback_id = deisa.register_sliding_window_callbacks(window_callback_3,
+                                                              ("temperature", temperature_window_size),
+                                                              ("pressure", pressure_window_size),
+                                                              ("density", density_window_size),
+                                                              when='AND')
+        assert callback_id is not None, "callback was not registered"
+
+        time.sleep(.1)  # wait for callback to be completely registered
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
-            # register an already registered callback. This should not do anything.
-            deisa.register_sliding_window_callbacks(window_callback,
-                                                    ("temperature", temperature_window_size),
-                                                    ("pressure", pressure_window_size),
-                                                    when='AND')
-
-            time.sleep(.5)
 
             global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
             global_temperature_da = da.from_array(global_temperature,
@@ -442,21 +456,33 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['counter'] == i, timeout=10), "callback was not called"
             assert wait_for(lambda: context['latest_timestep'] == i), "callback was not called with correct timestep"
             # temperatures
-            assert wait_for(
-                lambda: type(context['latest_temperature']) == da.Array), "callback was not called with correct data"
-            assert wait_for(lambda: context[
-                                        'latest_temperature'].any() == global_temperature_da.any()), "callback was not called with correct data"
-            assert wait_for(lambda: context['latest_temperature_window_size'] == min(i,
-                                                                                     temperature_window_size)), "callback was not called with correct window size"
+            assert dask_array_element_wise_equal(context['latest_temperature'], global_temperature_da), \
+                "callback was not called with correct data"
+            assert wait_for(lambda: context['latest_temperature_window_size'] == min(i, temperature_window_size)), \
+                "callback was not called with correct window size"
             # pressures
-            assert wait_for(
-                lambda: type(context['latest_pressure']) == da.Array), "callback was not called with correct data"
-            assert wait_for(lambda: context[
-                                        'latest_pressure'].any() == global_pressure_da.any()), "callback was not called with correct data"
-            assert wait_for(lambda: context['latest_pressure_window_size'] == min(i,
-                                                                                  pressure_window_size)), "callback was not called with correct window size"
+            assert dask_array_element_wise_equal(context['latest_pressure'], global_pressure_da), \
+                "callback was not called with correct data"
+            assert wait_for(lambda: context['latest_pressure_window_size'] == min(i, pressure_window_size)), \
+                "callback was not called with correct window size"
 
-        assert context['counter'] == nb_iterations, f"callback was not called {nb_iterations} times"
+            # density
+            assert wait_for(lambda: 'latest_density' not in context), "uncorrect callback call"
+
+        # generate density to trigger callback_3
+        iteration = nb_iterations + 1
+        global_density = sim.generate_data('density', iteration=iteration)
+        global_density_da = da.from_array(global_density,
+                                          chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                  global_temperature_grid_size[1] // mpi_parallelism[1]))
+
+        assert wait_for(lambda: 'latest_density' in context
+                                and dask_array_element_wise_equal(context['latest_density'], global_density_da)), \
+            "callback was not called with correct data"
+        assert wait_for(lambda: context['latest_density_window_size'] == min(i, density_window_size)), \
+            "callback was not called with correct window size"
+
+        assert context['counter'] == iteration, f"callback was not called {nb_iterations} times"
         deisa.close()
 
     def test_sliding_window_callback_unregister(self, env_setup):

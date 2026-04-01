@@ -32,7 +32,7 @@ import collections
 import sys
 import threading
 import time
-from typing import Callable, Union, Tuple, List, Final, Literal, Any
+from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set
 
 import dask
 import dask.array as da
@@ -78,18 +78,10 @@ class Deisa(IDeisa):
         self._callbacks = {}  # callback_id -> metadata
         self._callback_seq = 0  # unique counter
 
-        # example of arrays_metadata:
-        # arrays_metadata = {
-        #     'global_t': {
-        #         'size': [20, 20],
-        #         'subsize': [10, 10],
-        #         'sliding_window_callbacks': {}
-        #     }
-        #     'global_p': {
-        #         'size': [100, 100],
-        #         'subsize': [50, 50],
-        #         'sliding_window_callbacks': {}
-        #     }
+        self._callbacks: Dict[Deisa.Callback_id, Dict] = {}
+        self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
+        self._topic_handlers: Dict[str, Callable] = {}
+        self._callback_seq = 0  # unique counter
 
     def __del__(self):
         print("Deisa.__del__", flush=True)
@@ -241,133 +233,52 @@ class Deisa(IDeisa):
             if array_name not in self.arrays_metadata:
                 raise ValueError(f'unknown array name: {array_name}')
 
-        # ---- init sliding windows (shared storage) ----
-        for arr_name, window_size in parsed:
-            if arr_name not in self.current_sliding_windows:
-                self.current_sliding_windows[arr_name] = {
-                    "window": collections.deque(maxlen=window_size),
-                    "changed": False,
-                }
-
         array_names = self.__get_array_names(*parsed)
-
-        # create unique callback id
-        callback_id = self._next_callback_id()
-
-        # store callback metadata
-        self._callbacks[callback_id] = {
-            "callback": callback,
-            "parsed": parsed,
-            "when": when,
-            "exception_handler": exception_handler,
-            "array_names": array_names,
-        }
-
-        async def topic_handler(event):
-            def call_callback(cb, *args, **kwargs):
-                async def _log_exception(awaitable):
-                    try:
-                        return await awaitable
-                    except Exception as ex:
-                        try:
-                            exception_handler(callback_id, ex)
-                        except BaseException:
-                            print(f"Exception in exception handler. Unregistering {callback_id}",
-                                  file=sys.stderr, flush=True)
-                            self.unregister_sliding_window_callback(callback_id)
-
-                c = asyncio.to_thread(cb, *args, **kwargs)
-                return asyncio.create_task(_log_exception(c))
-
-            try:
-                _, payload = event
-                print(f"[Deisa] topic_handler({callback_id}): {payload}", flush=True)
-
-                array_name = payload["array_name"]
-                iteration = payload["iteration"]
-                futures = payload["futures"]
-
-                parts = sorted(futures, key=lambda p: p['placement'])
-
-                darr_chunks = [
-                    da.from_delayed(
-                        dask.delayed(Future(p["future"], client=self.client)),
-                        p["shape"],
-                        dtype=p["dtype"],
-                    )
-                    for p in parts
-                ]
-
-                darr = self.__tile_dask_blocks(
-                    darr_chunks,
-                    self.arrays_metadata[array_name]["size"]
-                )
-
-                # update sliding window
-                d = self.current_sliding_windows[array_name]
-                d["window"].append(darr)
-                d["changed"] = True
-
-                ordered_array_names = list(self.current_sliding_windows.keys())
-
-                windows = [
-                    list(self.current_sliding_windows[name]["window"])
-                    for name in ordered_array_names
-                ]
-
-                # trigger logic
-                if when == "OR":
-                    call_callback(callback, *windows, timestep=iteration)
-                    d["changed"] = False
-
-                else:  # AND
-                    if all(self.current_sliding_windows[name]["changed"] for name in ordered_array_names):
-                        call_callback(callback, *windows, timestep=iteration)
-
-                        for name in ordered_array_names:
-                            self.current_sliding_windows[name]["changed"] = False
-
-            except BaseException as e:
-                try:
-                    exception_handler(callback_id, e)
-                except BaseException:
-                    print(f"Exception in exception handler. Unregistering {callback_id}", file=sys.stderr, flush=True)
-                    self.unregister_sliding_window_callback(callback_id)
+        callback_id = self.__next_callback_id()
 
         print(f"[Deisa] register callback_id={callback_id}", flush=True)
 
-        # subscribe (one handler per registration!)
+        # per-callback state
+        callback_state = {
+            arr_name: {
+                "window": collections.deque(maxlen=ws),
+                "changed": False,
+            }
+            for arr_name, ws in parsed
+        }
+
+        self._callbacks[callback_id] = {
+            "callback": callback,
+            "when": when,
+            "exception_handler": exception_handler,
+            "array_names": array_names,
+            "state": callback_state,
+        }
+
         for array_name in array_names:
-            self.client.subscribe_topic(array_name, topic_handler)
+            self._callbacks_by_array.setdefault(array_name, set()).add(callback_id)
+
+            # create handler only once per topic
+            if array_name not in self._topic_handlers:
+                handler = self._make_topic_handler(array_name)
+                self._topic_handlers[array_name] = handler
+
+                print(f"[Deisa] subscribe_topic(): array_name={array_name}", flush=True)
+                self.client.subscribe_topic(array_name, handler)
 
         return callback_id
 
     def unregister_sliding_window_callback(self, callback_id: Callback_id) -> None:
-        meta = self._callbacks.pop(callback_id, None)
-        if meta is None:
-            return  # already removed or unknown id
+        cb_data = self._callbacks.pop(callback_id, None)
+        if cb_data is None:
+            return
 
-        array_names = meta.get("array_names", [])
-
-        # unsubscribe from all topics
-        for array_name in array_names:
-            try:
-                self.client.unsubscribe_topic(array_name)
-            except BaseException:
-                # don't fail hard during cleanup
-                pass
-
-        # cleanup sliding window state (only if no other callback depends on it)
-        try:
-            for arr_name, _ in meta["parsed"]:
-                still_used = any(arr_name in [a for a, _ in other["parsed"]]
-                                 for other in self._callbacks.values())
-
-                if not still_used:
-                    self.current_sliding_windows.pop(arr_name, None)
-
-        except BaseException:
-            pass
+        for array_name in cb_data["array_names"]:
+            s = self._callbacks_by_array.get(array_name)
+            if s:
+                s.discard(callback_id)
+                if not s:
+                    del self._callbacks_by_array[array_name]
 
     def set(self, key: str, data: Union[Future, object], chunked=False):
         if chunked:
@@ -386,7 +297,91 @@ class Deisa(IDeisa):
         else:
             var.delete()
 
-    def _next_callback_id(self):
+    def _make_topic_handler(self, array_name):
+        async def topic_handler(event):
+            try:
+                _, payload = event
+
+                print(f"[Deisa] topic_handler({array_name}): {payload}", flush=True)
+
+                iteration = payload["iteration"]
+                futures = payload["futures"]
+
+                parts = sorted(futures, key=lambda p: p['placement'])
+
+                darr_chunks = [
+                    da.from_delayed(
+                        dask.delayed(Future(p["future"], client=self.client)),
+                        shape=p["shape"], dtype=p["dtype"],
+                    ) for p in parts]
+
+                darr = self.__tile_dask_blocks(darr_chunks, self.arrays_metadata[array_name]["size"])
+
+                # dispatch to interested callbacks
+                for callback_id in list(self._callbacks_by_array.get(array_name, [])):
+                    cb_data = self._callbacks.get(callback_id)
+                    if cb_data is None:
+                        continue
+
+                    if array_name not in cb_data["state"]:
+                        continue
+
+                    try:
+                        self._process_callback(callback_id, cb_data, array_name, darr, iteration)
+                    except Exception as e:
+                        self._handle_callback_exception(callback_id, cb_data, e)
+
+            except Exception as e:
+                print(f"[Deisa] topic handler error ({array_name}): {e}", file=sys.stderr)
+
+        return topic_handler
+
+    def _process_callback(self, callback_id, cb_data, array_name, darr, iteration):
+        state = cb_data["state"]
+
+        # update sliding window
+        d = state[array_name]
+        d["window"].append(darr)
+        d["changed"] = True
+
+        ordered_array_names = cb_data["array_names"]
+
+        windows = [list(state[name]["window"]) for name in ordered_array_names]
+
+        def _call_callback():
+            async def _run():
+                try:
+                    await asyncio.to_thread(
+                        cb_data["callback"],
+                        *windows,
+                        timestep=iteration
+                    )
+                except Exception as ex:
+                    self._handle_callback_exception(callback_id, cb_data, ex)
+
+            asyncio.create_task(_run())
+
+        if cb_data["when"] == "OR":
+            _call_callback()
+            d["changed"] = False
+
+        else:  # AND
+            if all(state[name]["changed"] for name in ordered_array_names):
+                _call_callback()
+
+                for name in ordered_array_names:
+                    state[name]["changed"] = False
+
+    def _handle_callback_exception(self, callback_id, cb_data, ex):
+        try:
+            handler = cb_data["exception_handler"]
+            if handler:
+                handler(callback_id, ex)
+        except BaseException:
+            print(f"Exception in exception handler. Unregistering {callback_id}", file=sys.stderr, flush=True)
+            self.unregister_sliding_window_callback(callback_id)
+
+    def __next_callback_id(self):
         self._callback_seq += 1
         return f"{CALLBACK_PREFIX}{self._callback_seq}"
 
