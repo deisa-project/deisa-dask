@@ -418,6 +418,11 @@ class TestUsingDaskCluster:
             context['latest_pressure'] = pressures[-1]
             context['latest_pressure_window_size'] = len(pressures)
 
+            # do something with the data
+            s1 = temperatures[-1].sum().compute()
+            s2 = temperatures[-1].sum().compute()
+            assert s1 == s2, "data is not the same"
+
         def window_callback_3(temperatures: List[da.Array], pressures: List[da.Array], density: List[da.Array],
                               timestep: int):
             print(f"hello from window_callback_3. iteration={timestep}", flush=True)

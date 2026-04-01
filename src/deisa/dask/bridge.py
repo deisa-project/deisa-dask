@@ -26,8 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-import collections
-import math
 import uuid
 from numbers import Number
 from typing import Any, Iterator, List
@@ -81,12 +79,6 @@ class Bridge(IBridge):
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
         self.id = id
         self.workers = list(self.client.scheduler_info()["workers"].keys())
-
-        # for each array, compute total number of chunks and sum. For headroom, x10 iterations.
-        maxlen = 10 * (sum(math.prod(s // ss for s, ss in zip(meta['size'], meta['subsize']))
-                           for meta in self.arrays_metadata.values()))
-        self._inflight_futures = collections.deque(maxlen=maxlen)
-
         self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
                                                 client=self.client,
                                                 size=self.system_metadata['nb_bridges'],
@@ -145,11 +137,9 @@ class Bridge(IBridge):
                 who_has = {**who_has, **d['future-info']['who_has']}
                 nbytes = {**nbytes, **d['future-info']['nbytes']}
 
-                # TODO: might be an issue: if analytics is slow, future may be released before use, leading to FutureCancelledError
-                self._inflight_futures.append(d['future-info']['future'])
-
+            # TODO: check if a call to scheduler.client_releases_keys is needed to release the futures
             # only update the scheduler with who has what and register the future once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client)
 
             to_send = {
                 'array_name': array_name,
@@ -225,10 +215,6 @@ class Bridge(IBridge):
         data2 = valmap(to_serialize, data)
 
         _, who_has, nbytes = await scatter_to_workers(workers, data2, self.client.rpc)
-
-        # await self.client.scheduler.update_data(
-        #     who_has=who_has, nbytes=nbytes, client=self.client.id
-        # )
 
         out = {
             k: {
