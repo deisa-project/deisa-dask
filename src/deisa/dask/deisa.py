@@ -265,10 +265,19 @@ class Deisa(IDeisa):
 
         async def topic_handler(event):
             def call_callback(cb, *args, **kwargs):
-                if asyncio.iscoroutinefunction(cb):
-                    asyncio.create_task(cb(*args, **kwargs))
-                else:
-                    cb(*args, **kwargs)
+                async def _log_exception(awaitable):
+                    try:
+                        return await awaitable
+                    except Exception as ex:
+                        try:
+                            exception_handler(callback_id, ex)
+                        except BaseException:
+                            print(f"Exception in exception handler. Unregistering {callback_id}",
+                                  file=sys.stderr, flush=True)
+                            self.unregister_sliding_window_callback(callback_id)
+
+                c = asyncio.to_thread(cb, *args, **kwargs)
+                return asyncio.create_task(_log_exception(c))
 
             try:
                 _, payload = event

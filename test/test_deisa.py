@@ -662,7 +662,7 @@ class TestUsingDaskCluster:
 
         context = {'counter': 0}
 
-        async def window_callback(window: list[da.Array], timestep: int):
+        def window_callback(window: list[da.Array], timestep: int):
             print(f"hello from window_callback. iteration={timestep}", flush=True)
 
             darr = window[-1]
@@ -672,10 +672,7 @@ class TestUsingDaskCluster:
                                       global_grid_size[1] // mpi_parallelism[1])
 
             meta = np.array([[0]])
-            res = darr.map_blocks(map_block_function, dtype=int, meta=meta)
-            res = client.compute(res)
-            res = await res
-
+            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
             context['counter'] += res.sum()
 
         def exception_handler(callback_id, e: Exception):
