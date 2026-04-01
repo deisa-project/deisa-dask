@@ -41,7 +41,7 @@ from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
-from utils import wait_for
+from utils import wait_for, dask_array_element_wise_equal
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
