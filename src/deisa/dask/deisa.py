@@ -47,6 +47,7 @@ LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
 CALLBACK_PREFIX: Final[str] = "deisa_cb_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
+CLIENT_KEY: Final[str] = "deisa"
 
 
 class Deisa(IDeisa):
@@ -82,9 +83,10 @@ class Deisa(IDeisa):
         self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
+        self._received_futures: List[str] = []
 
     def __del__(self):
-        print("Deisa.__del__", flush=True)
+        self.client.scheduler.client_releases_keys(keys=self._received_futures, client=CLIENT_KEY)
         self.client.close()
 
     def close(self):
@@ -125,6 +127,8 @@ class Deisa(IDeisa):
                     payload = max(payloads, key=lambda p: p["iteration"])
                     iteration = payload["iteration"]
                     parts = payload["futures"]
+
+                    self._received_futures += [p["future"] for p in parts]
 
                     # reconstruct array
                     parts = sorted(parts, key=lambda p: p["placement"])
@@ -306,6 +310,8 @@ class Deisa(IDeisa):
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
+
+                self._received_futures += [p["future"] for p in futures]
 
                 parts = sorted(futures, key=lambda p: p['placement'])
 

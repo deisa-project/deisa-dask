@@ -33,13 +33,13 @@ from typing import Any, Iterator, List
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Client, Variable, Future
+from distributed import Client, Variable
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
 from deisa.dask.communicator import resolve_comm
-from deisa.dask.deisa import VARIABLE_PREFIX
+from deisa.dask.deisa import VARIABLE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 
 
@@ -137,9 +137,9 @@ class Bridge(IBridge):
                 who_has = {**who_has, **d['future-info']['who_has']}
                 nbytes = {**nbytes, **d['future-info']['nbytes']}
 
-            # TODO: check if a call to scheduler.client_releases_keys is needed to release the futures
+            # TODO: scheduler.client_releases_keys is call in Deisa.__del()__. Is there a better way ?
             # only update the scheduler with who has what and register the future once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client)
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=CLIENT_KEY)
 
             to_send = {
                 'array_name': array_name,
@@ -211,21 +211,18 @@ class Bridge(IBridge):
 
         assert isinstance(data, dict)
 
-        types = valmap(type, data)
         data2 = valmap(to_serialize, data)
 
         _, who_has, nbytes = await scatter_to_workers(workers, data2, self.client.rpc)
 
         out = {
             k: {
-                'future': Future(k, self.client).key,
+                'future': k,
                 'who_has': who_has,
                 'nbytes': nbytes
             }
             for k in data
         }
-        for key, typ in types.items():
-            self.client.futures[key].finish(type=typ)
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
