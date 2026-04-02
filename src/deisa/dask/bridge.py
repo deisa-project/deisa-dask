@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import logging
 import uuid
 from numbers import Number
 from typing import Any, Iterator, List
@@ -41,6 +42,8 @@ from tlz import valmap
 from deisa.dask.communicator import resolve_comm
 from deisa.dask.deisa import VARIABLE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
+
+logger = logging.getLogger(__name__)
 
 
 class Bridge(IBridge):
@@ -124,9 +127,9 @@ class Bridge(IBridge):
             'future-info': res,
             'placement': self.comm.Get_coords(self.comm.Get_rank()) if hasattr(self.comm, 'Get_coords') else self.id
         }
-        print(f"[Bridge {self.id}] send() to_send={to_send}", flush=True)
+        logger.debug(f"[{self.id}] send() to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
-        print(f"[Bridge {self.id}] send() gathered_data={gathered_data}", flush=True)  # TODO: use logger
+        logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
 
         if gathered_data is not None:
             # rank 0 (root=0 in comm.gather)

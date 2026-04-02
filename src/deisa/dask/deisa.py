@@ -29,7 +29,7 @@
 
 import asyncio
 import collections
-import sys
+import logging
 import threading
 import time
 from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set
@@ -48,6 +48,8 @@ VARIABLE_PREFIX: Final[str] = "deisa_variable_"
 CALLBACK_PREFIX: Final[str] = "deisa_cb_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
 CLIENT_KEY: Final[str] = "deisa"
+
+logger = logging.getLogger(__name__)
 
 
 class Deisa(IDeisa):
@@ -76,8 +78,6 @@ class Deisa(IDeisa):
 
         self.received_metadata = dict[str, list[dict[str, Any]]]()  # array_name: list[metadata]
         self.current_sliding_windows = {}
-        self._callbacks = {}  # callback_id -> metadata
-        self._callback_seq = 0  # unique counter
 
         self._callbacks: Dict[Deisa.Callback_id, Dict] = {}
         self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
@@ -147,7 +147,7 @@ class Deisa(IDeisa):
                         self.arrays_metadata[name]["size"]
                     )
 
-                    print(f"[ITER {iteration}] {name} shape={darr.shape}", flush=True)
+                    logger.debug(f"[ITER {iteration}] {name} shape={darr.shape}")
                     return darr, iteration
 
             # timeout handling
@@ -158,7 +158,7 @@ class Deisa(IDeisa):
 
     @staticmethod
     def __default_exception_handler(callback_id: Callback_id, e):
-        print(f"Exception thrown for callback id {callback_id}: {e}", file=sys.stderr, flush=True)
+        logger.error(f"Exception thrown for callback id {callback_id}: {e}")
 
     def register_sliding_window_callback(self,
                                          callback: SupportsSlidingWindow.Callback,
@@ -240,7 +240,7 @@ class Deisa(IDeisa):
         array_names = self.__get_array_names(*parsed)
         callback_id = self.__next_callback_id()
 
-        print(f"[Deisa] register callback_id={callback_id}", flush=True)
+        logger.debug(f"_register_sliding_window_callbacks_impl: register callback_id={callback_id}")
 
         # per-callback state
         callback_state = {
@@ -267,7 +267,7 @@ class Deisa(IDeisa):
                 handler = self._make_topic_handler(array_name)
                 self._topic_handlers[array_name] = handler
 
-                print(f"[Deisa] subscribe_topic(): array_name={array_name}", flush=True)
+                logger.debug(f"_register_sliding_window_callbacks_impl: subscribe_topic() {array_name}")
                 self.client.subscribe_topic(array_name, handler)
 
         return callback_id
@@ -306,7 +306,7 @@ class Deisa(IDeisa):
             try:
                 _, payload = event
 
-                print(f"[Deisa] topic_handler({array_name}): {payload}", flush=True)
+                logger.debug(f"topic_handler: array_name={array_name}, payload={payload}")
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
@@ -338,7 +338,7 @@ class Deisa(IDeisa):
                         self._handle_callback_exception(callback_id, cb_data, e)
 
             except Exception as e:
-                print(f"[Deisa] topic handler error ({array_name}): {e}", file=sys.stderr)
+                logger.error(f"topic_handler: topic handler error array_name={array_name}, e={e}")
 
         return topic_handler
 
@@ -384,7 +384,7 @@ class Deisa(IDeisa):
             if handler:
                 handler(callback_id, ex)
         except BaseException:
-            print(f"Exception in exception handler. Unregistering {callback_id}", file=sys.stderr, flush=True)
+            logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
             self.unregister_sliding_window_callback(callback_id)
 
     def __next_callback_id(self):
