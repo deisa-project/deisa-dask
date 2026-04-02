@@ -55,7 +55,7 @@ def is_running_on_mpi():
         return False
 
 
-def resolve_comm(comm, cart_coord_dims=None, use_mpi_if_available=True, *args, **kwargs) -> ICommunicator:
+def resolve_comm(comm, cart_coord_dims=1, use_mpi_if_available=True, *args, **kwargs) -> ICommunicator:
     """
     1 comm per array
     handle 3 cases for Comm:

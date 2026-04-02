@@ -6,7 +6,7 @@ from typing import Tuple
 
 import pytest
 
-from deisa.dask.communicator import DaskComm
+from deisa.dask.communicator import DaskComm, resolve_comm
 
 
 def mpi_gather_test():
@@ -28,7 +28,12 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     from deisa.dask import Bridge
     from deisa.dask import get_connection_info
 
-    if comm == 'mpi-comm-world':
+    if comm == 'none':
+        comm = resolve_comm(None,
+                            use_mpi_if_available=True,
+                            client=get_connection_info(scheduler_address),
+                            size=int(np.prod(parallelism)))
+    elif comm == 'mpi-comm-world':
         comm = MPI.COMM_WORLD
     elif comm == 'mpi-comm-cart':
         comm = MPI.COMM_WORLD
@@ -102,8 +107,8 @@ def test_mpi_gather(i):
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
-@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world', 'dask', 'dask-cart'])
-def test_mpi_bridge(global_size: Tuple, parallelism: int, comm):
+@pytest.mark.parametrize('comm', ['none', 'mpi-comm-cart', 'mpi-comm-world', 'dask', 'dask-cart'])
+def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     from distributed import Client
     import numpy as np
 
@@ -156,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
     parser.add_argument("--parallelism", default="(2, 2)")
-    parser.add_argument("--comm", default="dask")
+    parser.add_argument("--comm", default="none")
 
     args = parser.parse_args()
 
