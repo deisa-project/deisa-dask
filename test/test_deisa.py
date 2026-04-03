@@ -124,6 +124,8 @@ class TestDeisaCtor:
     @pytest.fixture(scope="class")
     def env_setup_tcp_cluster(self):
         cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=4242)
+        client = Client(cluster)
+        client.wait_for_workers(1)
         yield cluster
         cluster.close()
 

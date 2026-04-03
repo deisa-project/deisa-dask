@@ -83,11 +83,13 @@ class Deisa(IDeisa):
         self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
-        self._received_futures: List[str] = []
+        self._received_futures: Set[str] = set()
 
     def __del__(self):
-        self.client.scheduler.client_releases_keys(keys=self._received_futures, client=CLIENT_KEY)
-        self.client.close()
+        if hasattr(self, 'client') and self.client:
+            if len(self._received_futures) > 0:
+                self.client.scheduler.client_releases_keys(keys=self._received_futures, client=CLIENT_KEY)
+            self.client.close()
 
     def close(self):
         self.__del__()
@@ -128,7 +130,7 @@ class Deisa(IDeisa):
                     iteration = payload["iteration"]
                     parts = payload["futures"]
 
-                    self._received_futures += [p["future"] for p in parts]
+                    self._received_futures.update([p["future"] for p in parts])
 
                     # reconstruct array
                     parts = sorted(parts, key=lambda p: p["placement"])
@@ -311,7 +313,7 @@ class Deisa(IDeisa):
                 iteration = payload["iteration"]
                 futures = payload["futures"]
 
-                self._received_futures += [p["future"] for p in futures]
+                self._received_futures.update([p["future"] for p in futures])
 
                 parts = sorted(futures, key=lambda p: p['placement'])
 
@@ -347,6 +349,17 @@ class Deisa(IDeisa):
 
         # update sliding window
         d = state[array_name]
+
+        # release futures when they are no longer needed
+        window: collections.deque = d["window"]
+        if len(window) == window.maxlen:
+            # queue is full, the first element will be discarded on the next call to append.
+            # Tell the scheduler that we no longer need the keys.
+            keys = [dep for dep in window[0].dask.dependencies if dep != window[0].name]
+            if len(keys) > 0:
+                self._received_futures = self._received_futures - set(keys)
+                self.client.scheduler.client_releases_keys(keys=keys, client=CLIENT_KEY)
+
         d["window"].append(darr)
         d["changed"] = True
 
@@ -504,65 +517,3 @@ class Deisa(IDeisa):
     @staticmethod
     def make_topic(arrays, when) -> str:
         return f"{when}|" + "|".join(sorted(arrays))
-
-    # async def topic_handler(event):
-    #     """
-    #     Runs when the bridge publishes an event.
-    #     """
-    #     try:
-    #         # metadata = {
-    #         #     'array_name': array_name,
-    #         #     'rank': self.mpi_rank,
-    #         #     'shape': data.shape,
-    #         #     'dtype': str(data.dtype),
-    #         #     'iteration': iteration,
-    #         #     'future': f.key
-    #         # }
-    #         _, metadata = event
-    #         array_name = metadata['array_name']
-    #
-    #         if 'array_name' not in metadata:
-    #             raise ValueError(f"Metadata must contain 'array_name' key.")
-    #
-    #         if array_name not in self.received_metadata:
-    #             self.received_metadata[array_name] = []
-    #
-    #         received_array_metadata = self.received_metadata[array_name]
-    #
-    #         received_array_metadata.append(metadata)
-    #
-    #         # will return None if did not receive all the chunks
-    #         res = await self.__get_array(array_name, received_array_metadata)
-    #         if res:
-    #             darr, iteration = res
-    #             assert isinstance(darr, Array), "darr must be a Dask array."
-    #             assert isinstance(iteration, int), "iteration must be an integer."
-    #
-    #             print(f"__get_array: {darr.shape=}, {iteration=}", flush=True)
-    #
-    #             # remove iteration from received_metadata
-    #             self.received_metadata[array_name] = [m for m in received_array_metadata if
-    #                                                   m["iteration"] != iteration]
-    #
-    #             d = self.current_sliding_windows[array_name]
-    #             d["window"].append(darr)
-    #             d["changed"] = True
-    #
-    #             # convert deque to list
-    #             windows = [list(dd["window"]) for dd in self.current_sliding_windows.values()]
-    #
-    #             if when == "OR":
-    #                 callback(*windows, timestep=iteration)
-    #                 d["changed"] = False
-    #
-    #             else:  # AND
-    #                 if all(dd["changed"] for dd in self.current_sliding_windows.values()):
-    #                     callback(*windows, timestep=iteration)
-    #                     for dd in self.current_sliding_windows.values():
-    #                         dd["changed"] = False
-    #
-    #     except BaseException as e:
-    #         try:
-    #             exception_handler(arr_name, e)
-    #         except BaseException:
-    #             print(f"Exception thrown in exception handler for {arr_name}", file=sys.stderr)
