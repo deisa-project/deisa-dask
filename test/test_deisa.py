@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import logging
 import math
 import os.path
 import random
@@ -42,6 +43,8 @@ from distributed import Client, LocalCluster, Queue, Variable
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
 from utils import wait_for, dask_array_element_wise_equal
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
