@@ -127,7 +127,7 @@ class Bridge(IBridge):
             'future-info': res,
             'placement': self.comm.Get_coords(self.comm.Get_rank()) if hasattr(self.comm, 'Get_coords') else self.id
         }
-        logger.debug(f"[{self.id}] send() to_send={to_send}")
+        logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
         logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
 
@@ -155,6 +155,7 @@ class Bridge(IBridge):
                     'placement': d['placement']
                 } for d in gathered_data]
             }
+            logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
             self.client.log_event(array_name, to_send)
 
         # TODO: what to do if error ?
