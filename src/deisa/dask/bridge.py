@@ -81,7 +81,7 @@ class Bridge(IBridge):
         self.client: Client = self.system_metadata['connection']
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
         self.id = id
-        self.workers = list(self.client.scheduler_info()["workers"].keys())
+        self.workers = list(self.client.scheduler_info(n_workers=-1)["workers"].keys())
         self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
                                                 client=self.client,
                                                 size=self.system_metadata['nb_bridges'],
@@ -98,7 +98,7 @@ class Bridge(IBridge):
     def close(self):
         self.__del__()
 
-    def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True):
+    def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True, *args, **kwargs):
         """
         Publishes data to the distributed workers and communicates metadata and data future via a queue. This method is used
         to send data to workers in a distributed computing setup and ensures that both the metadata about the data and the
@@ -118,14 +118,41 @@ class Bridge(IBridge):
 
         assert self.client.status == 'running', "Client is not connected to a scheduler. Please check your connection."
 
+        rank = self.comm.Get_rank()
+        workers = self.workers
+
+        if 'update_workers' in kwargs and kwargs['update_workers']:
+            # only update worker list if requested
+            if rank == 0:
+                # rank 0 retrieve workers and bcast to other bridges
+                workers = self.client.scheduler_info(n_workers=-1)["workers"]
+            else:
+                workers = None
+
+            # bcast
+            logger.debug(f"[{self.id}] send() pre-bcast workers={workers}")
+            workers = self.comm.bcast(workers, root=0)
+            logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
+
+            # reformat workers to only keep addresses
+            self.workers = list(workers.keys())
+
+            if 'filter_workers' in kwargs:
+                workers = kwargs['filter_workers'](workers)
+                # check return type
+                if not isinstance(workers, list):
+                    raise TypeError(f"worker_filter must return a list, got {type(workers)}")
+                for w in workers:
+                    if not isinstance(w, str):
+                        raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
+
         # Send data to worker
-        # TODO: select workers to send data to.
-        res = self._better_scatter(data, workers=self.workers, hash=False)  # send data to workers
+        res = self._better_scatter(data, workers=workers, hash=False)  # send data to workers
 
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            'placement': self.comm.Get_coords(self.comm.Get_rank()) if hasattr(self.comm, 'Get_coords') else self.id
+            'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)

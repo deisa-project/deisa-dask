@@ -26,6 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import asyncio
+import logging
 from typing import Tuple
 
 import numpy as np
@@ -34,6 +36,8 @@ from distributed import Client
 
 from deisa.dask import Bridge
 from deisa.dask.communicator import DaskComm
+
+logger = logging.getLogger(__name__)
 
 
 class FakeComm(ICommunicator):
@@ -102,7 +106,8 @@ class TestSimulation:
 
         return blocks
 
-    def generate_data(self, *array_names: str, iteration: int, send_order_fn=None) -> np.ndarray | Tuple[np.ndarray]:
+    def generate_data(self, *array_names: str, iteration: int, update_workers: bool = False) \
+            -> np.ndarray | Tuple[np.ndarray]:
         global_datas = []
         for array_name in array_names:
             global_data = self.__gen_data(array_name, noise_level=iteration)
@@ -111,14 +116,14 @@ class TestSimulation:
 
             assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
 
-            if send_order_fn is None:
-                for i, bridge in reversed(list(enumerate(self.bridges))):
-                    print(f"[TestSimulator] generate_data for array={array_name} to bridge id={bridge.id}")
-                    bridge.send(array_name, chunks[i], iteration)
-            else:
-                send_order = send_order_fn(chunks)
-                for i, (_, chunk) in zip(reversed(range(len(send_order))), enumerate(send_order)):
-                    self.bridges[i].send(array_name, chunk, iteration)
+            loop = asyncio.get_event_loop()
+
+            async def _bridge_send():
+                await asyncio.gather(*[asyncio.to_thread(bridge.send, array_name, chunks[i], iteration,
+                                                         update_workers=update_workers)
+                                       for i, bridge in enumerate(self.bridges)])
+
+            loop.run_until_complete(_bridge_send())
 
         assert len(global_datas) == len(array_names)
         if len(global_datas) == 1:

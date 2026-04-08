@@ -128,6 +128,23 @@ class DaskComm(ICommunicator):
 
         return None
 
+    def bcast(self, obj: Any, root: int = 0) -> Any:
+
+        rank = self.Get_rank()
+
+        if rank == root:
+            self._actor.bcast_set(obj)
+            result = obj
+        else:
+            while not self._actor.bcast_ready().result():
+                time.sleep(0.01)
+            result = self._actor.bcast_get().result()
+
+        if rank == root:
+            self._actor.cleanup(root)
+
+        return result
+
 
 class CommActor:
     def __init__(self, size: int):
@@ -139,6 +156,9 @@ class CommActor:
 
         # collective state
         self.gathers = {}  # seq -> list[(rank, value)]
+
+        # broadcast state
+        self.bcast_data = None
 
     # rank management
     def register(self, cid: str) -> int:
@@ -166,3 +186,16 @@ class CommActor:
     # cartesian topology
     def get_coords(self, rank: int, dims):
         return tuple(int(c) for c in np.unravel_index(rank, dims))
+
+    # broadcast
+    def bcast_set(self, obj):
+        self.bcast_data = obj
+
+    def bcast_ready(self):
+        return self.bcast_data is not None
+
+    def bcast_get(self):
+        return self.bcast_data
+
+    def cleanup(self):
+        self.bcast_data = None

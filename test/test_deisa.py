@@ -29,7 +29,6 @@
 import logging
 import math
 import os.path
-import random
 import sys
 import time
 from typing import List
@@ -128,7 +127,7 @@ class TestDeisaCtor:
     def env_setup_tcp_cluster(self):
         cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=4242)
         client = Client(cluster)
-        client.wait_for_workers(1)
+        client.wait_for_workers(1, timeout=10)
         yield cluster
         cluster.close()
 
@@ -161,47 +160,13 @@ class TestDeisaCtor:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
             Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
 
-    def test_dask_actor(self, env_setup_tcp_cluster):
-        cluster = env_setup_tcp_cluster
-
-        class MyActor:
-            i = 0
-
-            def __init__(self):
-                self.i = 0
-
-            def increment(self):
-                self.i += 1
-
-        # actor = Actor(MyActor, name="my-actor")
-        # actor.increment()
-        client1 = Client(cluster)
-        future = client1.submit(MyActor, actor=True)
-        print(f"future.key={future.key}")
-        Variable('MyActorFuture', client=client1).set(future)
-        a1 = future.result()
-        a1.increment()
-        print(f"a1.i={a1.i}")
-
-        client2 = Client(cluster)
-
-        assert client1.cluster == client2.cluster
-
-        actor_future_key = Variable('MyActorFuture', client=client2).get()
-        print(f"actor_future_key={actor_future_key}")
-        actor_future = Variable('MyActorFuture', client=client2).get()
-        a2 = actor_future.result()
-        a2.increment()
-        print(f"a2.i={a2.i}")
-
-        assert a2.i == 2
-
 
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False, dashboard_address=None)
         client = Client(cluster)
+        client.wait_for_workers(2, timeout=10)
         yield client, cluster
         # teardown
         client.close()
@@ -258,28 +223,16 @@ class TestUsingDaskCluster:
         assert darr.compute().all() == data.all()
         assert darr.sum().compute() == data.sum()
 
-    @staticmethod
-    def in_order(original_send_order: list[int]):
-        return original_send_order
-
-    @staticmethod
-    def reverse_order(original_send_order: list[int]):
-        original_send_order.reverse()
-        return original_send_order
-
-    @staticmethod
-    def random_order(original_send_order: list[int]):
-        random.seed(42)
-        random.shuffle(original_send_order)
-        return original_send_order
-
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
-    @pytest.mark.parametrize('send_order_fn', [in_order, reverse_order, random_order])
     @pytest.mark.parametrize('nb_iterations', [1, 2, 5])
-    def test_get_dask_array(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int, send_order_fn,
+    @pytest.mark.parametrize('update_workers', [False, True])
+    # @pytest.mark.parametrize('filter_workers', []) # TODO
+    def test_get_dask_array(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
+                            update_workers: bool,
                             env_setup):
-        print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}")
+        print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}, "
+              f"update_workers={update_workers}")
 
         client, cluster = env_setup
 
@@ -296,7 +249,7 @@ class TestUsingDaskCluster:
         deisa = Deisa(get_connection_info=lambda: client)
 
         for i in range(nb_iterations):
-            global_data = sim.generate_data('my_array', iteration=i, send_order_fn=send_order_fn)
+            global_data = sim.generate_data('my_array', iteration=i, update_workers=update_workers)
             global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
                                                                 global_grid_size[1] // mpi_parallelism[1]))
             darr, iteration = deisa.get_array('my_array', iteration=i)

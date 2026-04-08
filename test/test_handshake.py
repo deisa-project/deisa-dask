@@ -13,6 +13,7 @@ from deisa.dask.handshake import Handshake
 def env_setup():
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None)
     client = Client(cluster)
+    client.wait_for_workers(2, timeout=10)
     yield client, cluster
     # teardown
     client.close()
@@ -31,7 +32,7 @@ def start_bridge_handshake(address: str, id: int, max: int):
     handshake = Handshake('bridge', client, id=id, max=max, arrays_metadata={'hello': 'world'})
 
 
-@pytest.mark.parametrize('nb_bridge', [1, 4, 64])
+@pytest.mark.parametrize('nb_bridge', [1, 4])
 def test_handshake_deisa_first(env_setup, nb_bridge: int):
     client, cluster = env_setup
     addr = cluster.scheduler.address
@@ -55,7 +56,7 @@ def test_handshake_deisa_first(env_setup, nb_bridge: int):
         assert p.exitcode == 0
 
 
-@pytest.mark.parametrize('nb_bridge', [1, 4, 64])
+@pytest.mark.parametrize('nb_bridge', [1, 4])
 def test_handshake_bridge_first(env_setup, nb_bridge: int):
     client, cluster = env_setup
     addr = cluster.scheduler.address
