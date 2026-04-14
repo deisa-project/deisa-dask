@@ -27,8 +27,9 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import logging
+import time
 
-from distributed import Client, Future, get_client, Event
+from distributed import Client, Future, get_client, Event, Variable
 
 from deisa.dask.utils import _get_actor
 
@@ -54,13 +55,14 @@ class Handshake:
             self.client = get_client()
 
         def add_bridge(self, id: int, max: int) -> None:
+            print(f"add_bridge: {id} {max}", flush=True)
             if max == 0:
                 raise ValueError('max cannot be 0.')
-            elif self.max_bridges == 0:
+            if self.max_bridges == 0:
                 self.max_bridges = max
-            elif self.max_bridges != max:
+            if self.max_bridges != max:
                 raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max_bridges}.')
-            elif len(self.bridges) >= max:
+            if len(self.bridges) >= max:
                 raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
 
             self.bridges.append(id)
@@ -85,12 +87,18 @@ class Handshake:
             return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
 
         def __is_everyone_ready(self) -> bool | Future:
+            print(f"__is_everyone_ready: {self.analytics_ready} {len(self.bridges)}/{self.max_bridges}", flush=True)
+            # print(f"__is_everyone_ready: {self.bridges}")
             return self.__are_bridges_ready() and self.analytics_ready
+
+        def is_everyone_ready(self):
+            return self.__is_everyone_ready()
 
         def __go(self):
             Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).set()
 
     def __init__(self, who: str, client: Client, **kwargs):
+        logger.debug(f"Handshake.__init__({who}, {client}, {kwargs})")
         self.client = client
         # self.client.direct_to_workers() # TODO
         self.handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
@@ -138,4 +146,8 @@ class Handshake:
         return self.handshake_actor.get_max_bridges().result()
 
     def __wait_for_go(self) -> None:
-        Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
+        # Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
+        while True:
+            if self.handshake_actor.is_everyone_ready().result():
+                return
+            time.sleep(1)

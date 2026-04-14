@@ -57,6 +57,7 @@ def get_connection_info(dask_scheduler_address: str | Client) -> Client:
 
     return client
 
+
 def _get_actor(client: Client, clazz, **kwargs):
     def check_variable(dask_scheduler, name):
         ext = dask_scheduler.extensions["variables"]
@@ -68,8 +69,11 @@ def _get_actor(client: Client, clazz, **kwargs):
     with Lock(key):
         is_set = client.run_on_scheduler(check_variable, name=key)
         if is_set:
-            return Variable(key, client=client).get().result()
+            res = Variable(key, client=client).get().result()
         else:
             actor_future = client.submit(clazz, actor=True, **kwargs)
             Variable(key, client=client).set(actor_future)
-            return actor_future.result()
+            res = actor_future.result()
+
+        logger.debug(f"_get_actor: client={client}, clazz={clazz}, kwargs={kwargs}, actor={res}")
+        return res
