@@ -170,13 +170,17 @@ class Bridge(IBridge):
             # aggregate who has what
             who_has = {}
             nbytes = {}
+            keys = []
             for d in gathered_data:
                 who_has = {**who_has, **d['future-info']['who_has']}
                 nbytes = {**nbytes, **d['future-info']['nbytes']}
+                keys.append(d['future-info']['future'])
 
-            # TODO: scheduler.client_releases_keys is call in Deisa.__del()__. Is there a better way ?
             # only update the scheduler with who has what and register the future once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=CLIENT_KEY)
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client.id)
+
+            # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler.
+            self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
             to_send = {
                 'array_name': array_name,

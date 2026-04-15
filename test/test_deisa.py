@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import gc
 import logging
 import math
 import os.path
@@ -258,6 +259,37 @@ class TestUsingDaskCluster:
             assert math.isclose(global_data_da.sum().compute(), darr.sum().compute(),
                                 rel_tol=1e-09), "reconstructed dask array does not match original"
 
+    def test_get_dask_array_slow(self, env_setup):
+        # This tests for FutureCancelledError
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        global_data = sim.generate_data('my_array', iteration=1)
+        global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
+                                                            global_grid_size[1] // mpi_parallelism[1]))
+
+        time.sleep(1)
+        gc.collect()
+        time.sleep(1)
+
+        darr, iteration = deisa.get_array('my_array', iteration=1)
+
+        assert iteration == 1, "iteration does not match expected"
+        assert dask_array_element_wise_equal(global_data_da, darr), "dask arrays are not equal"
+
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
     @pytest.mark.parametrize('nb_iterations', [1, 5])
@@ -387,6 +419,9 @@ class TestUsingDaskCluster:
             window_callback_2(temperatures, pressures, timestep)
             context['latest_density'] = density[-1]
             context['latest_density_window_size'] = len(density)
+
+            # do something with the data
+            density[-1].sum().compute()
 
         callback_id = deisa.register_sliding_window_callbacks(window_callback_2,
                                                               ("temperature", temperature_window_size),

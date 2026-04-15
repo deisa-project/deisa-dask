@@ -32,7 +32,7 @@ import collections
 import logging
 import threading
 import time
-from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set
+from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set, Collection
 
 import dask
 import dask.array as da
@@ -87,8 +87,6 @@ class Deisa(IDeisa):
 
     def __del__(self):
         if hasattr(self, 'client') and self.client:
-            if len(self._received_futures) > 0:
-                self.client.scheduler.client_releases_keys(keys=self._received_futures, client=CLIENT_KEY)
             self.client.close()
 
     def close(self):
@@ -129,8 +127,10 @@ class Deisa(IDeisa):
                     payload = max(payloads, key=lambda p: p["iteration"])
                     iteration = payload["iteration"]
                     parts = payload["futures"]
+                    keys = [p["future"] for p in parts]
 
-                    self._received_futures.update([p["future"] for p in parts])
+                    self.__update_futures_ownership(keys)
+                    self._received_futures.update(keys)
 
                     # reconstruct array
                     parts = sorted(parts, key=lambda p: p["placement"])
@@ -312,8 +312,10 @@ class Deisa(IDeisa):
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
+                keys = [p["future"] for p in futures]
 
-                self._received_futures.update([p["future"] for p in futures])
+                self.__update_futures_ownership(keys)
+                self._received_futures.update(keys)
 
                 parts = sorted(futures, key=lambda p: p['placement'])
 
@@ -349,17 +351,6 @@ class Deisa(IDeisa):
 
         # update sliding window
         d = state[array_name]
-
-        # release futures when they are no longer needed
-        window: collections.deque = d["window"]
-        if len(window) == window.maxlen:
-            # queue is full, the first element will be discarded on the next call to append.
-            # Tell the scheduler that we no longer need the keys.
-            keys = [dep for dep in window[0].dask.dependencies if dep != window[0].name]
-            if len(keys) > 0:
-                self._received_futures = self._received_futures - set(keys)
-                self.client.scheduler.client_releases_keys(keys=keys, client=CLIENT_KEY)
-
         d["window"].append(darr)
         d["changed"] = True
 
@@ -399,6 +390,12 @@ class Deisa(IDeisa):
         except BaseException:
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
             self.unregister_sliding_window_callback(callback_id)
+
+    def __update_futures_ownership(self, futures: Collection[Future]):
+        # tell scheduler that my client is using these futures
+        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": futures, "client": self.client.id})
+        # tell scheduler that deisa client no longer needs the futures
+        self.client._send_to_scheduler({"op": "client-releases-keys", "keys": futures, "client": CLIENT_KEY})
 
     def __next_callback_id(self):
         self._callback_seq += 1
