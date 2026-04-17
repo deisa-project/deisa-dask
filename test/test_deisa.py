@@ -344,6 +344,7 @@ class TestUsingDaskCluster:
                 "callback was not called with correct window size"
 
         assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
+        sim.close_bridges()
         deisa.close()
 
     @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (8, 4)])
@@ -481,6 +482,7 @@ class TestUsingDaskCluster:
             "callback was not called with correct window size"
 
         assert context['counter'] == iteration, f"callback was not called {nb_iterations} times"
+        sim.close_bridges()
         deisa.close()
 
     def test_sliding_window_callback_unregister(self, env_setup):
@@ -529,6 +531,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
+        sim.close_bridges()
         deisa.close()
 
     def test_sliding_window_callbacks_unregister(self, env_setup):
@@ -586,6 +589,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
+        sim.close_bridges()
         deisa.close()
 
     def test_sliding_window_callback_throws(self, env_setup):
@@ -659,6 +663,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
+        sim.close_bridges()
         deisa.close()
 
     def test_sliding_window_map_blocks(self, env_setup):
@@ -711,6 +716,7 @@ class TestUsingDaskCluster:
             sim.generate_data('my_array', iteration=i)
             assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
 
+        sim.close_bridges()
         deisa.close()
 
     def test_set_get(self, env_setup):
@@ -729,6 +735,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) is None)
         assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi')
 
+        bridge.close()
         deisa.close()
 
     def test_set_from_sliding_window(self, env_setup):
@@ -765,6 +772,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1)
         assert wait_for(lambda: sim.bridges[0].get('hello', chunked=False, delete=False) == 'world')
 
+        sim.close_bridges()
         deisa.close()
 
     def test_set_delete_get(self, env_setup):
@@ -784,4 +792,5 @@ class TestUsingDaskCluster:
         deisa.delete('hello')
         assert bridge.get('hello', chunked=False, delete=False, default=None) is None
 
+        bridge.close()
         deisa.close()

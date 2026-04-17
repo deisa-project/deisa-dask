@@ -27,6 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import logging
+import time
 
 from distributed import Client, Future, get_client, Event
 
@@ -38,34 +39,42 @@ logger = logging.getLogger(__name__)
 class Handshake:
     DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
     DEISA_WAIT_FOR_GO_EVENT = 'deisa_handshake_wait_for_go'
+    DEISA_WAIT_FOR_DONE_EVENT = 'deisa_handshake_done'
 
     class HandshakeActor:
-        bridges = []
+        bridges_ready = []
+        bridges_done = []
         max_bridges = 0
         arrays_metadata = {}
         analytics_ready = False
 
         def __init__(self):
             logger.debug('HandshakeActor.__init__()')
-            self.bridges = []
+            self.bridges_ready = []
+            self.bridges_done = []
             self.max_bridges = 0
             self.arrays_metadata = {}
             self.analytics_ready = False
             self.client = get_client()
 
-        def add_bridge(self, id: int, max: int) -> None:
+        def add_bridge_ready(self, id: int, max: int) -> None:
             if max == 0:
                 raise ValueError('max cannot be 0.')
             elif self.max_bridges == 0:
                 self.max_bridges = max
             elif self.max_bridges != max:
                 raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max_bridges}.')
-            elif len(self.bridges) >= max:
+            elif len(self.bridges_ready) >= max:
                 raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
 
-            self.bridges.append(id)
+            self.bridges_ready.append(id)
             if self.__is_everyone_ready():
                 self.__go()
+
+        def add_bridge_done(self, id: int) -> None:
+            self.bridges_done.append(id)
+            if len(self.bridges_ready) == self.max_bridges:
+                Event(Handshake.DEISA_WAIT_FOR_DONE_EVENT, client=self.client).set()
 
         def set_analytics_ready(self) -> None:
             self.analytics_ready = True
@@ -82,7 +91,7 @@ class Handshake:
             return self.max_bridges
 
         def __are_bridges_ready(self) -> bool | Future:
-            return self.max_bridges != 0 and len(self.bridges) == self.max_bridges
+            return self.max_bridges != 0 and len(self.bridges_ready) == self.max_bridges
 
         def __is_everyone_ready(self) -> bool | Future:
             return self.__are_bridges_ready() and self.analytics_ready
@@ -108,7 +117,7 @@ class Handshake:
         Bridge must wait for analytics to be ready.
         """
         assert self.handshake_actor is not None
-        self.handshake_actor.add_bridge(id, max).result()
+        self.handshake_actor.add_bridge_ready(id, max).result()
 
         # TODO: change this so that the check is not done on id=0
         if id == 0:
@@ -139,3 +148,10 @@ class Handshake:
 
     def __wait_for_go(self) -> None:
         Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
+
+    def wait_for_bridges(self):
+        if self.handshake_actor and self.handshake_actor.get_max_bridges().result() > 0:
+            Event(Handshake.DEISA_WAIT_FOR_DONE_EVENT, client=self.client).wait()
+
+    def stop_bridge(self, id: int) -> None:
+        self.handshake_actor.add_bridge_done(id).result()

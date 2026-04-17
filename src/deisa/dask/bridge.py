@@ -86,6 +86,7 @@ class Bridge(IBridge):
                                                 client=self.client,
                                                 size=self.system_metadata['nb_bridges'],
                                                 *args, **kwargs)
+        self._has_close_been_called = False
 
         logger.debug(f"[{self.id}] Bridge __init__() with:\n"
                      f"comm={self.comm}\n"
@@ -95,15 +96,17 @@ class Bridge(IBridge):
                      f"workers={self.workers}")
 
         # blocking until analytics is ready
-        Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
-                  arrays_metadata=self.arrays_metadata, **kwargs)
+        self.handshake = Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
+                                   arrays_metadata=self.arrays_metadata, **kwargs)
 
     def __del__(self):
-        self.client.close()
-        self.system_metadata.clear()
+        self.close()
 
     def close(self):
-        self.__del__()
+        logger.info(f"Closing Bridge. id={self.id}")
+        if not self._has_close_been_called:
+            self._has_close_been_called = True
+            self.handshake.stop_bridge(self.id)
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True, *args, **kwargs):
         """

@@ -71,10 +71,10 @@ class Deisa(IDeisa):
         self.client: Client = get_connection_info()
 
         # blocking until all bridges are ready
-        handshake = Handshake('deisa', self.client, **kwargs)
+        self.handshake = Handshake('deisa', self.client, **kwargs)
 
-        self.mpi_comm_size = handshake.get_nb_bridges()
-        self.arrays_metadata = handshake.get_arrays_metadata()
+        self.mpi_comm_size = self.handshake.get_nb_bridges()
+        self.arrays_metadata = self.handshake.get_arrays_metadata()
 
         self.received_metadata = dict[str, list[dict[str, Any]]]()  # array_name: list[metadata]
         self.current_sliding_windows = {}
@@ -86,11 +86,12 @@ class Deisa(IDeisa):
         self._received_futures: Set[str] = set()
 
     def __del__(self):
-        if hasattr(self, 'client') and self.client:
-            self.client.close()
+        self.close()
 
-    def close(self):
-        self.__del__()
+    def close(self, wait_for_bridges=True):
+        logger.info(f"Closing deisa. wait_for_bridges={wait_for_bridges}")
+        if wait_for_bridges:
+            self.__wait_for_bridges()
 
     def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
         """Retrieve a Dask array for a given array name."""
@@ -400,6 +401,13 @@ class Deisa(IDeisa):
     def __next_callback_id(self):
         self._callback_seq += 1
         return f"{CALLBACK_PREFIX}{self._callback_seq}"
+
+    def __wait_for_bridges(self):
+        """
+        Wait for all bridges to finish.
+        Note: blocking call.
+        """
+        self.handshake.wait_for_bridges()
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:

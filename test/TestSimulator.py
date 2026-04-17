@@ -130,3 +130,7 @@ class TestSimulation:
             return global_datas[0]
         else:
             return tuple(global_datas)
+
+    def close_bridges(self):
+        for bridge in self.bridges:
+            bridge.close()
