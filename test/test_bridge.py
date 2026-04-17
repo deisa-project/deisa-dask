@@ -28,6 +28,7 @@
 # =============================================================================
 import logging
 
+import numpy as np
 import pytest
 from distributed import Client, LocalCluster
 
@@ -49,29 +50,36 @@ class TestBridge:
         cluster.close()
 
     def get_new_bridge(self, client):
-        return Bridge(
+        arrays_metadata = {
+            'temperature': {
+                'size': (1,),
+                'subsize': (1,)
+            }}
+        system_metadata = {'connection': client, 'nb_bridges': 1}
+        bridge = Bridge(
             id=0,
-            arrays_metadata={},
-            system_metadata={'connection': client, 'nb_bridges': 1},
+            arrays_metadata=arrays_metadata,
+            system_metadata=system_metadata,
             wait_for_go=False
         )
+        return bridge, arrays_metadata, system_metadata
 
     def test_ctor(self, env_setup):
         client, cluster = env_setup
-        bridge = self.get_new_bridge(client)
+        bridge, arrays_metadata, system_metadata = self.get_new_bridge(client)
         assert bridge.id == 0
-        assert bridge.arrays_metadata == {}
-        assert bridge.system_metadata == {'connection': client, 'nb_bridges': 1}
+        assert bridge.arrays_metadata == arrays_metadata
+        assert bridge.system_metadata == system_metadata
         assert bridge.workers == [w.address for w in cluster.workers.values()]
         assert isinstance(bridge.comm, DaskComm)
         assert not bridge._has_close_been_called
 
     def test__del__(self, env_setup):
         client, cluster = env_setup
-        bridge = self.get_new_bridge(client)
+        bridge, arrays_metadata, system_metadata = self.get_new_bridge(client)
         assert bridge.id == 0
-        assert bridge.arrays_metadata == {}
-        assert bridge.system_metadata == {'connection': client, 'nb_bridges': 1}
+        assert bridge.arrays_metadata == arrays_metadata
+        assert bridge.system_metadata == system_metadata
         assert bridge.workers == [w.address for w in cluster.workers.values()]
         assert isinstance(bridge.comm, DaskComm)
         assert not bridge._has_close_been_called
@@ -80,6 +88,55 @@ class TestBridge:
 
     def test_close(self, env_setup):
         client, _ = env_setup
-        bridge = self.get_new_bridge(client)
+        bridge, _, _ = self.get_new_bridge(client)
+        assert not bridge._has_close_been_called
         bridge.close()
         assert bridge._has_close_been_called
+
+    def test_send_update_workers(self, env_setup):
+        client, cluster = env_setup
+        bridge, _, _ = self.get_new_bridge(client)
+
+        assert bridge.workers == [w.address for w in cluster.workers.values()]
+        assert len(bridge.workers) == 1
+
+        cluster.scale(2)
+        cluster.wait_for_workers(2)
+
+        bridge.send('temperature', np.ones(1), iteration=0, update_workers=True)
+
+        assert bridge.workers == [w.address for w in cluster.workers.values()]
+        assert len(bridge.workers) == 2
+
+    def test_send_filter_workers_empty(self, env_setup):
+        client, cluster = env_setup
+        bridge, _, _ = self.get_new_bridge(client)
+
+        def filter(workers):
+            return []
+
+        with pytest.raises(TypeError) as e:
+            bridge.send('temperature', np.ones(1), iteration=0, filter_workers=filter)
+
+    def test_send_filter_workers_without_update_workers_valid(self, env_setup):
+        client, cluster = env_setup
+        bridge, _, _ = self.get_new_bridge(client)
+
+        def filter(workers):
+            assert isinstance(workers, list)
+            for addr in workers:
+                assert isinstance(addr, str)
+                assert addr in [w.address for w in cluster.workers.values()]
+            return workers
+
+        bridge.send('temperature', np.ones(1), iteration=0, update_workers=False, filter_workers=filter)
+
+    def test_send_filter_workers_with_update_workers_valid(self, env_setup):
+        client, cluster = env_setup
+        bridge, _, _ = self.get_new_bridge(client)
+
+        def filter(workers):
+            assert isinstance(workers, dict)
+            return list(workers.keys())
+
+        bridge.send('temperature', np.ones(1), iteration=0, update_workers=True, filter_workers=filter)

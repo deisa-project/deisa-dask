@@ -147,14 +147,16 @@ class Bridge(IBridge):
             # reformat workers to only keep addresses
             self.workers = list(workers.keys())
 
-            if 'filter_workers' in kwargs:
-                workers = kwargs['filter_workers'](workers)
-                # check return type
-                if not isinstance(workers, list):
-                    raise TypeError(f"worker_filter must return a list, got {type(workers)}")
-                for w in workers:
-                    if not isinstance(w, str):
-                        raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
+        if 'filter_workers' in kwargs:
+            workers = kwargs['filter_workers'](workers)
+            # check return type
+            if not isinstance(workers, list):
+                raise TypeError(f"worker_filter must return a list, got {type(workers)}")
+            if len(workers) == 0:
+                raise TypeError("worker_filter must return a non-empty list")
+            for w in workers:
+                if not isinstance(w, str):
+                    raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
 
         # Send data to worker
         res = self._better_scatter(data, workers=workers, hash=False)  # send data to workers

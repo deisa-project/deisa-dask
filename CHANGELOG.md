@@ -25,6 +25,8 @@ Types of changes:
 - Add option to select worker to scatter data to
 - Add `_get_actor` helper function in utils to start a singleton Actor
 - Add `pytest.ini`
+- Add the option to update the worker list, before `send()`, on a Bridge using `update_worker`
+- Add the option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
 
 ### Changed
 
