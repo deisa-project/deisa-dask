@@ -37,9 +37,8 @@ from deisa.dask.communicator import DaskComm
 logging.basicConfig(level=logging.DEBUG)
 
 
-@pytest.mark.xdist_group(name="serial")
 class TestBridge:
-    @pytest.fixture(scope="class")
+    @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=1, threads_per_worker=1,
                                processes=False, dashboard_address=None)
@@ -49,22 +48,17 @@ class TestBridge:
         client.close()
         cluster.close()
 
-    @pytest.fixture(scope="class")
-    def bridge(self, env_setup):
-        client, _ = env_setup
-        bridge = Bridge(
+    def get_new_bridge(self, client):
+        return Bridge(
             id=0,
             arrays_metadata={},
             system_metadata={'connection': client, 'nb_bridges': 1},
             wait_for_go=False
         )
-        yield bridge
-        # optional teardown
-        if not bridge._has_close_been_called:
-            bridge.close()
 
-    def test_ctor(self, bridge, env_setup):
+    def test_ctor(self, env_setup):
         client, cluster = env_setup
+        bridge = self.get_new_bridge(client)
         assert bridge.id == 0
         assert bridge.arrays_metadata == {}
         assert bridge.system_metadata == {'connection': client, 'nb_bridges': 1}
@@ -72,6 +66,20 @@ class TestBridge:
         assert isinstance(bridge.comm, DaskComm)
         assert not bridge._has_close_been_called
 
-    def test_close(self, bridge):
+    def test__del__(self, env_setup):
+        client, cluster = env_setup
+        bridge = self.get_new_bridge(client)
+        assert bridge.id == 0
+        assert bridge.arrays_metadata == {}
+        assert bridge.system_metadata == {'connection': client, 'nb_bridges': 1}
+        assert bridge.workers == [w.address for w in cluster.workers.values()]
+        assert isinstance(bridge.comm, DaskComm)
+        assert not bridge._has_close_been_called
+        bridge.__del__()
+        assert bridge._has_close_been_called
+
+    def test_close(self, env_setup):
+        client, _ = env_setup
+        bridge = self.get_new_bridge(client)
         bridge.close()
         assert bridge._has_close_been_called
