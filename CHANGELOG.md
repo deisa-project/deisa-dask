@@ -22,6 +22,7 @@ Types of changes:
 - rename Bridge.send's iteration argument to timetep
 - bridge.send: per bridge id and iteration round-robin over the workers
 - use barrier instead of gather in bridge close
+- Replace the setup.py by a pyproject.toml
 
 ## [0.4.1]
 
