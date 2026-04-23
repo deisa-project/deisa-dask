@@ -20,6 +20,8 @@ Types of changes:
 
 - CI: run mpi tests against openmpi and mpich
 - benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
+- Define Ruff code format
+- CI: check code format and style using Ruff linter
 
 ### Fixed
 

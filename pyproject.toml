@@ -8,32 +8,32 @@ dynamic = ["version", "readme"]
 description = "Deisa: Dask-Enabled In Situ Analytics"
 license = { text = "MIT" }
 authors = [
-  { name = "Benoît Martin", email = "bmartin@cea.fr" }
+    { name = "Benoît Martin", email = "bmartin@cea.fr" }
 ]
 requires-python = ">=3.10"
 keywords = ["deisa", "in-situ"]
 
 dependencies = [
-  "deisa-core>=0.5.0",
-  "dask>=2024.9.0",
-  "distributed",
-  "toolz",
-  "numpy"
+    "deisa-core>=0.5.0",
+    "dask>=2024.9.0",
+    "distributed",
+    "toolz",
+    "numpy"
 ]
 
 [project.optional-dependencies]
 test = [
-  "pytest",
-  "pytest-retry",
-  "pytest-timeout",
-  "pytest-xdist"
+    "pytest",
+    "pytest-retry",
+    "pytest-timeout",
+    "pytest-xdist"
 ]
 mpi = [
-  "mpi4py"
+    "mpi4py"
 ]
 benchmark = [
-  "pytest",
-  "pytest-benchmark",
+    "pytest",
+    "pytest-benchmark",
 ]
 
 [project.urls]
@@ -42,12 +42,23 @@ Homepage = "https://github.com/deisa-project/deisa-dask"
 Source = "https://github.com/deisa-project/deisa-dask"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["deisa.dask"]
 
 [tool.setuptools.dynamic]
-version = {attr = "deisa.dask.__version__.__version__"}
-readme = {file = ["README.md"], content-type = "text/markdown"}
+version = { attr = "deisa.dask.__version__.__version__" }
+readme = { file = ["README.md"], content-type = "text/markdown" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.format]
+docstring-code-format = true
+skip-magic-trailing-comma = true
