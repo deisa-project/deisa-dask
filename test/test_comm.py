@@ -7,6 +7,7 @@ from typing import Tuple
 import pytest
 
 from deisa.dask.communicator import DaskComm, resolve_comm
+from deisa.dask.types import DeisaArray
 
 
 def mpi_gather_test():
@@ -143,8 +144,9 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     from deisa.dask import Deisa
 
     deisa = Deisa(get_connection_info=lambda: client, wait_for_go=False)
-    darr, _ = deisa.get_array('temperature', iteration=1)
-    assert darr.sum().compute() == np.prod(global_size), f"temperature sum should be the product of {global_size}"
+    darr = deisa.get_array('temperature', iteration=1)
+    assert isinstance(darr, DeisaArray)
+    assert darr.dask.sum().compute() == np.prod(global_size), f"temperature sum should be the product of {global_size}"
 
     cluster.close()
 
