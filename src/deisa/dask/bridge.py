@@ -30,6 +30,7 @@ import logging
 import uuid
 from numbers import Number
 from typing import Any, Iterator, List
+import sys
 
 import numpy as np
 from dask.tokenize import tokenize
@@ -258,9 +259,53 @@ class Bridge(IBridge):
 
         assert isinstance(data, dict)
 
-        data2 = valmap(to_serialize, data)
+        # Split workers between in-process and remote
+        from distributed.worker import _global_workers
+        local_worker_map: dict[str, Any] = {
+            w.address: w
+            for w in _global_workers
+        }
+        in_process = [w for w in workers if w in local_worker_map]
+        remote     = [w for w in workers if w not in local_worker_map]
 
-        _, who_has, nbytes = await scatter_to_workers(workers, data2, self.client.rpc)
+        logger.debug(
+            f"[{self.id}] __scatter(): "
+            f"in_process={in_process}, remote={remote}"
+        )
+
+        who_has: dict = {}
+        nbytes:  dict = {}
+
+        # In-process path, direct write with no copy
+        # if in_process:
+        #     for key, val in data.items():
+        #         for addr in in_process:
+        #             # worker.data supports direct item assignment
+        #             # (works whether it's a plain dict, LRU, or zict store)
+        #             local_worker_map[addr].data[key] = val
+        #         who_has[key] = set(in_process)
+        #         # Use .nbytes for numpy arrays; fall back to sys.getsizeof
+        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+        if in_process:
+            # Match scatter_to_workers, one key for one worker, round-robin
+            for i, (key, val) in enumerate(data.items()):
+                target_addr = in_process[i % len(in_process)]
+                local_worker_map[target_addr].data[key] = val
+                who_has[key] = {target_addr}           # single worker, not the whole set
+                nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+
+        # Remote path, existing scatter
+        if remote:
+            data2 = valmap(to_serialize, data)
+            _, remote_who_has, remote_nbytes = await scatter_to_workers(
+                remote, data2, self.client.rpc
+            )
+            for k, addrs in remote_who_has.items():
+                who_has.setdefault(k, set()).update(addrs)
+            # nbytes values are content-derived, so remote wins only
+            # when the key wasn't already set by the in-process path
+            for k, v in remote_nbytes.items():
+                nbytes.setdefault(k, v)
 
         out = {
             k: {

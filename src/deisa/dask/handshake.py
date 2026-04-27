@@ -146,8 +146,12 @@ class Handshake:
         assert self.handshake_actor is not None
         return self.handshake_actor.get_max_bridges().result()
 
-    def __wait_for_go(self) -> None:
-        Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
+    # def __wait_for_go(self) -> None:
+    #     Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
+    def __wait_for_go(self, timeout=30) -> None:
+        result = Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait(timeout=timeout)
+        if not result:
+            raise TimeoutError("Timed out waiting for handshake go signal")
 
     def wait_for_bridges(self):
         if self.handshake_actor and self.handshake_actor.get_max_bridges().result() > 0:
