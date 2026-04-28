@@ -174,11 +174,11 @@ class Deisa(IDeisa):
 
         Single array:
             @deisa.register('array', window_size=3)
-            def cb(window, timestep): ...
+            def cb(window): ...
 
         Multiple arrays:
             @deisa.register('a', ('b', 3), when='OR')
-            def cb(window, timestep): ...
+            def cb(window): ...
         """
         def decorator(callback: SupportsSlidingWindow.Callback) -> SupportsSlidingWindow.Callback:
             callback.callback_id = self.register_sliding_window_callbacks(

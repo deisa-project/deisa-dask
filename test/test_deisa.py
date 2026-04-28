@@ -337,6 +337,65 @@ class TestUsingDaskCluster:
 
             context['latest_window_size'] = len(window)
 
+        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+
+        for i in range(1, nb_iterations + 1):
+            print(f"iteration {i}", flush=True)
+            global_data = sim.generate_data('my_array', iteration=i)
+            global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
+                                                                global_grid_size[1] // mpi_parallelism[1]))
+
+            print(f"checking values for iteration {i} ...", flush=True)
+            assert wait_for(lambda: context['counter'] == i), "callback was not called"
+
+            assert wait_for(lambda: context['latest_timestep'] == i), "callback was not called with correct timestep"
+            assert wait_for(lambda: dask_array_element_wise_equal(context['latest_data'], global_data_da)), \
+                "callback was not called with correct data"
+            assert wait_for(lambda: context['latest_window_size'] == min(i, window_size)), \
+                "callback was not called with correct window size"
+
+        assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
+        sim.close_bridges()
+        deisa.close()
+
+    @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
+    @pytest.mark.parametrize('nb_iterations', [1, 5])
+    @pytest.mark.parametrize('window_size', [1, 2])
+    def test_sliding_window_callback_register_with_decorator(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
+                                            window_size: int, env_setup):
+        print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} "
+            f"nb_iterations={nb_iterations} window_size={window_size}")
+
+        client, cluster = env_setup
+
+        sim = TestSimulation(client,
+                            mpi_parallelism=mpi_parallelism,
+                            arrays_metadata={
+                                'my_array': {
+                                    'size': global_grid_size,
+                                    'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                global_grid_size[1] // mpi_parallelism[1])
+                                }
+                            },
+                            wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(.2)  # wait for bridges and deisa to be ready
+
+        context = {
+            'counter': 0
+        }
+
+        @deisa.register("my_array", window_size=window_size)
+        def window_callback(window: list[DeisaArray]):
+            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = window[-1].t
+            context['latest_data'] = window[-1].dask
+
+            context['latest_window_size'] = len(window)
+
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
             global_data = sim.generate_data('my_array', iteration=i)
@@ -488,6 +547,136 @@ class TestUsingDaskCluster:
         sim.close_bridges()
         deisa.close()
 
+    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (8, 4)])
+    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (8, 4)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2)])
+    @pytest.mark.parametrize('nb_iterations', [1, 5])
+    @pytest.mark.parametrize('temperature_window_size', [1, 2, 3])
+    @pytest.mark.parametrize('pressure_window_size', [2])
+    @pytest.mark.parametrize('density_window_size', [1])
+    def test_sliding_window_callbacks_register_with_decorator(self, global_temperature_grid_size: tuple,
+                                               global_pressure_grid_size: tuple,
+                                               mpi_parallelism: tuple,
+                                               nb_iterations: int,
+                                               temperature_window_size: int,
+                                               pressure_window_size: int,
+                                               density_window_size: int,
+                                               env_setup):
+        print(f"global_temperature_grid_size={global_temperature_grid_size}, "
+              f"global_pressure_grid_size={global_pressure_grid_size}, "
+              f"mpi_parallelism={mpi_parallelism}, "
+              f"nb_iterations={nb_iterations}, "
+              f"temperature_window_size={temperature_window_size}, "
+              f"pressure_window_size={pressure_window_size}")
+
+        client, cluster = env_setup
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'temperature': {
+                                     'size': global_temperature_grid_size,
+                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                 },
+                                 'pressure': {
+                                     'size': global_pressure_grid_size,
+                                     'subsize': (global_pressure_grid_size[0] // mpi_parallelism[0],
+                                                 global_pressure_grid_size[1] // mpi_parallelism[1])
+                                 },
+                                 'density': {
+                                     'size': global_temperature_grid_size,
+                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                 },
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(.2)  # wait for bridges and deisa to be ready
+
+        context = {
+            'counter': 0
+        }
+
+        @deisa.register(("temperature", temperature_window_size),
+                        ("pressure", pressure_window_size),
+                        when='AND')
+        def window_callback_2(temperatures, pressures):
+            print(f"hello from window_callback_2. iteration={temperatures[-1].t}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = temperatures[-1].t
+            context['latest_temperature'] = temperatures[-1].dask
+            context['latest_temperature_window_size'] = len(temperatures)
+            context['latest_pressure'] = pressures[-1].dask
+            context['latest_pressure_window_size'] = len(pressures)
+
+            s1 = temperatures[-1].dask.sum().compute()
+            s2 = temperatures[-1].dask.sum().compute()
+            assert s1 == s2, "data is not the same"
+
+        @deisa.register(("temperature", temperature_window_size),
+                        ("pressure", pressure_window_size),
+                        ("density", density_window_size),
+                        when='AND')
+        def window_callback_3(temperatures, pressures, density):
+            print(f"hello from window_callback_3. iteration={density[-1].t}", flush=True)
+            window_callback_2(temperatures, pressures)
+            context['latest_density'] = density[-1].dask
+            context['latest_density_window_size'] = len(density)
+
+            density[-1].dask.sum().compute()
+
+        assert window_callback_2.callback_id is not None, "callback was not registered"
+
+        assert window_callback_3.callback_id is not None, "callback was not registered"
+
+        time.sleep(.1)  # wait for callback to be completely registered
+
+        for i in range(1, nb_iterations + 1):
+            print(f"iteration {i}", flush=True)
+
+            global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
+            global_temperature_da = da.from_array(global_temperature,
+                                                  chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                          global_temperature_grid_size[1] // mpi_parallelism[1]))
+            global_pressure_da = da.from_array(global_pressure,
+                                               chunks=(global_pressure_grid_size[0] // mpi_parallelism[0],
+                                                       global_pressure_grid_size[1] // mpi_parallelism[1]))
+
+            assert wait_for(lambda: context['counter'] == i, timeout=10), "callback was not called"
+            assert wait_for(lambda: context['latest_timestep'] == i), "callback was not called with correct timestep"
+            # temperatures
+            assert dask_array_element_wise_equal(context['latest_temperature'], global_temperature_da), \
+                "callback was not called with correct data"
+            assert wait_for(lambda: context['latest_temperature_window_size'] == min(i, temperature_window_size)), \
+                "callback was not called with correct window size"
+            # pressures
+            assert dask_array_element_wise_equal(context['latest_pressure'], global_pressure_da), \
+                "callback was not called with correct data"
+            assert wait_for(lambda: context['latest_pressure_window_size'] == min(i, pressure_window_size)), \
+                "callback was not called with correct window size"
+
+            # density
+            assert wait_for(lambda: 'latest_density' not in context), "uncorrect callback call"
+
+        # generate density to trigger callback_3
+        iteration = nb_iterations + 1
+        global_density = sim.generate_data('density', iteration=iteration)
+        global_density_da = da.from_array(global_density,
+                                          chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                  global_temperature_grid_size[1] // mpi_parallelism[1]))
+
+        assert wait_for(lambda: 'latest_density' in context
+                                and dask_array_element_wise_equal(context['latest_density'], global_density_da)), \
+            "callback was not called with correct data"
+        assert wait_for(lambda: context['latest_density_window_size'] == min(i, density_window_size)), \
+            "callback was not called with correct window size"
+
+        assert context['counter'] == iteration, f"callback was not called {nb_iterations} times"
+        sim.close_bridges()
+        deisa.close()
+
     def test_sliding_window_callback_unregister(self, env_setup):
         client, cluster = env_setup
         global_grid_size = (8, 8)
@@ -529,6 +718,55 @@ class TestUsingDaskCluster:
         # unregister an unknown array name
         callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
         assert callback_id is not None, "callback was not registered"
+        deisa.unregister_sliding_window_callback("my_unknown_array")
+        sim.generate_data('my_array', iteration=2)
+        assert wait_for(lambda: context['counter'] == 1), "callback should be called"
+        assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
+
+        sim.close_bridges()
+        deisa.close()
+
+    def test_sliding_window_callback_unregister_with_decorator(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+        window_size = 1
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(.2)  # wait for bridges and deisa to be ready
+
+        context = {
+            'counter': 0
+        }
+
+        @deisa.register("my_array", window_size=window_size)
+        def window_callback(window: list[DeisaArray]):
+            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = window[-1].t
+            context['latest_data'] = window[-1].dask
+            context['latest_window_size'] = len(window)
+
+        # register followed by unregister
+        assert window_callback.callback_id is not None, "callback was not registered"
+        deisa.unregister_sliding_window_callback(window_callback)
+        sim.generate_data('my_array', iteration=1)
+        assert wait_for(lambda: context['counter'] == 0, nb_checks=10), "callback should not be called"
+
+        # unregister an unknown array name
+        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        assert window_callback.callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('my_array', iteration=2)
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
@@ -580,6 +818,66 @@ class TestUsingDaskCluster:
                                                               ("temperature", window_size),
                                                               ("pressure", window_size))
         deisa.unregister_sliding_window_callback(callback_id)
+        sim.generate_data('temperature', iteration=1)
+        sim.generate_data('pressure', iteration=1)
+        assert wait_for(lambda: context['counter'] == 0, nb_checks=10), "callback should not be called"
+
+        # unregister an unknown array name
+        deisa.register_sliding_window_callbacks(window_callback,
+                                                ("temperature", window_size),
+                                                ("pressure", window_size))
+        deisa.unregister_sliding_window_callback("my_unknown_array")
+        sim.generate_data('temperature', iteration=2)
+        sim.generate_data('pressure', iteration=2)
+        assert wait_for(lambda: context['counter'] == 1), "callback should be called"
+        assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
+
+        sim.close_bridges()
+        deisa.close()
+
+    def test_sliding_window_callbacks_unregister_with_decorator(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+        window_size = 1
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'temperature': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 },
+                                 'pressure': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        context = {
+            'counter': 0
+        }
+
+        @deisa.register(("temperature", window_size),
+                        ("pressure", window_size),
+                        when='AND')
+        def window_callback(temperatures: list[DeisaArray], pressures: list[DeisaArray]):
+            print(f"hello from window_callback. iteration={temperatures[-1].t}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = temperatures[-1].t
+
+            context['latest_temperatures_data'] = temperatures[-1].dask
+            context['latest_pressures_data'] = pressures[-1].dask
+
+            context['latest_temperatures_window_size'] = len(temperatures)
+            context['latest_pressures_window_size'] = len(pressures)
+
+        # register followed by unregister
+        deisa.unregister_sliding_window_callback(window_callback)
         sim.generate_data('temperature', iteration=1)
         sim.generate_data('pressure', iteration=1)
         assert wait_for(lambda: context['counter'] == 0, nb_checks=10), "callback should not be called"
@@ -671,6 +969,83 @@ class TestUsingDaskCluster:
         sim.close_bridges()
         deisa.close()
 
+    def test_sliding_window_callback_throws_with_decorator(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(.2)  # wait for bridges and deisa to be ready
+
+        context = {
+            'counter': 0,
+            'exception_handler': 0
+        }
+
+        @deisa.register("my_array")
+        def window_callback(window: list[DeisaArray]):
+            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+            context['counter'] += 1
+            raise RuntimeError("Throw from user callback")
+
+        def custom_exception_handler(array_name, exc):
+            print(f"hello from custom_exception_handler. {array_name}={exc}", flush=True)
+            context['exception_handler'] += 1
+
+        def custom_exception_handler_raise(array_name, exc):
+            print(f"hello from custom_exception_handler. {array_name}={exc}", flush=True)
+            context['exception_handler'] += 1
+            raise RuntimeError("Throw from user exception handler.")
+
+        # default exception_handler
+        assert window_callback.callback_id is not None, "callback was not registered"
+        time.sleep(.5)
+        sim.generate_data('my_array', iteration=1)
+        assert wait_for(lambda: context['counter'] == 1, timeout=10), "callback was not called"
+        assert wait_for(lambda: context['exception_handler'] == 0), "callback was not called"
+
+        # custom error handler
+        deisa.unregister_sliding_window_callback(window_callback)
+        # callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
+        #                                                      exception_handler=custom_exception_handler)
+        # assert callback_id is not None, "callback was not registered"
+        assert window_callback.callback_id is not None, "callback was not registered"
+        time.sleep(.5)
+        sim.generate_data('my_array', iteration=2)
+        assert wait_for(lambda: context['counter'] == 2, timeout=10), "callback was not called"
+        assert wait_for(lambda: context['exception_handler'] == 1), "callback was not called"
+
+        # custom error handler that throws
+        # deisa.unregister_sliding_window_callback(callback_id)
+        deisa.unregister_sliding_window_callback(window_callback)
+        # callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
+        #                                                      exception_handler=custom_exception_handler_raise)
+        # assert callback_id is not None, "callback was not registered"
+        assert window_callback.callback_id is not None, "callback was not registered"
+        time.sleep(.5)
+        sim.generate_data('my_array', iteration=3)
+        assert wait_for(lambda: context['counter'] == 3, timeout=10), "callback was not called"
+        assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
+
+        # callback unregistered due to unhandled exception in custom_exception_handler_raise. Should no longer be called.
+        sim.generate_data('my_array', iteration=4)
+        assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
+        assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
+
+        sim.close_bridges()
+        deisa.close()
+
     def test_sliding_window_map_blocks(self, env_setup):
         client, cluster = env_setup
         global_grid_size = (8, 8)
@@ -716,6 +1091,56 @@ class TestUsingDaskCluster:
         deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                window_size=1,
                                                exception_handler=exception_handler)
+
+        for i in range(1, 5):
+            sim.generate_data('my_array', iteration=i)
+            assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
+
+        sim.close_bridges()
+        deisa.close()
+
+    def test_sliding_window_map_blocks_with_decorator(self, env_setup):
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'size': global_grid_size,
+                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
+                                                 global_grid_size[1] // mpi_parallelism[1])
+                                 }
+                             },
+                             wait_for_go=False)
+        deisa = Deisa(get_connection_info=lambda: client)
+
+        time.sleep(.2)
+
+        def map_block_function(block, block_info=None):
+            print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
+            return np.array([[1]])
+
+        context = {'counter': 0}
+
+        @deisa.register("my_array")
+        def window_callback(window):
+            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+
+            darr = window[-1].dask
+
+            assert darr.shape == global_grid_size
+            assert darr.chunksize == (global_grid_size[0] // mpi_parallelism[0],
+                                      global_grid_size[1] // mpi_parallelism[1])
+
+            meta = np.array([[0]])
+            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
+            context['counter'] += res.sum()
+
+        def exception_handler(callback_id, e: Exception):
+            print(f"exception_handler. callback_id={callback_id}, e={e}", flush=True, file=sys.stderr)
+            # pytest.fail(str(e))   # TODO
 
         for i in range(1, 5):
             sim.generate_data('my_array', iteration=i)
