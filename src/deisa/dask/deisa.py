@@ -197,11 +197,14 @@ class Deisa(IDeisa):
         Register a sliding-window callback for a single array.
         """
         parsed = [(array_name, window_size)]
-        return self._register_sliding_window_callbacks_impl(
+        callback_id = self._register_sliding_window_callbacks_impl(
             callback,
             parsed,
             exception_handler=exception_handler,
             when='AND')
+        if hasattr(callback, 'callback_id'):
+            callback.callback_id = callback_id
+        return callback_id
 
     def register_sliding_window_callbacks(self,
                                         callback: SupportsSlidingWindow.Callback,
@@ -241,11 +244,14 @@ class Deisa(IDeisa):
             else:
                 raise TypeError("callback_args must be str or tuple")
 
-        return self._register_sliding_window_callbacks_impl(
+        callback_id = self._register_sliding_window_callbacks_impl(
             callback,
             parsed,
             exception_handler=exception_handler,
             when=when)
+        if hasattr(callback, 'callback_id'):
+            callback.callback_id = callback_id
+        return callback_id
 
     def _register_sliding_window_callbacks_impl(self,
                                                 callback: SupportsSlidingWindow.Callback,

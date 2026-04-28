@@ -758,7 +758,7 @@ class TestUsingDaskCluster:
             context['latest_data'] = window[-1].dask
             context['latest_window_size'] = len(window)
 
-        # register followed by unregister
+        # register (using decorator) followed by unregister
         assert window_callback.callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback(window_callback)
         sim.generate_data('my_array', iteration=1)
@@ -1008,7 +1008,7 @@ class TestUsingDaskCluster:
             context['exception_handler'] += 1
             raise RuntimeError("Throw from user exception handler.")
 
-        # default exception_handler
+        # default exception_handler (set by decorator)
         assert window_callback.callback_id is not None, "callback was not registered"
         time.sleep(.5)
         sim.generate_data('my_array', iteration=1)
@@ -1017,9 +1017,8 @@ class TestUsingDaskCluster:
 
         # custom error handler
         deisa.unregister_sliding_window_callback(window_callback)
-        # callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
-        #                                                      exception_handler=custom_exception_handler)
-        # assert callback_id is not None, "callback was not registered"
+        deisa.register_sliding_window_callback(window_callback, 'my_array',
+                                               exception_handler=custom_exception_handler)
         assert window_callback.callback_id is not None, "callback was not registered"
         time.sleep(.5)
         sim.generate_data('my_array', iteration=2)
@@ -1027,11 +1026,9 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['exception_handler'] == 1), "callback was not called"
 
         # custom error handler that throws
-        # deisa.unregister_sliding_window_callback(callback_id)
         deisa.unregister_sliding_window_callback(window_callback)
-        # callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array',
-        #                                                      exception_handler=custom_exception_handler_raise)
-        # assert callback_id is not None, "callback was not registered"
+        deisa.register_sliding_window_callback(window_callback, 'my_array',
+                                               exception_handler=custom_exception_handler_raise)
         assert window_callback.callback_id is not None, "callback was not registered"
         time.sleep(.5)
         sim.generate_data('my_array', iteration=3)
