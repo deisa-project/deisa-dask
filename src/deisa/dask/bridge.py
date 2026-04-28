@@ -286,12 +286,21 @@ class Bridge(IBridge):
         #         who_has[key] = set(in_process)
         #         # Use .nbytes for numpy arrays; fall back to sys.getsizeof
         #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+        # if in_process:
+        #     # Match scatter_to_workers, one key for one worker, round-robin
+        #     for i, (key, val) in enumerate(data.items()):
+        #         target_addr = in_process[i % len(in_process)]
+        #         local_worker_map[target_addr].data[key] = val
+        #         who_has[key] = {target_addr}           # single worker, not the whole set
+        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
         if in_process:
-            # Match scatter_to_workers, one key for one worker, round-robin
             for i, (key, val) in enumerate(data.items()):
                 target_addr = in_process[i % len(in_process)]
-                local_worker_map[target_addr].data[key] = val
-                who_has[key] = {target_addr}           # single worker, not the whole set
+                worker = local_worker_map[target_addr]
+                # update_data handles TaskState, memory accounting, and scheduler notification
+                # report=False because send() already calls scheduler.update_data with who_has
+                worker.update_data({key: val})
+                who_has[key] = [target_addr]
                 nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
 
         # Remote path, existing scatter
