@@ -39,18 +39,16 @@ class TestHandshake:
         for p in processes:
             p.start()
 
-    # @staticmethod
-    # def join_processes(processes: List[Process]):
-    #     for p in processes:
-    #         p.join()
-    #         assert p.exitcode == 0, "process exited with error"
     @staticmethod
-    def join_processes(processes, timeout=30):
+    def join_processes(processes: List[Process], timeout=30):
         for p in processes:
             p.join(timeout=timeout)
             if p.is_alive():
                 p.terminate()
+                p.join()
                 raise TimeoutError(f"Process {p.pid} did not finish within {timeout}s")
+            if p.exitcode != 0:
+                raise RuntimeError(f"Process {p.pid} exited with code {p.exitcode}")
 
     @pytest.mark.parametrize('nb_bridge', [1, 4])
     def test_handshake_deisa_first(self, env_setup, nb_bridge: int):
