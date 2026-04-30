@@ -181,9 +181,12 @@ class Deisa(IDeisa):
             def cb(window): ...
         """
         def decorator(callback: SupportsSlidingWindow.Callback) -> SupportsSlidingWindow.Callback:
+            expanded_callback_args = tuple(
+                (callback_arg, window_size) if isinstance(callback_arg, str) else callback_arg
+                for callback_arg in callback_args
+            )
             callback.callback_id = self.register_sliding_window_callbacks(
-                callback, *callback_args,
-                window_size=window_size,
+                callback, *expanded_callback_args,
                 exception_handler=exception_handler,
                 when=when)
             return callback
@@ -207,11 +210,10 @@ class Deisa(IDeisa):
         return callback_id
 
     def register_sliding_window_callbacks(self,
-                                        callback: SupportsSlidingWindow.Callback,
-                                        *callback_args: Callback_args,
-                                        window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
-                                        exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
-                                        when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
+                                          callback: SupportsSlidingWindow.Callback,
+                                          *callback_args: Callback_args,
+                                          exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
+                                          when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
         """
         Register a sliding-window callback for one or more arrays.
 
@@ -230,10 +232,10 @@ class Deisa(IDeisa):
 
         for arg in callback_args:
             if isinstance(arg, str):
-                parsed.append((arg, window_size))
+                parsed.append((arg, DEFAULT_SLIDING_WINDOW_SIZE))
             elif isinstance(arg, tuple):
                 if len(arg) == 1:
-                    parsed.append((arg[0], window_size))
+                    parsed.append((arg[0], DEFAULT_SLIDING_WINDOW_SIZE))
                 elif len(arg) == 2:
                     name, ws = arg
                     if not isinstance(name, str) or not isinstance(ws, int):

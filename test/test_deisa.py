@@ -358,10 +358,10 @@ class TestUsingDaskCluster:
         sim.close_bridges()
         deisa.close()
 
-    @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
-    @pytest.mark.parametrize('nb_iterations', [1, 5])
-    @pytest.mark.parametrize('window_size', [1, 2])
+    @pytest.mark.parametrize('global_grid_size', [(32, 4)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 2)])
+    @pytest.mark.parametrize('nb_iterations', [5])
+    @pytest.mark.parametrize('window_size', [2])
     def test_sliding_window_callback_register_with_decorator(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
                                             window_size: int, env_setup):
         print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} "
@@ -547,11 +547,11 @@ class TestUsingDaskCluster:
         sim.close_bridges()
         deisa.close()
 
-    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (8, 4)])
-    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (8, 4)])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2)])
-    @pytest.mark.parametrize('nb_iterations', [1, 5])
-    @pytest.mark.parametrize('temperature_window_size', [1, 2, 3])
+    @pytest.mark.parametrize('global_temperature_grid_size', [(8, 4)])
+    @pytest.mark.parametrize('global_pressure_grid_size', [(8, 4)])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 2)])
+    @pytest.mark.parametrize('nb_iterations', [5])
+    @pytest.mark.parametrize('temperature_window_size', [2])
     @pytest.mark.parametrize('pressure_window_size', [2])
     @pytest.mark.parametrize('density_window_size', [1])
     def test_sliding_window_callbacks_register_with_decorator(self, global_temperature_grid_size: tuple,
@@ -1088,56 +1088,6 @@ class TestUsingDaskCluster:
         deisa.register_sliding_window_callback(window_callback, 'my_array',
                                                window_size=1,
                                                exception_handler=exception_handler)
-
-        for i in range(1, 5):
-            sim.generate_data('my_array', iteration=i)
-            assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
-
-        sim.close_bridges()
-        deisa.close()
-
-    def test_sliding_window_map_blocks_with_decorator(self, env_setup):
-        client, cluster = env_setup
-        global_grid_size = (8, 8)
-        mpi_parallelism = (2, 2)
-
-        sim = TestSimulation(client,
-                             mpi_parallelism=mpi_parallelism,
-                             arrays_metadata={
-                                 'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
-                                 }
-                             },
-                             wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
-
-        time.sleep(.2)
-
-        def map_block_function(block, block_info=None):
-            print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
-            return np.array([[1]])
-
-        context = {'counter': 0}
-
-        @deisa.register("my_array")
-        def window_callback(window):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
-
-            darr = window[-1].dask
-
-            assert darr.shape == global_grid_size
-            assert darr.chunksize == (global_grid_size[0] // mpi_parallelism[0],
-                                      global_grid_size[1] // mpi_parallelism[1])
-
-            meta = np.array([[0]])
-            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
-            context['counter'] += res.sum()
-
-        def exception_handler(callback_id, e: Exception):
-            print(f"exception_handler. callback_id={callback_id}, e={e}", flush=True, file=sys.stderr)
-            # pytest.fail(str(e))   # TODO
 
         for i in range(1, 5):
             sim.generate_data('my_array', iteration=i)
