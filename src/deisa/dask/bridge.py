@@ -110,7 +110,7 @@ class Bridge(IBridge):
                                                            client=self.client,
                                                            size=self.system_metadata['nb_bridges'],
                                                            *args, **kwargs)
-            time.sleep(1)  # wait for setup_comm to run on scheduler
+            time.sleep(.1)  # wait for setup_comm to run on scheduler
 
         # retrieve workers from rank 0 and bcast
         logger.debug(f"[{self.id}] Bridge __init__(): pre-bcast")

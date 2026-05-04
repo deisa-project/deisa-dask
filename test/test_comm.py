@@ -44,7 +44,7 @@ def dask_comm_main(scheduler_address: str, comm_size: int):
     if rank == 0:
         client.run_on_scheduler(setup_comm, size=comm_size)
     else:
-        time.sleep(1)
+        time.sleep(.5)
 
     bridge_comm = CommClient(client=client,
                              comm_state_rpc=client.scheduler if rank == 0 else rpc(scheduler_address))
