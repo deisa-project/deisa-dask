@@ -87,12 +87,15 @@ class Deisa(IDeisa):
         self._callback_seq = 0  # unique counter
         self._received_futures: Set[str] = set()
 
+        self._has_close_been_called = False
+
     def __del__(self):
         self.close()
 
     def close(self, wait_for_bridges=True):
         logger.info(f"Closing deisa. wait_for_bridges={wait_for_bridges}")
-        if wait_for_bridges:
+        self._has_close_been_called = True
+        if not self._has_close_been_called and wait_for_bridges:
             self.__wait_for_bridges()
 
     def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:

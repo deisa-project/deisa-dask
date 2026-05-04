@@ -66,7 +66,7 @@ class TestDeisaCtor:
         deisa = Deisa(get_connection_info=lambda: client, wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
-        deisa.close()
+        deisa.close(wait_for_bridges=False)
 
     def test_deisa_ctor_str(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster

@@ -32,10 +32,10 @@ from typing import Tuple
 
 import numpy as np
 from deisa.core import ICommunicator
-from distributed import Client
+from distributed import Client, rpc
 
 from deisa.dask import Bridge
-from deisa.dask.communicator import DaskComm
+from deisa.dask.communicator import CommClient
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,14 @@ class TestSimulation:
             Bridge(id=rank,
                    arrays_metadata=arrays_metadata,
                    system_metadata={'connection': client, 'nb_bridges': nb_mpi_ranks},
-                   comm=DaskComm(self.client, nb_mpi_ranks),
+                   comm=CommClient(
+                       comm_state_rpc=self.client.scheduler if rank == 0 else rpc(self.client.scheduler.address),
+                       client=self.client),
                    *args, **kwargs)
             for rank in range(nb_mpi_ranks)]
+
+    def __del__(self):
+        self.close_bridges()
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
@@ -132,5 +137,8 @@ class TestSimulation:
             return tuple(global_datas)
 
     def close_bridges(self):
-        for bridge in self.bridges:
-            bridge.close()
+        async def _close_bridges():
+            await asyncio.gather(*[asyncio.to_thread(bridge.close) for bridge in self.bridges])
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(_close_bridges())

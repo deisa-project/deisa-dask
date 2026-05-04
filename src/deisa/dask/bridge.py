@@ -116,6 +116,7 @@ class Bridge(IBridge):
         logger.debug(f"[{self.id}] Bridge __init__(): pre-bcast")
         self.workers = self.bridge_comm.bcast(self.workers, root=0)
         logger.debug(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
+        print(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
 
         if self.id == 0:
             # all bridges are ready, tell handshake actor
@@ -162,15 +163,15 @@ class Bridge(IBridge):
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={data.shape}, iteration={iteration}")
 
         rank = self.bridge_comm.Get_rank()
-        workers = self.workers
+        assert isinstance(self.workers, dict)
+        workers = dict(self.workers)
 
         if 'update_workers' in kwargs and kwargs['update_workers']:
             # only update worker list if requested
             if rank == 0:
+                assert self.client is not None, "client cannot be None for Bridge id 0."
                 # rank 0 retrieve workers and bcast to other bridges
                 workers = self.client.scheduler_info(n_workers=-1)["workers"]
-            else:
-                workers = None
 
             # bcast
             logger.debug(f"[{self.id}] send() pre-bcast workers={workers}")
