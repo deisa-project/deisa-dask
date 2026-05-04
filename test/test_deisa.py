@@ -337,7 +337,7 @@ class TestUsingDaskCluster:
 
             context['latest_window_size'] = len(window)
 
-        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        deisa.register_sliding_window_callback(window_callback, ('my_array', window_size))
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
@@ -709,14 +709,14 @@ class TestUsingDaskCluster:
             context['latest_window_size'] = len(window)
 
         # register followed by unregister
-        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        callback_id = deisa.register_sliding_window_callback(window_callback, ('my_array', window_size))
         assert callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback(callback_id)
         sim.generate_data('my_array', iteration=1)
         assert wait_for(lambda: context['counter'] == 0, nb_checks=10), "callback should not be called"
 
         # unregister an unknown array name
-        callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        callback_id = deisa.register_sliding_window_callback(window_callback, ('my_array', window_size))
         assert callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('my_array', iteration=2)
@@ -765,7 +765,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 0, nb_checks=10), "callback should not be called"
 
         # unregister an unknown array name
-        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        deisa.register_sliding_window_callback(window_callback, ('my_array', window_size))
         assert window_callback.callback_id is not None, "callback was not registered"
         deisa.unregister_sliding_window_callback("my_unknown_array")
         sim.generate_data('my_array', iteration=2)
@@ -1085,9 +1085,8 @@ class TestUsingDaskCluster:
             print(f"exception_handler. callback_id={callback_id}, e={e}", flush=True, file=sys.stderr)
             # pytest.fail(str(e))   # TODO
 
-        deisa.register_sliding_window_callback(window_callback, 'my_array',
-                                               window_size=1,
-                                               exception_handler=exception_handler)
+        deisa.register_sliding_window_callback(window_callback, ('my_array', 1), exception_handler=exception_handler)
+        
 
         for i in range(1, 5):
             sim.generate_data('my_array', iteration=i)
@@ -1144,7 +1143,7 @@ class TestUsingDaskCluster:
             context['counter'] += 1
             deisa.set('hello', 'world', chunked=False)
 
-        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
+        deisa.register_sliding_window_callback(window_callback, ('my_array', 1))
         sim.generate_data('my_array', iteration=1)
         assert wait_for(lambda: context['counter'] == 1)
         assert wait_for(lambda: sim.bridges[0].get('hello', chunked=False, delete=False) == 'world')
