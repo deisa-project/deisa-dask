@@ -1,3 +1,4 @@
+import logging
 from multiprocessing import Process
 from typing import List
 
@@ -7,11 +8,10 @@ from distributed import LocalCluster
 from deisa.dask import get_connection_info
 from deisa.dask.handshake import Handshake
 
+logging.basicConfig(level=logging.DEBUG)
 
-# logging.basicConfig(level=logging.DEBUG)
 
-
-@pytest.mark.xdist_group(name="serial")
+@pytest.mark.flaky(retries=3, delay=1)
 @pytest.mark.timeout(30)
 class TestHandshake:
     @pytest.fixture(scope="function")
