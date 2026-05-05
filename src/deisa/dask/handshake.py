@@ -44,8 +44,6 @@ class IHandshake(Protocol):
 
     def set_analytics_ready(self) -> None: ...
 
-    def set_arrays_metadata(self, *, arrays_metadata: dict) -> None: ...
-
     def get_arrays_metadata(self) -> dict: ...
 
     def get_max_bridges(self) -> int: ...
@@ -143,31 +141,34 @@ class Handshake:
         def __init__(self):
             logger.debug('HandshakeActor.__init__()')
             self.client = get_client()
-            self.max_bridges = 0
+            self.nb_bridges = 0
             self.arrays_metadata = {}
             self.bridges_ready = False
             self.analytics_ready = False
 
-        def set_bridges_ready(self):
+        def set_bridges_ready(self, nb_bridges: int, arrays_metadata: dict) -> None:
+            logger.debug(f"set_bridges_ready(): nb_bridges={nb_bridges}, arrays_metadata={arrays_metadata}, "
+                         f"analytics_ready={self.analytics_ready}")
+            self.nb_bridges = nb_bridges
+            self.arrays_metadata = arrays_metadata
             self.bridges_ready = True
             if self.analytics_ready:
                 self.__go()
 
         def set_analytics_ready(self) -> None:
+            logger.debug(f"set_analytics_ready(): bridges_ready={self.bridges_ready}")
             self.analytics_ready = True
             if self.bridges_ready:
                 self.__go()
 
-        def set_arrays_metadata(self, arrays_metadata: dict):
-            self.arrays_metadata = arrays_metadata
-
         def get_arrays_metadata(self) -> dict | Future:
             return self.arrays_metadata
 
-        def get_max_bridges(self) -> int | Future:
-            return self.max_bridges
+        def get_nb_bridges(self) -> int | Future:
+            return self.nb_bridges
 
         def __go(self):
+            logger.debug("Handshake go !")
             Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).set()
 
     def __init__(self, client: Client):
@@ -176,14 +177,13 @@ class Handshake:
         self.handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
         assert self.handshake_actor is not None
 
-    def all_bridges_ready(self, arrays_metadata: dict, wait_for_go=True) -> None:
+    def all_bridges_ready(self, nb_bridge: int, arrays_metadata: dict, wait_for_go=True) -> None:
         """
         Bridge must wait for analytics to be ready.
         """
-        logger.debug(f"All bridges ready. arrays_metadata={arrays_metadata}")
+        logger.debug(f"All bridges ready. nb_bridge={nb_bridge}, arrays_metadata={arrays_metadata}")
         assert self.handshake_actor is not None
-        self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
-        self.handshake_actor.set_bridges_ready().result()
+        self.handshake_actor.set_bridges_ready(nb_bridge, arrays_metadata).result()
 
         # wait for go
         if wait_for_go:
@@ -193,6 +193,7 @@ class Handshake:
         """
         When analytics is ready, notify all Bridges
         """
+        logger.debug("deisa ready.")
         assert self.handshake_actor is not None
         self.handshake_actor.set_analytics_ready().result()
 
@@ -206,7 +207,7 @@ class Handshake:
 
     def get_nb_bridges(self) -> int:
         assert self.handshake_actor is not None
-        return self.handshake_actor.get_max_bridges().result()
+        return self.handshake_actor.get_nb_bridges().result()
 
     def __wait_for_go(self) -> None:
         Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()

@@ -98,7 +98,7 @@ class Deisa(IDeisa):
         if not self._has_close_been_called and wait_for_bridges:
             self.__wait_for_bridges()
 
-    def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
+    def get_array(self, name: str, iteration=None, timeout=None) -> DeisaArray:
         """Retrieve a Dask array for a given array name."""
 
         # arrays_metadata will look something like this:

@@ -91,7 +91,8 @@ class Bridge(IBridge):
 
         if self.id == 0:
             # only id 0 has a real dask client
-            self.client: Client = self.system_metadata['connection']
+            self.client = self.system_metadata['connection']
+            assert self.client is not None, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
             # add rpc handlers to scheduler to handle collective ops
@@ -122,7 +123,8 @@ class Bridge(IBridge):
             # all bridges are ready, tell handshake actor
             assert self.client is not None, "client cannot be None for Bridge id 0."
             self.handshake = Handshake(self.client)
-            self.handshake.all_bridges_ready(arrays_metadata=self.arrays_metadata, **kwargs)
+            self.handshake.all_bridges_ready(nb_bridge=self.bridge_comm.Get_size(),
+                                             arrays_metadata=self.arrays_metadata, **kwargs)
 
         logger.debug(f"[{self.id}] Bridge __init__() with:\n"
                      f"comm={self.bridge_comm}\n"
