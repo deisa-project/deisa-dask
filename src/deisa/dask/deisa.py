@@ -165,23 +165,32 @@ class Deisa(IDeisa):
         logger.error(f"Exception thrown for callback id {callback_id}: {e}")
 
     def register(self,
-                *callback_args: Callback_args,
+                *callback_args,
                 exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
                 when: Literal['AND', 'OR'] = 'AND',) -> Callable:
         """
         Decorator that registers the decorated function as a sliding-window callback.
 
-        Single array:
-            @deisa.register(('array', 3))
-            def cb(window): ...
-
-        Multiple arrays:
-            @deisa.register(('a', 2), ('b', 3), when='OR')
-            def cb(window): ...
+        Supported forms:
+            @deisa.register("my_array")                           # default window size
+            @deisa.register("my_array", "arr2")                   # two arrays, default window size
+            @deisa.register("my_array", 1)                        # single array, explicit window size
+            @deisa.register(("my_array", 1), ("arr2", 2))         # explicit per-array window sizes
+            @deisa.register(("my_array", 1), ("arr2", 2), "arr3") # mixed
         """
+        # Case for only one array with its positional 'window_size'
+        # but not a tuple : ("my_array", 1) and not (("my_array", 1))
+        if len(callback_args) == 2 and isinstance(callback_args[0], str) and isinstance(callback_args[1], int):
+            expanded_callback_args = ((callback_args[0], callback_args[1]),)
+        else:
+            expanded_callback_args = tuple(
+                (callback_arg, DEFAULT_SLIDING_WINDOW_SIZE) if isinstance(callback_arg, str) else callback_arg
+                for callback_arg in callback_args
+            )
+
         def decorator(callback: SupportsSlidingWindow.Callback) -> SupportsSlidingWindow.Callback:
             callback.callback_id = self.register_sliding_window_callbacks(
-                callback, *callback_args,
+                callback, *expanded_callback_args,
                 exception_handler=exception_handler,
                 when=when)
             return callback
