@@ -164,7 +164,7 @@ class Deisa(IDeisa):
     def __default_exception_handler(callback_id: Callback_id, e):
         logger.error(f"Exception thrown for callback id {callback_id}: {e}")
 
-    def register(self,
+    def callback(self,
                 *callback_args,
                 exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
                 when: Literal['AND', 'OR'] = 'AND',) -> Callable:
@@ -189,18 +189,18 @@ class Deisa(IDeisa):
             )
 
         def decorator(callback: SupportsSlidingWindow.Callback) -> SupportsSlidingWindow.Callback:
-            callback.callback_id = self.register_sliding_window_callbacks(
+            self.register_callback(
                 callback, *expanded_callback_args,
                 exception_handler=exception_handler,
                 when=when)
             return callback
         return decorator
 
-    def register_sliding_window_callback(self,
-                                         callback: SupportsSlidingWindow.Callback,
-                                         *callback_args: Callback_args,
-                                         exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
-                                         when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
+    def register_callback(self,
+                          callback: SupportsSlidingWindow.Callback,
+                          *callback_args: Callback_args,
+                          exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
+                          when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
         """
         Register a sliding-window callback for one or more arrays.
 
@@ -211,7 +211,7 @@ class Deisa(IDeisa):
         """
         if not callback_args:
             raise TypeError(
-                "register_sliding_window_callback requires at least one array name "
+                "register_callback requires at least one array name "
                 "or (name, window_size) tuple"
             )
 
@@ -233,24 +233,23 @@ class Deisa(IDeisa):
             else:
                 raise TypeError("callback_args must be str or tuple")
 
-        callback_id = self._register_sliding_window_callbacks_impl(
+        callback_id = self._register_callback_impl(
             callback,
             parsed,
             exception_handler=exception_handler,
             when=when)
-        if hasattr(callback, 'callback_id'):
-            callback.callback_id = callback_id
+        callback.callback_id = callback_id
         return callback_id
 
-    def register_sliding_window_callbacks(self, callback, *args, **kwargs):
-        return self.register_sliding_window_callback(callback, *args, **kwargs)
+    def register_callbacks(self, callback, *args, **kwargs):
+        return self.register_callback(callback, *args, **kwargs)
 
-    def _register_sliding_window_callbacks_impl(self,
-                                                callback: SupportsSlidingWindow.Callback,
-                                                parsed: List[Tuple[str, int]],
-                                                *,
-                                                exception_handler: SupportsSlidingWindow.ExceptionHandler,
-                                                when: Literal['AND', 'OR']) -> Callback_id:
+    def _register_callback_impl(self,
+                                callback: SupportsSlidingWindow.Callback,
+                                parsed: List[Tuple[str, int]],
+                                *,
+                                exception_handler: SupportsSlidingWindow.ExceptionHandler,
+                                when: Literal['AND', 'OR']) -> Callback_id:
         """
         Supports:
           - (callback, "array_name", window_size=K)
@@ -268,7 +267,7 @@ class Deisa(IDeisa):
         array_names = self.__get_array_names(*parsed)
         callback_id = self.__next_callback_id()
 
-        logger.debug(f"_register_sliding_window_callbacks_impl: register callback_id={callback_id}")
+        logger.debug(f"_register_callback_impl: register callback_id={callback_id}")
 
         # per-callback state
         callback_state = {
@@ -295,12 +294,12 @@ class Deisa(IDeisa):
                 handler = self._make_topic_handler(array_name)
                 self._topic_handlers[array_name] = handler
 
-                logger.debug(f"_register_sliding_window_callbacks_impl: subscribe_topic() {array_name}")
+                logger.debug(f"_register_callback_impl: subscribe_topic() {array_name}")
                 self.client.subscribe_topic(array_name, handler)
 
         return callback_id
 
-    def unregister_sliding_window_callback(self, callback_id: Union[Callback_id, SupportsSlidingWindow.Callback]) -> None:
+    def unregister_callback(self, callback_id: Callback_id) -> None:
         # also accept a decorated callback function, which stores its id in .callback_id
         callback_id = getattr(callback_id, 'callback_id', callback_id)
         cb_data = self._callbacks.pop(callback_id, None)
@@ -391,7 +390,7 @@ class Deisa(IDeisa):
                 try:
                     await asyncio.to_thread(
                         cb_data["callback"],
-                        *windows
+                        **{name: window for name, window in zip(ordered_array_names, windows)}
                     )
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
@@ -416,7 +415,7 @@ class Deisa(IDeisa):
                 handler(callback_id, ex)
         except BaseException:
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
-            self.unregister_sliding_window_callback(callback_id)
+            self.unregister_callback(callback_id)
 
     def __update_futures_ownership(self, futures: Collection[Future]):
         # tell scheduler that my client is using these futures
