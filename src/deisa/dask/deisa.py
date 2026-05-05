@@ -165,28 +165,23 @@ class Deisa(IDeisa):
         logger.error(f"Exception thrown for callback id {callback_id}: {e}")
 
     def register(self,
-                 *callback_args: Callback_args,
-                 window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
-                 exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
-                 when: Literal['AND', 'OR'] = 'AND',) -> Callable:
+                *callback_args: Callback_args,
+                exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
+                when: Literal['AND', 'OR'] = 'AND',) -> Callable:
         """
         Decorator that registers the decorated function as a sliding-window callback.
 
         Single array:
-            @deisa.register('array', window_size=3)
+            @deisa.register(('array', 3))
             def cb(window): ...
 
         Multiple arrays:
-            @deisa.register('a', ('b', 3), when='OR')
+            @deisa.register(('a', 2), ('b', 3), when='OR')
             def cb(window): ...
         """
         def decorator(callback: SupportsSlidingWindow.Callback) -> SupportsSlidingWindow.Callback:
-            expanded_callback_args = tuple(
-                (callback_arg, window_size) if isinstance(callback_arg, str) else callback_arg
-                for callback_arg in callback_args
-            )
             callback.callback_id = self.register_sliding_window_callbacks(
-                callback, *expanded_callback_args,
+                callback, *callback_args,
                 exception_handler=exception_handler,
                 when=when)
             return callback

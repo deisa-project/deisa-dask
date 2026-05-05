@@ -387,7 +387,7 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        @deisa.register("my_array", window_size=window_size)
+        @deisa.register(("my_array", window_size))
         def window_callback(window: list[DeisaArray]):
             print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
             context['counter'] += 1
@@ -750,7 +750,7 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        @deisa.register("my_array", window_size=window_size)
+        @deisa.register(("my_array", window_size))
         def window_callback(window: list[DeisaArray]):
             print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
             context['counter'] += 1
