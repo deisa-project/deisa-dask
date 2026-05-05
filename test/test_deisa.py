@@ -32,7 +32,6 @@ import math
 import os.path
 import sys
 import time
-from typing import List
 
 import dask
 import dask.array as da
@@ -42,9 +41,8 @@ from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
-from utils import wait_for, dask_array_element_wise_equal
-
 from deisa.dask.types import DeisaArray
+from utils import wait_for, dask_array_element_wise_equal
 
 logging.basicConfig(level=logging.DEBUG)
 

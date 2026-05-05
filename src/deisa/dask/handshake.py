@@ -26,7 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-import asyncio
 import logging
 from typing import Protocol
 
@@ -38,98 +37,13 @@ logger = logging.getLogger(__name__)
 
 
 class IHandshake(Protocol):
-    def add_bridge_ready(self, *, id: int, max: int) -> None: ...
-
-    def add_bridge_done(self, id: int) -> None: ...
+    def set_bridges_ready(self, nb_bridges: int, arrays_metadata: dict) -> None: ...
 
     def set_analytics_ready(self) -> None: ...
 
-    def get_arrays_metadata(self) -> dict: ...
+    def get_arrays_metadata(self) -> dict | Future: ...
 
-    def get_max_bridges(self) -> int: ...
-
-    def wait_for_go(self): ...
-
-    def wait_for_done(self): ...
-
-
-class HandshakeHandler(IHandshake):
-    bridges_ready = []
-    bridges_done = []
-    max_bridges = 0
-    arrays_metadata = {}
-    analytics_ready = False
-
-    def __init__(self):
-        logger.debug('HandshakeActor.__init__()')
-        self.bridges_ready = []
-        self.bridges_done = []
-        self.max_bridges = 0
-        self.arrays_metadata = {}
-        self.analytics_ready = False
-        self.go_event = asyncio.Event()
-        self.done_event = asyncio.Event()
-
-        self.handlers = {
-            'add_bridge_ready': self.add_bridge_ready,
-            'add_bridge_done': self.add_bridge_done,
-            'set_analytics_ready': self.set_analytics_ready,
-            'set_arrays_metadata': self.set_arrays_metadata,
-            'get_arrays_metadata': self.get_arrays_metadata,
-            'get_max_bridges': self.get_max_bridges,
-            'wait_for_go': self.wait_for_go(),
-            'wait_for_done': self.wait_for_done()
-        }
-
-    def add_bridge_ready(self, *, id: int, max: int) -> None:
-        if max == 0:
-            raise ValueError('max cannot be 0.')
-        elif self.max_bridges == 0:
-            self.max_bridges = max
-        elif self.max_bridges != max:
-            raise ValueError(f'Value {max} for bridge {id} is unexpected. Expecting max={self.max_bridges}.')
-        elif len(self.bridges_ready) >= max:
-            raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
-
-        self.bridges_ready.append(id)
-        if self.__is_everyone_ready():
-            self.__go()
-
-    def add_bridge_done(self, id: int) -> None:
-        self.bridges_done.append(id)
-        if len(self.bridges_ready) == self.max_bridges:
-            self.done_event.set()
-
-    def set_analytics_ready(self) -> None:
-        self.analytics_ready = True
-        if self.__are_bridges_ready():
-            self.__go()
-
-    def set_arrays_metadata(self, *, arrays_metadata: dict) -> None:
-        self.arrays_metadata = arrays_metadata
-
-    def get_arrays_metadata(self) -> dict:
-        return self.arrays_metadata
-
-    def get_max_bridges(self) -> int:
-        return self.max_bridges
-
-    def wait_for_go(self):
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.go_event.wait())
-
-    def wait_for_done(self):
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.done_event.wait())
-
-    def __are_bridges_ready(self) -> bool | Future:
-        return self.max_bridges != 0 and len(self.bridges_ready) == self.max_bridges
-
-    def __is_everyone_ready(self) -> bool | Future:
-        return self.__are_bridges_ready() and self.analytics_ready
-
-    def __go(self):
-        self.go_event.set()
+    def get_nb_bridges(self) -> int: ...
 
 
 class Handshake:
@@ -173,7 +87,6 @@ class Handshake:
 
     def __init__(self, client: Client):
         self.client = client
-        # self.client.direct_to_workers() # TODO
         self.handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
         assert self.handshake_actor is not None
 

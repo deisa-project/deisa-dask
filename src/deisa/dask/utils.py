@@ -57,6 +57,7 @@ def get_connection_info(dask_scheduler_address: str | Client) -> Client:
 
     return client
 
+
 def _get_actor(client: Client, clazz, **kwargs):
     def check_variable(dask_scheduler, name):
         ext = dask_scheduler.extensions["variables"]

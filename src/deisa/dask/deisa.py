@@ -37,7 +37,6 @@ from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set,
 import dask
 import dask.array as da
 import numpy as np
-from dask.array import Array
 from deisa.core.interface import IDeisa, SupportsSlidingWindow
 from distributed import Client, Future, Queue, Variable
 
