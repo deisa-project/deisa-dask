@@ -506,7 +506,7 @@ class Deisa(IDeisa):
         return xr.DataArray(
             darr,
             dims=dim_names,
-            attrs={"t": iteration},
+            coords={"t": iteration},
             name=name,
         )
 
