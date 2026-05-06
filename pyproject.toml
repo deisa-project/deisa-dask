@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "deisa-dask"
@@ -17,15 +17,15 @@ dependencies = [
   "deisa-core>=0.4.0",
   "dask",
   "distributed",
-  "toolz"
+  "toolz",
+  "numpy"
 ]
 
 [project.optional-dependencies]
 test = [
   "pytest",
   "pytest-timeout",
-  "pytest-xdist",
-  "numpy"
+  "pytest-xdist"
 ]
 mpi = [
   "mpi4py"
@@ -36,11 +36,13 @@ Homepage = "https://github.com/deisa-project/deisa-dask"
 "Bug Reports" = "https://github.com/deisa-project/deisa-dask/issues"
 Source = "https://github.com/deisa-project/deisa-dask"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/deisa"]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
-[tool.hatch.version]
-path = "src/deisa/dask/__version__.py"
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["deisa.dask"]
 
-[tool.hatch.metadata]
-readme = "README.md"
+[tool.setuptools.dynamic]
+version = {attr = "deisa.dask.__version__.__version__"}
+readme = {file = ["README.md"], content-type = "text/markdown"}
