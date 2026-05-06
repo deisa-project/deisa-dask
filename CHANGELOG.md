@@ -37,6 +37,7 @@ Types of changes:
 - set Client `heartbeat_interval` to `sys.maxsize`
 - Change `TestSimulation` to use `asyncio` to run `bridge.send`
 - Gracefully stop bridges. Deisa waits for all bridges to close
+- Replace the setup.py by a pyproject.toml
 
 ### Fixed
 
