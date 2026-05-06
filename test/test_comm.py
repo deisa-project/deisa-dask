@@ -146,7 +146,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     deisa = Deisa(get_connection_info=lambda: client, wait_for_go=False)
     darr = deisa.get_array('temperature', iteration=1)
     assert isinstance(darr, xr.DataArray)
-    assert darr.attrs["t"] == 1
+    assert darr.coords["t"].item() == 1
     assert darr.data.sum().compute() == np.prod(global_size), f"temperature sum should be the product of {global_size}"
 
     cluster.close()
