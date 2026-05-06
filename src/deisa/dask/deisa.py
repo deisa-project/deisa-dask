@@ -391,6 +391,7 @@ class Deisa(IDeisa):
                     await asyncio.to_thread(
                         cb_data["callback"],
                         **{name: window for name, window in zip(ordered_array_names, windows)}
+                        # Changed from "*windows" to enable order-independent callbacks
                     )
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
