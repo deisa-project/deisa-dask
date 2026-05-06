@@ -32,19 +32,17 @@ import math
 import os.path
 import sys
 import time
-from typing import List
 
 import dask
 import dask.array as da
 import numpy as np
 import pytest
 from distributed import Client, LocalCluster, Queue, Variable
+import xarray as xr
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, get_connection_info, Bridge
 from utils import wait_for, dask_array_element_wise_equal
-
-from deisa.dask.types import DeisaArray
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -224,12 +222,12 @@ class TestUsingDaskCluster:
 
         darr = da.from_delayed(dask.delayed(res["f"]), res["shape"], dtype=res["dtype"])
 
-        darr = DeisaArray(dask=darr, t=0)
-        assert isinstance(darr, DeisaArray)
-        assert darr.dask.compute().shape == (2, 2)
-        assert darr.dask.compute().all() == data.all()
-        assert darr.dask.sum().compute() == data.sum()
-        assert darr.t == 0
+        darr = xr.DataArray(data=darr, coords={"t": 0})
+        assert isinstance(darr, xr.DataArray)
+        assert darr.data.compute().shape == (2, 2)
+        assert darr.data.compute().all() == data.all()
+        assert darr.data.sum().compute() == data.sum()
+        assert darr.coords['t'].item() == 0
 
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
@@ -262,10 +260,10 @@ class TestUsingDaskCluster:
                                                                 global_grid_size[1] // mpi_parallelism[1]))
             darr = deisa.get_array('my_array', iteration=i)
 
-            assert isinstance(darr, DeisaArray)
-            assert darr.t == i, "iteration does not match expected"
+            assert isinstance(darr, xr.DataArray)
+            assert darr.coords["t"].item() == i, "iteration does not match expected"
 
-            assert math.isclose(global_data_da.sum().compute(), darr.dask.sum().compute(),
+            assert math.isclose(global_data_da.sum().compute(), darr.data.sum().compute(),
                                 rel_tol=1e-09), "reconstructed dask array does not match original"
 
     def test_get_dask_array_slow(self, env_setup):
@@ -296,9 +294,9 @@ class TestUsingDaskCluster:
 
         darr = deisa.get_array('my_array', iteration=1)
 
-        assert isinstance(darr, DeisaArray)
-        assert darr.t == 1, "iteration does not match expected"
-        assert dask_array_element_wise_equal(global_data_da, darr.dask), "dask arrays are not equal"
+        assert isinstance(darr, xr.DataArray)
+        assert darr.coords['t'].item() == 1, "iteration does not match expected"
+        assert dask_array_element_wise_equal(global_data_da, darr.data), "dask arrays are not equal"
 
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
@@ -329,13 +327,14 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        def window_callback(window: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+        def window_callback(window: list[xr.DataArray]):
+            windowWithT = xr.concat(window, dim="t")
+            print(f"hello from window_callback. iteration={windowWithT.coords['t']}", flush=True)
             context['counter'] += 1
-            context['latest_timestep'] = window[-1].t
-            context['latest_data'] = window[-1].dask
+            context['latest_timestep'] = windowWithT.coords['t'][-1].item()
+            context['latest_data'] = windowWithT[-1].data
 
-            context['latest_window_size'] = len(window)
+            context['latest_window_size'] = windowWithT.sizes['t']
 
         deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
 
@@ -411,25 +410,30 @@ class TestUsingDaskCluster:
         }
 
         def window_callback_2(temperatures, pressures):
-            print(f"hello from window_callback_2. iteration={temperatures[-1].t}", flush=True)
-            context['counter'] += 1
-            context['latest_timestep'] = temperatures[-1].t
-            context['latest_temperature'] = temperatures[-1].dask
-            context['latest_temperature_window_size'] = len(temperatures)
-            context['latest_pressure'] = pressures[-1].dask
-            context['latest_pressure_window_size'] = len(pressures)
+            temperaturesWithT = xr.concat(temperatures, dim="t")
+            pressuresWithT = xr.concat(pressures, dim="t")
 
-            s1 = temperatures[-1].dask.sum().compute()
-            s2 = temperatures[-1].dask.sum().compute()
+            print(f"hello from window_callback_2. iteration={temperaturesWithT.coords['t']}", flush=True)
+            context['counter'] += 1
+            context['latest_timestep'] = temperaturesWithT.coords['t'][-1].item()
+            context['latest_temperature'] = temperaturesWithT[-1].data
+            context['latest_temperature_window_size'] = temperaturesWithT.sizes['t']
+            context['latest_pressure'] = pressuresWithT[-1].data
+            context['latest_pressure_window_size'] = pressuresWithT.sizes['t']
+
+            s1 = temperaturesWithT[-1].data.sum().compute()
+            s2 = temperaturesWithT[-1].data.sum().compute()
             assert s1 == s2, "data is not the same"
 
         def window_callback_3(temperatures, pressures, density):
-            print(f"hello from window_callback_3. iteration={density[-1].t}", flush=True)
-            window_callback_2(temperatures, pressures)
-            context['latest_density'] = density[-1].dask
-            context['latest_density_window_size'] = len(density)
+            densityWithT = xr.concat(density, dim="t")
 
-            density[-1].dask.sum().compute()
+            print(f"hello from window_callback_3. iteration={densityWithT.coords['t']}", flush=True)
+            window_callback_2(temperatures, pressures)
+            context['latest_density'] = densityWithT[-1].data
+            context['latest_density_window_size'] = densityWithT.sizes['t']
+
+            densityWithT[-1].data.sum().compute()
 
         callback_id = deisa.register_sliding_window_callbacks(window_callback_2,
                                                               ("temperature", temperature_window_size),
@@ -514,12 +518,13 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        def window_callback(window: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+        def window_callback(window: list[xr.DataArray]):
+            windowWithT = xr.concat(window, dim="t")
+            print(f"hello from window_callback. iteration={windowWithT.coords['t'][-1].item()}", flush=True)
             context['counter'] += 1
-            context['latest_timestep'] = window[-1].t
-            context['latest_data'] = window[-1].dask
-            context['latest_window_size'] = len(window)
+            context['latest_timestep'] = windowWithT.coords['t'][-1].item()
+            context['latest_data'] = windowWithT[-1].data
+            context['latest_window_size'] = windowWithT.sizes['t']
 
         # register followed by unregister
         callback_id = deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
@@ -566,16 +571,19 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        def window_callback(temperatures: list[DeisaArray], pressures: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={temperatures[-1].t}", flush=True)
+        def window_callback(temperatures: list[xr.DataArray], pressures: list[xr.DataArray]):
+            temperaturesWithT = xr.concat(temperatures, dim="t")
+            pressuresWithT = xr.concat(pressures, dim="t")
+
+            print(f"hello from window_callback. iteration={temperaturesWithT.coords['t']}", flush=True)
             context['counter'] += 1
-            context['latest_timestep'] = temperatures[-1].t
+            context['latest_timestep'] = temperaturesWithT[-1].coords['t'].item()
 
-            context['latest_temperatures_data'] = temperatures[-1].dask
-            context['latest_pressures_data'] = pressures[-1].dask
+            context['latest_temperatures_data'] = temperaturesWithT[-1].data
+            context['latest_pressures_data'] = pressuresWithT[-1].data
 
-            context['latest_temperatures_window_size'] = len(temperatures)
-            context['latest_pressures_window_size'] = len(pressures)
+            context['latest_temperatures_window_size'] = temperaturesWithT.sizes['t']
+            context['latest_pressures_window_size'] = pressuresWithT.sizes['t']
 
         # register followed by unregister
         callback_id = deisa.register_sliding_window_callbacks(window_callback,
@@ -623,8 +631,9 @@ class TestUsingDaskCluster:
             'exception_handler': 0
         }
 
-        def window_callback(window: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+        def window_callback(window: list[xr.DataArray]):
+            windowWithT = xr.concat(window, dim="t")
+            print(f"hello from window_callback. iteration={windowWithT.coords['t'][-1].item()}", flush=True)
             context['counter'] += 1
             raise RuntimeError("Throw from user callback")
 
@@ -699,9 +708,10 @@ class TestUsingDaskCluster:
         context = {'counter': 0}
 
         def window_callback(window):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+            windowWithT = xr.concat(window, dim="t")
+            print(f"hello from window_callback. iteration={windowWithT.coords['t'][-1].item()}", flush=True)
 
-            darr = window[-1].dask
+            darr = windowWithT[-1].data
 
             assert darr.shape == global_grid_size
             assert darr.chunksize == (global_grid_size[0] // mpi_parallelism[0],
@@ -769,8 +779,9 @@ class TestUsingDaskCluster:
             'counter': 0
         }
 
-        def window_callback(window: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+        def window_callback(window: list[xr.DataArray]):
+            windowWithT = xr.concat(window, dim="t")
+            print(f"hello from window_callback. iteration={windowWithT.coords['t'][-1].item()}", flush=True)
             context['counter'] += 1
             deisa.set('hello', 'world', chunked=False)
 
