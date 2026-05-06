@@ -27,6 +27,7 @@ Types of changes:
 - Add `pytest.ini`
 - Add the option to update the worker list, before `send()`, on a Bridge using `update_worker`
 - Add the option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
+- Add DeisaArray wrapper to unify handling of Dask array and iteration
 
 ### Changed
 

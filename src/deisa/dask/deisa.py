@@ -42,6 +42,7 @@ from deisa.core.interface import IDeisa, SupportsSlidingWindow
 from distributed import Client, Future, Queue, Variable
 
 from deisa.dask.handshake import Handshake
+from deisa.dask.types import DeisaArray
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
@@ -151,7 +152,7 @@ class Deisa(IDeisa):
                     )
 
                     logger.debug(f"[ITER {iteration}] {name} shape={darr.shape}")
-                    return darr, iteration
+                    return DeisaArray(dask=darr, t=iteration)
 
             # timeout handling
             if timeout is not None and (time.time() - start) > timeout:
@@ -352,7 +353,7 @@ class Deisa(IDeisa):
 
         # update sliding window
         d = state[array_name]
-        d["window"].append(darr)
+        d["window"].append(DeisaArray(dask=darr, t=iteration))
         d["changed"] = True
 
         ordered_array_names = cb_data["array_names"]
@@ -364,8 +365,7 @@ class Deisa(IDeisa):
                 try:
                     await asyncio.to_thread(
                         cb_data["callback"],
-                        *windows,
-                        timestep=iteration
+                        *windows
                     )
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
