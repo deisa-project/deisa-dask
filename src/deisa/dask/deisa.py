@@ -37,12 +37,11 @@ from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set,
 import dask
 import dask.array as da
 import numpy as np
-from dask.array import Array
 from deisa.core.interface import IDeisa, SupportsSlidingWindow
 from distributed import Client, Future, Queue, Variable
+import xarray as xr
 
 from deisa.dask.handshake import Handshake
-from deisa.dask.types import DeisaArray
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
@@ -94,7 +93,7 @@ class Deisa(IDeisa):
         if wait_for_bridges:
             self.__wait_for_bridges()
 
-    def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
+    def get_array(self, name: str, iteration=None, timeout=None) -> xr.DataArray:
         """Retrieve a Dask array for a given array name."""
 
         # arrays_metadata will look something like this:
@@ -152,7 +151,7 @@ class Deisa(IDeisa):
                     )
 
                     logger.debug(f"[ITER {iteration}] {name} shape={darr.shape}")
-                    return DeisaArray(dask=darr, t=iteration)
+                    return self.__make_xarray(darr, name, iteration)
 
             # timeout handling
             if timeout is not None and (time.time() - start) > timeout:
@@ -353,7 +352,7 @@ class Deisa(IDeisa):
 
         # update sliding window
         d = state[array_name]
-        d["window"].append(DeisaArray(dask=darr, t=iteration))
+        d["window"].append(self.__make_xarray(darr, array_name, iteration))
         d["changed"] = True
 
         ordered_array_names = cb_data["array_names"]
@@ -498,6 +497,18 @@ class Deisa(IDeisa):
             return False
 
         return loop is client.loop.asyncio_loop
+
+    def __make_xarray(self, darr: da.Array, name: str, iteration: int) -> xr.DataArray:
+        """Wrap a Dask array as an xarray.DataArray with named dims and a scalar 't' coordinate."""
+        ndim = darr.ndim
+        # derive dim names from metadata if present, else fall back to dim_0, dim_1, …
+        dim_names = self.arrays_metadata.get(name, {}).get("dims", [f"dim_{i}" for i in range(ndim)])
+        return xr.DataArray(
+            darr,
+            dims=dim_names,
+            attrs={"t": iteration},
+            name=name,
+        )
 
     @staticmethod
     def run_task_sync(coro, loop):
