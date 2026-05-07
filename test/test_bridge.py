@@ -140,3 +140,127 @@ class TestBridge:
             return list(workers.keys())
 
         bridge.send('temperature', np.ones(1), iteration=0, update_workers=True, filter_workers=filter)
+
+    @pytest.fixture
+    def env_setup_inproc(self):
+        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False, dashboard_address=None)
+        client = Client(cluster)
+        client.wait_for_workers(2, timeout=10)
+        yield client, cluster
+        client.close()
+        cluster.close()
+
+    @pytest.fixture
+    def env_setup_remote(self):
+        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None)
+        client = Client(cluster)
+        client.wait_for_workers(2, timeout=10)
+        yield client, cluster
+        client.close()
+        cluster.close()
+
+    @pytest.fixture
+    def env_setup_mixed(self):
+        # One remote worker (separate process)
+        cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True, dashboard_address=None)
+        client = Client(cluster)
+        client.wait_for_workers(1, timeout=10)
+
+        # One in-process worker connecting to the same scheduler
+        from distributed import Worker
+        async def _start():
+            return await Worker(cluster.scheduler.address, nthreads=1)
+        async def _stop(w):
+            await w.close()
+
+        inproc_worker = client.sync(_start)
+        client.wait_for_workers(2, timeout=10)
+
+        yield client, cluster, inproc_worker
+
+        client.sync(_stop, inproc_worker)
+        client.close()
+        cluster.close()
+
+    def test_send_uses_inprocess_path(self, env_setup_inproc, caplog):
+        client, cluster = env_setup_inproc
+        bridge, _, _ = self.get_new_bridge(client)
+
+        data = np.ones(1)
+        original_id = id(data)
+
+        with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
+            bridge.send('temperature', data, iteration=0)
+
+        # Verify routing, at least one worker should be in-process, none remote
+        assert any('in_process=' in r.message and 'remote=[]' in r.message
+                for r in caplog.records), \
+            "Expected all workers to be in-process"
+
+        # Verify zero-copy directly, the original object must be stored in one of the in-process workers and not a copy
+        stored_ids = [
+            id(w.data[key])
+            for w in cluster.workers.values()
+            for key in w.data
+            if key.startswith('ndarray-')
+        ]
+        assert len(stored_ids) > 0, \
+            "No ndarray key found in any worker's data store"
+        assert original_id in stored_ids, \
+            "In-process scatter made a copy — no worker holds the original object"
+
+    def test_send_uses_remote_path(self, env_setup_remote, caplog):
+        client, cluster = env_setup_remote
+        bridge, _, _ = self.get_new_bridge(client)
+
+        data = np.ones(1)
+
+        with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
+            bridge.send('temperature', data, iteration=0)
+
+        # Verify routing, no in-process workers from this process perspective
+        assert any('in_process=[]' in r.message
+                for r in caplog.records), \
+            "Expected no in-process workers for remote cluster"
+
+        # Verify data arrived on a worker via the scheduler
+        who_has = client.who_has()
+        ndarray_keys = [k for k in who_has if k.startswith('ndarray-')]
+        assert len(ndarray_keys) > 0, \
+            "No ndarray key found on any worker after remote scatter"
+        assert all(len(who_has[k]) > 0 for k in ndarray_keys), \
+            "Some keys have no owner worker"
+
+    def test_send_uses_mixed_path(self, env_setup_mixed, caplog):
+        client, cluster, inproc_worker = env_setup_mixed
+        bridge, _, _ = self.get_new_bridge(client)
+
+        data = np.ones(1)
+        original_id = id(data)
+
+        with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
+            bridge.send('temperature', data, iteration=0)
+
+        # Verify both paths were used
+        routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
+        assert len(routing_records) > 0, "No routing log found"
+        routing_msg = routing_records[0]
+        assert 'in_process=[]' not in routing_msg, "Expected at least one in-process worker"
+        assert 'remote=[]' not in routing_msg, "Expected at least one remote worker"
+
+        # Verify zero-copy, in-process worker has the object
+        in_process_keys = [key for key in inproc_worker.data if key.startswith('ndarray-')]
+        if in_process_keys:
+            # Key was round-robined to the in-process worker
+            stored_ids = [id(inproc_worker.data[key]) for key in in_process_keys]
+            assert original_id in stored_ids, \
+                "In-process scatter made a copy, in-process worker does not have the object"
+
+        # Verify remote worker also received the data (serialized copy)
+        who_has = client.who_has()
+        ndarray_keys = [k for k in who_has if k.startswith('ndarray-')]
+        assert len(ndarray_keys) > 0, "No ndarray key found after scatter"
+        all_holders = {addr for k in ndarray_keys for addr in who_has[k]}
+        remote_addrs = {w.address for w in cluster.workers.values()}
+        assert all_holders & remote_addrs, \
+            "No remote worker received the data"

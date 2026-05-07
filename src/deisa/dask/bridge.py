@@ -37,8 +37,11 @@ from dask.tokenize import tokenize
 from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Client, Variable
 from distributed.protocol import to_serialize
-from distributed.utils_comm import scatter_to_workers
+from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
+from distributed.worker import Worker, _global_workers
 from tlz import valmap
+import inspect
+import asyncio
 
 from deisa.dask.communicator import resolve_comm
 from deisa.dask.deisa import VARIABLE_PREFIX, CLIENT_KEY
@@ -46,6 +49,8 @@ from deisa.dask.handshake import Handshake
 
 logger = logging.getLogger(__name__)
 
+_scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
+_update_data_is_async = asyncio.iscoroutinefunction(Worker.update_data)
 
 class Bridge(IBridge):
     def __init__(self, id: int,
@@ -260,7 +265,6 @@ class Bridge(IBridge):
         assert isinstance(data, dict)
 
         # Split workers between in-process and remote
-        from distributed.worker import _global_workers
         local_worker_map: dict[str, Any] = {
             w.address: w
             for w in _global_workers
@@ -276,28 +280,89 @@ class Bridge(IBridge):
         who_has: dict = {}
         nbytes:  dict = {}
 
-        # In-process path, direct write with no copy
-        if in_process:
-            for i, (key, val) in enumerate(data.items()):
-                target_addr = in_process[i % len(in_process)]
+        # # In-process path, direct write with no copy
+        # if in_process:
+        #     for i, (key, val) in enumerate(data.items()):
+        #         target_addr = in_process[i % len(in_process)]
+        #         worker = local_worker_map[target_addr]
+        #         # Temporary check while "distributed" version is not fixed
+        #         if _update_data_is_async:
+        #             await worker.update_data({key: val})
+        #         else:
+        #             worker.update_data({key: val})
+        #         # await worker.update_data({key: val})
+
+        #         # Check zero-copy, with the worker holding same object and not a copy
+        #         stored = worker.data[key]
+        #         assert id(stored) == id(val), (
+        #             f"In-process scatter copied data! "
+        #             f"id(original)={id(val)}, id(stored)={id(stored)}"
+        #         )
+        #         logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
+
+        #         who_has[key] = [target_addr]
+        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+
+        # # Remote path, existing scatter
+        # if remote:
+        #     data2 = valmap(to_serialize, data)
+        #     # Temporary check while "distributed" version is not fixed
+        #     if _scatter_needs_rpc:
+        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(remote, data2, self.client.rpc)
+        #     else:
+        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(remote, data2)
+        #     # _, remote_who_has, remote_nbytes = await scatter_to_workers(
+        #     #     remote, data2, self.client.rpc
+        #     # )
+        #     for k, addrs in remote_who_has.items():
+        #         who_has.setdefault(k, []).extend(addrs)
+        #     # Remote only when the key wasn't set by the in-process case
+        #     for k, v in remote_nbytes.items():
+        #         nbytes.setdefault(k, v)
+
+        # Unified round-robin across all workers, per-key routing
+        remote_data: dict = {}
+        remote_targets: dict[str, str] = {}  # key which target worker addr
+
+        for i, (key, val) in enumerate(data.items()):
+            target_addr = workers[i % len(workers)]
+
+            if target_addr in local_worker_map:
+                # In-process path, direct write with no copy
                 worker = local_worker_map[target_addr]
-                # update_data handles TaskState, memory accounting, and scheduler notification
-                # report=False because send() already calls scheduler.update_data with who_has
-                worker.update_data({key: val})
+                if _update_data_is_async:
+                    await worker.update_data({key: val})
+                else:
+                    worker.update_data({key: val})
+
+                stored = worker.data[key]
+                assert id(stored) == id(val), (
+                    f"In-process scatter copied data "
+                    f"id(original)={id(val)}, id(stored)={id(stored)}"
+                )
+                logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
+
                 who_has[key] = [target_addr]
                 nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+            else:
+                # Remote path, existing scatter
+                remote_data[key] = val
+                remote_targets[key] = target_addr
 
-        # Remote path, existing scatter
-        if remote:
-            data2 = valmap(to_serialize, data)
-            _, remote_who_has, remote_nbytes = await scatter_to_workers(
-                remote, data2, self.client.rpc
-            )
+        # Batch scatter all remote keys
+        if remote_data:
+            data2 = valmap(to_serialize, remote_data)
+            if _scatter_needs_rpc:
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    [remote_targets[k] for k in remote_data], data2, self.client.rpc)
+            else:
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    [remote_targets[k] for k in remote_data], data2)
+
             for k, addrs in remote_who_has.items():
-                who_has.setdefault(k, set()).update(addrs)
-            # Remote only when the key wasn't set by the in-process case
+                who_has[k] = list(addrs)
             for k, v in remote_nbytes.items():
-                nbytes.setdefault(k, v)
+                nbytes[k] = v
 
         out = {
             k: {
