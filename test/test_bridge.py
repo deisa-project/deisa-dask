@@ -235,32 +235,39 @@ class TestBridge:
         client, cluster, inproc_worker = env_setup_mixed
         bridge, _, _ = self.get_new_bridge(client)
 
+        inproc_addr = inproc_worker.address
+        remote_addrs = set(bridge.workers) - {inproc_addr}
+
+        # Verify both worker types are visible to the bridge
+        assert inproc_addr in bridge.workers, "In-process worker not in bridge.workers"
+        assert len(remote_addrs) > 0, "No remote worker in bridge.workers"
+
         data = np.ones(1)
         original_id = id(data)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, iteration=0)
 
-        # Verify both paths were used
+        # Verify routing log detected both worker types
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
         assert len(routing_records) > 0, "No routing log found"
         routing_msg = routing_records[0]
         assert 'in_process=[]' not in routing_msg, "Expected at least one in-process worker"
         assert 'remote=[]' not in routing_msg, "Expected at least one remote worker"
 
-        # Verify zero-copy, in-process worker has the object
-        in_process_keys = [key for key in inproc_worker.data if key.startswith('ndarray-')]
-        if in_process_keys:
-            # Key was round-robined to the in-process worker
-            stored_ids = [id(inproc_worker.data[key]) for key in in_process_keys]
-            assert original_id in stored_ids, \
-                "In-process scatter made a copy, in-process worker does not have the object"
-
-        # Verify remote worker also received the data (serialized copy)
+        # Verify the key landed on exactly one worker
         who_has = client.who_has()
         ndarray_keys = [k for k in who_has if k.startswith('ndarray-')]
         assert len(ndarray_keys) > 0, "No ndarray key found after scatter"
         all_holders = {addr for k in ndarray_keys for addr in who_has[k]}
-        remote_addrs = {w.address for w in cluster.workers.values()}
-        assert all_holders & remote_addrs, \
-            "No remote worker received the data"
+        assert len(all_holders) == 1, "Key should be on exactly one worker"
+
+        # Verify zero-copy if it landed on the in-process worker
+        if inproc_addr in all_holders:
+            in_process_keys = [key for key in inproc_worker.data if key.startswith('ndarray-')]
+            stored_ids = [id(inproc_worker.data[key]) for key in in_process_keys]
+            assert original_id in stored_ids, \
+                "In-process scatter made a copy"
+        else:
+            assert all_holders & remote_addrs, \
+                "Key holder is neither in-process nor a known remote worker"

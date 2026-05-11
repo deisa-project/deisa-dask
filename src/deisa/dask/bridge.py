@@ -164,6 +164,10 @@ class Bridge(IBridge):
                 if not isinstance(w, str):
                     raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
 
+        # Ensure "workers" is a list before scatter
+        if isinstance(workers, dict):
+            workers = list(workers.keys())
+
         # Send data to worker
         res = self._better_scatter(data, workers=workers, hash=False)  # send data to workers
 
@@ -279,46 +283,6 @@ class Bridge(IBridge):
 
         who_has: dict = {}
         nbytes:  dict = {}
-
-        # # In-process path, direct write with no copy
-        # if in_process:
-        #     for i, (key, val) in enumerate(data.items()):
-        #         target_addr = in_process[i % len(in_process)]
-        #         worker = local_worker_map[target_addr]
-        #         # Temporary check while "distributed" version is not fixed
-        #         if _update_data_is_async:
-        #             await worker.update_data({key: val})
-        #         else:
-        #             worker.update_data({key: val})
-        #         # await worker.update_data({key: val})
-
-        #         # Check zero-copy, with the worker holding same object and not a copy
-        #         stored = worker.data[key]
-        #         assert id(stored) == id(val), (
-        #             f"In-process scatter copied data! "
-        #             f"id(original)={id(val)}, id(stored)={id(stored)}"
-        #         )
-        #         logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
-
-        #         who_has[key] = [target_addr]
-        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
-
-        # # Remote path, existing scatter
-        # if remote:
-        #     data2 = valmap(to_serialize, data)
-        #     # Temporary check while "distributed" version is not fixed
-        #     if _scatter_needs_rpc:
-        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(remote, data2, self.client.rpc)
-        #     else:
-        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(remote, data2)
-        #     # _, remote_who_has, remote_nbytes = await scatter_to_workers(
-        #     #     remote, data2, self.client.rpc
-        #     # )
-        #     for k, addrs in remote_who_has.items():
-        #         who_has.setdefault(k, []).extend(addrs)
-        #     # Remote only when the key wasn't set by the in-process case
-        #     for k, v in remote_nbytes.items():
-        #         nbytes.setdefault(k, v)
 
         # Unified round-robin across all workers, per-key routing
         remote_data: dict = {}
