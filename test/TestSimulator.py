@@ -36,13 +36,15 @@ from distributed import Client
 from deisa.dask import Bridge
 from utils import FakeComm, async_close_bridges
 
+# from deisa.dask.bridge import Bridge, DaskComm
+
 logger = logging.getLogger(__name__)
 
 
 class TestSimulation:
     __test__ = False
 
-    def __init__(self, client: Client, arrays_metadata: dict[str, dict], mpi_parallelism: tuple, *args, **kwargs):
+    def __init__(self, client, arrays_metadata: dict[str, dict], mpi_parallelism: tuple, *args, **kwargs):
         self.client = client
         self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
@@ -59,8 +61,9 @@ class TestSimulation:
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
-        x = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][0])
-        y = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][1])
+        shape = self.arrays_metadata[array_name]['global_shape']
+        x = np.linspace(-1, 1, shape[0])
+        y = np.linspace(-1, 1, shape[1])
         X, Y = np.meshgrid(x, y, indexing='ij')
 
         # Generate 2D Gaussian (bell curve)

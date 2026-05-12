@@ -39,14 +39,20 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
+# from deisa.dask import Deisa, Bridge
+# from utils import wait_for, dask_array_element_wise_equal, FakeComm
+# from typing import Callable
+# from deisa.core.interface import IDeisa, CallbackArgs, DeisaArray
 from deisa.dask import Deisa, Bridge
-from deisa.dask.types import DeisaArray
+# from deisa.dask.types import DeisaArray
+from deisa.core.types import DeisaArray
 from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges
 
 logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.timeout(10)
+
 @pytest.mark.xdist_group(name="serial")
 class TestDeisaCtor:
     @pytest.fixture(scope="class")
@@ -217,9 +223,9 @@ class TestUsingDaskCluster:
 
         darr = DeisaArray(dask=darr, t=0)
         assert isinstance(darr, DeisaArray)
-        assert darr.dask.compute().shape == (2, 2)
-        assert darr.dask.compute().all() == data.all()
-        assert darr.dask.sum().compute() == data.sum()
+        assert darr.compute().shape == (2, 2)
+        assert darr.compute().all() == data.all()
+        assert darr.sum().compute() == data.sum()
         assert darr.t == 0
 
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])

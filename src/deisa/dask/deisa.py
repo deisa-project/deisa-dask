@@ -41,7 +41,7 @@ from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
 from deisa.dask.handshake import Handshake
-from deisa.dask.types import DeisaArray
+from deisa.core.types import DeisaArray
 from deisa.dask.utils import get_client
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
