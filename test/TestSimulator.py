@@ -31,12 +31,9 @@ import logging
 from typing import Tuple, List
 
 import numpy as np
-from distributed import Client
 
 from deisa.dask import Bridge
 from utils import FakeComm, async_close_bridges
-
-# from deisa.dask.bridge import Bridge, DaskComm
 
 logger = logging.getLogger(__name__)
 
