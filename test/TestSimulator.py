@@ -28,30 +28,15 @@
 # =============================================================================
 import asyncio
 import logging
-from typing import Tuple
+from typing import Tuple, List
 
 import numpy as np
-from deisa.core import ICommunicator
 from distributed import Client
 
 from deisa.dask import Bridge
-from deisa.dask.communicator import DaskComm
+from utils import FakeComm
 
 logger = logging.getLogger(__name__)
-
-
-class FakeComm(ICommunicator):
-    def __init__(self, size):
-        self.size = size
-        self._buffer = []
-
-    def gather(self, value, root=0):
-        self._buffer.append(value)
-        if len(self._buffer) == self.size:
-            result = self._buffer.copy()
-            self._buffer.clear()
-            return result
-        return None
 
 
 class TestSimulation:
@@ -62,18 +47,18 @@ class TestSimulation:
         self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
-        self.bridges: list[Bridge] = [
-            Bridge(id=rank,
+        comm_state = FakeComm.State(nb_mpi_ranks)
+        self.bridges: List[Bridge] = [
+            Bridge(comm=FakeComm(state=comm_state, rank=rank),
                    arrays_metadata=arrays_metadata,
-                   system_metadata={'connection': client, 'nb_bridges': nb_mpi_ranks},
-                   comm=DaskComm(self.client, nb_mpi_ranks),
+                   nb_bridges=nb_mpi_ranks,
                    *args, **kwargs)
             for rank in range(nb_mpi_ranks)]
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
-        x = np.linspace(-1, 1, self.arrays_metadata[array_name]['size'][0])
-        y = np.linspace(-1, 1, self.arrays_metadata[array_name]['size'][1])
+        x = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][0])
+        y = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][1])
         X, Y = np.meshgrid(x, y, indexing='ij')
 
         # Generate 2D Gaussian (bell curve)

@@ -1,4 +1,5 @@
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -6,7 +7,6 @@ from typing import Tuple
 
 import pytest
 
-from deisa.dask.communicator import DaskComm, resolve_comm
 from deisa.dask.types import DeisaArray
 
 
@@ -27,30 +27,18 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     from mpi4py import MPI
     import numpy as np
     from deisa.dask import Bridge
-    from deisa.dask import get_connection_info
 
-    if comm == 'none':
-        comm = resolve_comm(None,
-                            use_mpi_if_available=True,
-                            client=get_connection_info(scheduler_address),
-                            size=int(np.prod(parallelism)))
-    elif comm == 'mpi-comm-world':
-        comm = MPI.COMM_WORLD
+    if comm == 'mpi-comm-world':
+        bridge_comm = MPI.COMM_WORLD
     elif comm == 'mpi-comm-cart':
-        comm = MPI.COMM_WORLD
-        dims = MPI.Compute_dims(comm.Get_size(), len(global_size))
-        comm = comm.Create_cart(dims)
-    elif comm == 'dask':
-        comm = DaskComm(client=get_connection_info(scheduler_address),
-                        size=int(np.prod(parallelism)))
-    elif comm == 'dask-cart':
-        comm = DaskComm(client=get_connection_info(scheduler_address),
-                        size=int(np.prod(parallelism)),
-                        dims=parallelism)
+        bridge_comm = MPI.COMM_WORLD
+        dims = MPI.Compute_dims(bridge_comm.Get_size(), len(global_size))
+        bridge_comm = bridge_comm.Create_cart(dims)
     else:
         raise ValueError(f"Invalid comm: {comm}")
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+
+    rank = bridge_comm.Get_rank()
+    size = bridge_comm.Get_size()
 
     # global_size = (32, 32)
     # parallelism = (2, 2)
@@ -61,18 +49,17 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
 
     arrays_metadata = {
         'temperature': {
-            'size': global_size,
-            'subsize': tuple(g // p for g, p in zip(global_size, parallelism))
+            'global_shape': global_size,
+            'chunk_shape': tuple(g // p for g, p in zip(global_size, parallelism)),
+            'chunk_position': (0,) * len(global_size)  # TODO
         }
     }
 
     print(f"MPI {rank} of {size} started. scheduler_address={scheduler_address}, arrays_metadata={arrays_metadata}",
           flush=True)
 
-    bridge = Bridge(id=rank,
+    bridge = Bridge(comm=bridge_comm,
                     arrays_metadata=arrays_metadata,
-                    system_metadata={'connection': get_connection_info(scheduler_address), 'nb_bridges': size},
-                    comm=comm,
                     wait_for_go=False)
 
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
@@ -108,7 +95,7 @@ def test_mpi_gather(i):
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
-@pytest.mark.parametrize('comm', ['none', 'mpi-comm-cart', 'mpi-comm-world', 'dask', 'dask-cart'])
+@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world'])
 def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     from distributed import Client
     import numpy as np
@@ -117,6 +104,8 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
+
+    os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
 
     print(f"client={client}", flush=True)
 
@@ -143,7 +132,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     # check result
     from deisa.dask import Deisa
 
-    deisa = Deisa(get_connection_info=lambda: client, wait_for_go=False)
+    deisa = Deisa(wait_for_go=False, timeout=10)
     darr = deisa.get_array('temperature', iteration=1)
     assert isinstance(darr, DeisaArray)
     assert darr.dask.sum().compute() == np.prod(global_size), f"temperature sum should be the product of {global_size}"
@@ -185,6 +174,7 @@ if __name__ == "__main__":
             parallelism = eval(args.parallelism)
             global_size = eval(args.global_size)
             print(f"global_size={global_size}, parallelism={parallelism}, comm={args.comm}", flush=True)
+            os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = args.scheduler_address
             mpi_bridge_main(scheduler_address=args.scheduler_address,
                             parallelism=parallelism, global_size=global_size,
                             comm=args.comm)

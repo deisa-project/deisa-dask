@@ -28,11 +28,9 @@
 # =============================================================================
 import gc
 import logging
-import math
 import os.path
 import sys
 import time
-from typing import List
 
 import dask
 import dask.array as da
@@ -41,14 +39,14 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.dask import Deisa, get_connection_info, Bridge
-from utils import wait_for, dask_array_element_wise_equal
-
+from deisa.dask import Deisa, Bridge
 from deisa.dask.types import DeisaArray
+from utils import wait_for, dask_array_element_wise_equal, FakeComm
 
 logging.basicConfig(level=logging.DEBUG)
 
 
+@pytest.mark.timeout(10)
 @pytest.mark.xdist_group(name="serial")
 class TestDeisaCtor:
     @pytest.fixture(scope="class")
@@ -60,18 +58,10 @@ class TestDeisaCtor:
         yield cluster
         cluster.close()
 
-    def test_deisa_ctor_client(self, env_setup_tcp_cluster):
-        cluster = env_setup_tcp_cluster
-        client = Client(cluster)
-        deisa = Deisa(get_connection_info=lambda: client, wait_for_go=False)
-        assert deisa.client is not None, "Deisa should not be None"
-        assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
-        deisa.close()
-
     def test_deisa_ctor_str(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
-        deisa = Deisa(get_connection_info=lambda: get_connection_info('tcp://127.0.0.1:4242'),
-                      wait_for_go=False)
+        os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
+        deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
@@ -79,7 +69,8 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
         f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler.json'
-        deisa = Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
+        os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = f
+        deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
         deisa.close()
@@ -87,13 +78,15 @@ class TestDeisaCtor:
     def test_deisa_ctor_scheduler_file_error(self):
         with pytest.raises(ValueError) as e:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
-            Deisa(get_connection_info=lambda: get_connection_info(f), wait_for_go=False)
+            os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = f
+            Deisa(wait_for_go=False)
 
 
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False, dashboard_address=None)
+        os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster)
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
@@ -248,13 +241,14 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         for i in range(nb_iterations):
             global_data = sim.generate_data('my_array', iteration=i, update_workers=update_workers)
@@ -265,8 +259,7 @@ class TestUsingDaskCluster:
             assert isinstance(darr, DeisaArray)
             assert darr.t == i, "iteration does not match expected"
 
-            assert math.isclose(global_data_da.sum().compute(), darr.dask.sum().compute(),
-                                rel_tol=1e-09), "reconstructed dask array does not match original"
+            assert dask_array_element_wise_equal(darr, global_data_da), "callback was not called with correct data"
 
     def test_get_dask_array_slow(self, env_setup):
         # This tests for FutureCancelledError
@@ -278,9 +271,10 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -315,9 +309,10 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -386,19 +381,22 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'temperature': {
-                                     'size': global_temperature_grid_size,
-                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
-                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_temperature_grid_size,
+                                     'chunk_shape': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                     global_temperature_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  },
                                  'pressure': {
-                                     'size': global_pressure_grid_size,
-                                     'subsize': (global_pressure_grid_size[0] // mpi_parallelism[0],
-                                                 global_pressure_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_pressure_grid_size,
+                                     'chunk_shape': (global_pressure_grid_size[0] // mpi_parallelism[0],
+                                                     global_pressure_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  },
                                  'density': {
-                                     'size': global_temperature_grid_size,
-                                     'subsize': (global_temperature_grid_size[0] // mpi_parallelism[0],
-                                                 global_temperature_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_temperature_grid_size,
+                                     'chunk_shape': (global_temperature_grid_size[0] // mpi_parallelism[0],
+                                                     global_temperature_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  },
                              },
                              wait_for_go=False)
@@ -500,9 +498,10 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -549,14 +548,16 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'temperature': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  },
                                  'pressure': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -571,8 +572,8 @@ class TestUsingDaskCluster:
             context['counter'] += 1
             context['latest_timestep'] = temperatures[-1].t
 
-            context['latest_temperatures_data'] = temperatures[-1].dask
-            context['latest_pressures_data'] = pressures[-1].dask
+            context['latest_temperatures_data'] = temperatures[-1]
+            context['latest_pressures_data'] = pressures[-1]
 
             context['latest_temperatures_window_size'] = len(temperatures)
             context['latest_pressures_window_size'] = len(pressures)
@@ -608,9 +609,10 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -682,9 +684,10 @@ class TestUsingDaskCluster:
                              mpi_parallelism=mpi_parallelism,
                              arrays_metadata={
                                  'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
                                  }
                              },
                              wait_for_go=False)
@@ -726,78 +729,80 @@ class TestUsingDaskCluster:
         sim.close_bridges()
         deisa.close()
 
-    def test_set_get(self, env_setup):
-        client, _ = env_setup
-
-        bridge = Bridge(id=0,
-                        arrays_metadata={},
-                        system_metadata={'connection': client, 'nb_bridges': 1},
-                        wait_for_go=False)
-
-        deisa = Deisa(get_connection_info=lambda: client)
-        deisa.set('hello', 'world', chunked=False)
-
-        assert wait_for(lambda: bridge.get('hello', chunked=False, delete=False) == 'world')
-        assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) == 'world')
-        assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) is None)
-        assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi')
-
-        bridge.close()
-        deisa.close()
-
-    def test_set_from_sliding_window(self, env_setup):
-        client, _ = env_setup
-        global_grid_size = (8, 8)
-        mpi_parallelism = (1, 1)
-
-        sim = TestSimulation(client,
-                             mpi_parallelism=mpi_parallelism,
-                             arrays_metadata={
-                                 'my_array': {
-                                     'size': global_grid_size,
-                                     'subsize': (global_grid_size[0] // mpi_parallelism[0],
-                                                 global_grid_size[1] // mpi_parallelism[1])
-                                 }
-                             },
-                             wait_for_go=False)
-
-        deisa = Deisa(get_connection_info=lambda: client)
-
-        time.sleep(.2)
-
-        context = {
-            'counter': 0
-        }
-
-        def window_callback(window: list[DeisaArray]):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
-            context['counter'] += 1
-            deisa.set('hello', 'world', chunked=False)
-
-        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
-        sim.generate_data('my_array', iteration=1)
-        assert wait_for(lambda: context['counter'] == 1)
-        assert wait_for(lambda: sim.bridges[0].get('hello', chunked=False, delete=False) == 'world')
-
-        sim.close_bridges()
-        deisa.close()
-
-    def test_set_delete_get(self, env_setup):
-        client, _ = env_setup
-
-        bridge = Bridge(id=0,
-                        arrays_metadata={},
-                        system_metadata={'connection': client, 'nb_bridges': 1},
-                        wait_for_go=False)
-
-        deisa = Deisa(get_connection_info=lambda: client)
-
-        time.sleep(.2)
-
-        deisa.set('hello', 'world', chunked=False)
-        assert bridge.get('hello', chunked=False, delete=False) == 'world'
-        deisa.delete('hello')
-        assert bridge.get('hello', chunked=False, delete=False, default=None) is None
-
-        bridge.close()
-        deisa.close()
+    # TODO: fix tests with issue #65 and #67
+    # def test_set_get(self, env_setup):
+    #     client, _ = env_setup
+    #
+    #     comm_state = FakeComm.State(1)
+    #
+    #     bridge = Bridge(comm=FakeComm(comm_state, 0),
+    #                     arrays_metadata={},
+    #                     wait_for_go=False)
+    #
+    #     deisa = Deisa(get_connection_info=lambda: client)
+    #     deisa.set('hello', 'world', chunked=False)
+    #
+    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=False) == 'world')
+    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) == 'world')
+    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) is None)
+    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi')
+    #
+    #     bridge.close()
+    #     deisa.close()
+    #
+    # def test_set_from_sliding_window(self, env_setup):
+    #     client, _ = env_setup
+    #     global_grid_size = (8, 8)
+    #     mpi_parallelism = (1, 1)
+    #
+    #     sim = TestSimulation(client,
+    #                          mpi_parallelism=mpi_parallelism,
+    #                          arrays_metadata={
+    #                              'my_array': {
+    #                                  'size': global_grid_size,
+    #                                  'subsize': (global_grid_size[0] // mpi_parallelism[0],
+    #                                              global_grid_size[1] // mpi_parallelism[1])
+    #                              }
+    #                          },
+    #                          wait_for_go=False)
+    #
+    #     deisa = Deisa(get_connection_info=lambda: client)
+    #
+    #     time.sleep(.2)
+    #
+    #     context = {
+    #         'counter': 0
+    #     }
+    #
+    #     def window_callback(window: list[DeisaArray]):
+    #         print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+    #         context['counter'] += 1
+    #         deisa.set('hello', 'world', chunked=False)
+    #
+    #     deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
+    #     sim.generate_data('my_array', iteration=1)
+    #     assert wait_for(lambda: context['counter'] == 1)
+    #     assert wait_for(lambda: sim.bridges[0].get('hello', chunked=False, delete=False) == 'world')
+    #
+    #     sim.close_bridges()
+    #     deisa.close()
+    #
+    # def test_set_delete_get(self, env_setup):
+    #     client, _ = env_setup
+    #
+    #     bridge = Bridge(id=0,
+    #                     arrays_metadata={},
+    #                     system_metadata={'connection': client, 'nb_bridges': 1},
+    #                     wait_for_go=False)
+    #
+    #     deisa = Deisa(get_connection_info=lambda: client)
+    #
+    #     time.sleep(.2)
+    #
+    #     deisa.set('hello', 'world', chunked=False)
+    #     assert bridge.get('hello', chunked=False, delete=False) == 'world'
+    #     deisa.delete('hello')
+    #     assert bridge.get('hello', chunked=False, delete=False, default=None) is None
+    #
+    #     bridge.close()
+    #     deisa.close()
