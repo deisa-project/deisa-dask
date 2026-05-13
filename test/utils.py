@@ -26,9 +26,12 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import threading
 import time
+from typing import Optional, Any
 
 import dask.array as da
+from deisa.core import ICommunicator
 
 
 def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
@@ -61,6 +64,100 @@ def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
 
 
 def dask_array_element_wise_equal(a, b):
-    assert type(a) == da.Array, "a must be a dask array"
-    assert type(b) == da.Array, "b must be a dask array"
+    assert isinstance(a, da.Array) or issubclass(type(b), da.Array), "a and b must be dask arrays"
+    assert isinstance(b, da.Array) or issubclass(type(b), da.Array), "a and b must be dask arrays"
     return (a == b).all().compute(), "a and b are not equal"
+
+
+
+
+
+class FakeComm(ICommunicator):
+    class State:
+        def __init__(self, size: int):
+            self.size = size
+
+            self.condition = threading.Condition()
+
+            # gather state
+            self.gather_data: dict[int, Any] = {}
+            self.gather_result: Optional[list[Any]] = None
+            self.gather_count = 0
+
+            # bcast state
+            self.bcast_value: Any = None
+            self.bcast_ready = False
+            self.bcast_count = 0
+
+    def __init__(self, state: State, rank: int):
+        self._state = state
+        self._rank = rank
+
+    def Get_rank(self) -> int:
+        return self._rank
+
+    def Get_size(self) -> int:
+        return self._state.size
+
+    def gather(self, data: Any, root: int = 0) -> Optional[list[Any]]:
+        state = self._state
+
+        with state.condition:
+            state.gather_data[self._rank] = data
+
+            if len(state.gather_data) == state.size:
+                state.gather_result = [
+                    state.gather_data[r]
+                    for r in range(state.size)
+                ]
+
+                state.condition.notify_all()
+
+            else:
+                state.condition.wait_for(
+                    lambda: state.gather_result is not None
+                )
+
+            result = state.gather_result
+
+            state.gather_count += 1
+
+            # Last rank resets collective state
+            if state.gather_count == state.size:
+                state.gather_data = {}
+                state.gather_result = None
+                state.gather_count = 0
+
+        if self._rank == root:
+            return result
+
+        return None
+
+    def bcast(self, obj: Any, root: int = 0) -> Any:
+        state = self._state
+
+        with state.condition:
+            # Root publishes value
+            if self._rank == root:
+                state.bcast_value = obj
+                state.bcast_ready = True
+
+                state.condition.notify_all()
+
+            else:
+                # Wait for root
+                state.condition.wait_for(
+                    lambda: state.bcast_ready
+                )
+
+            result = state.bcast_value
+
+            state.bcast_count += 1
+
+            # Last rank resets collective state
+            if state.bcast_count == state.size:
+                state.bcast_value = None
+                state.bcast_ready = False
+                state.bcast_count = 0
+
+            return result

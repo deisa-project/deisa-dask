@@ -28,11 +28,13 @@ Types of changes:
 - Add the option to update the worker list, before `send()`, on a Bridge using `update_worker`
 - Add the option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
 - Add DeisaArray wrapper to unify handling of Dask array and iteration
+- Add dependency on mpi4py
 
 ### Changed
 
+- Bump `deisa-core` to `0.5.0`
+- Update Deisa ctor and Bridge ctor to comply with `deisa-core` 0.5.0
 - Change callback logic to use native `asyncio` and Dask event mechanism
-- Bump `deisa-core` to `0.4.0`
 - Replace client.scatter by custom scatter that limits communication to the scheduler
 - Move `get_connection_info` to utils
 - set Client `heartbeat_interval` to `sys.maxsize`

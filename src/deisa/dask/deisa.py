@@ -38,11 +38,13 @@ import dask
 import dask.array as da
 import numpy as np
 from dask.array import Array
-from deisa.core.interface import IDeisa, SupportsSlidingWindow
+from deisa.core import CallbackArgs
+from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Variable
 
 from deisa.dask.handshake import Handshake
 from deisa.dask.types import DeisaArray
+from deisa.dask.utils import get_client
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 VARIABLE_PREFIX: Final[str] = "deisa_variable_"
@@ -57,7 +59,7 @@ class Deisa(IDeisa):
     Callback_args = Union[str, Tuple[str], Tuple[str, int]]  # array_name, window_size
     Callback_id = str
 
-    def __init__(self, get_connection_info: Callable[[], Client], *args, **kwargs):
+    def __init__(self, feedback_queue_size: int = 1024, *args, **kwargs) -> None:
         """
         Initializes the distributed processing environment and configures workers using
         a Dask scheduler. This class handles setting up a Dask client and ensures the
@@ -68,8 +70,8 @@ class Deisa(IDeisa):
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
-        super().__init__(get_connection_info, *args, **kwargs)
-        self.client: Client = get_connection_info()
+        super().__init__(feedback_queue_size, *args, **kwargs)
+        self.client: Client = get_client(timeout=kwargs.get("timeout", 10))
 
         # blocking until all bridges are ready
         self.handshake = Handshake('deisa', self.client, **kwargs)
@@ -140,7 +142,7 @@ class Deisa(IDeisa):
                     darr_chunks = [
                         da.from_delayed(
                             dask.delayed(Future(p["future"], client=self.client)),
-                            shape=p["shape"],
+                            shape=p["shape"],   # TODO: use self.arrays_metadata[name]["chunk_shape"]
                             dtype=p["dtype"],
                         )
                         for p in parts
@@ -148,7 +150,7 @@ class Deisa(IDeisa):
 
                     darr = self.__tile_dask_blocks(
                         darr_chunks,
-                        self.arrays_metadata[name]["size"]
+                        self.arrays_metadata[name]["global_shape"]
                     )
 
                     logger.debug(f"[ITER {iteration}] {name} shape={darr.shape}")
@@ -161,13 +163,13 @@ class Deisa(IDeisa):
             time.sleep(0.01)  # avoid busy spin
 
     @staticmethod
-    def __default_exception_handler(callback_id: Callback_id, e):
-        logger.error(f"Exception thrown for callback id {callback_id}: {e}")
+    def __default_exception_handler(exception: BaseException):
+        logger.error(f"Exception thrown for callback id: {exception}")
 
     def register_sliding_window_callback(self,
-                                         callback: SupportsSlidingWindow.Callback,
+                                         callback: IDeisa.Callback,
                                          array_name: str, window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
-                                         exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler) -> Callback_id:
+                                         exception_handler: IDeisa.ExceptionHandler = __default_exception_handler) -> Callback_id:
         """
         Register a sliding-window callback for a single array.
         """
@@ -179,9 +181,9 @@ class Deisa(IDeisa):
             when='AND')
 
     def register_sliding_window_callbacks(self,
-                                          callback: SupportsSlidingWindow.Callback,
+                                          callback: IDeisa.Callback,
                                           *callback_args: Callback_args,
-                                          exception_handler: SupportsSlidingWindow.ExceptionHandler = __default_exception_handler,
+                                          exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                                           when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
         """
         Register a sliding-window callback for one or more arrays.
@@ -222,10 +224,10 @@ class Deisa(IDeisa):
             when=when)
 
     def _register_sliding_window_callbacks_impl(self,
-                                                callback: SupportsSlidingWindow.Callback,
+                                                callback: IDeisa.Callback,
                                                 parsed: List[Tuple[str, int]],
                                                 *,
-                                                exception_handler: SupportsSlidingWindow.ExceptionHandler,
+                                                exception_handler: IDeisa.ExceptionHandler,
                                                 when: Literal['AND', 'OR']) -> Callback_id:
         """
         Supports:
@@ -305,6 +307,18 @@ class Deisa(IDeisa):
         else:
             var.delete()
 
+    def register(self, *callback_args: CallbackArgs, exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
+                 when: Literal['AND', 'OR'] = 'AND') -> Callable:
+        pass
+
+    def register_callback(self, callback: IDeisa.Callback, *callback_args: CallbackArgs,
+                          exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
+                          when: Literal['AND', 'OR'] = 'AND') -> Callable:
+        pass
+
+    def execute_callbacks(self) -> None:
+        pass
+
     def _make_topic_handler(self, array_name):
         async def topic_handler(event):
             try:
@@ -327,7 +341,7 @@ class Deisa(IDeisa):
                         shape=p["shape"], dtype=p["dtype"],
                     ) for p in parts]
 
-                darr = self.__tile_dask_blocks(darr_chunks, self.arrays_metadata[array_name]["size"])
+                darr = self.__tile_dask_blocks(darr_chunks, self.arrays_metadata[array_name]["global_shape"])
 
                 # dispatch to interested callbacks
                 for callback_id in list(self._callbacks_by_array.get(array_name, [])):

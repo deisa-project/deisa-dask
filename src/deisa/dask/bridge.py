@@ -29,27 +29,25 @@
 import logging
 import uuid
 from numbers import Number
-from typing import Any, Iterator, List
+from typing import Any, Iterator, List, Dict
 
 import numpy as np
 from dask.tokenize import tokenize
-from deisa.core import validate_system_metadata, validate_arrays_metadata, IBridge, ICommunicator
+from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Client, Variable
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
-from deisa.dask.communicator import resolve_comm
 from deisa.dask.deisa import VARIABLE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
+from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
 
 
 class Bridge(IBridge):
-    def __init__(self, id: int,
-                 arrays_metadata: dict[str, dict], system_metadata: dict[str, Any],
-                 comm: ICommunicator = None, *args, **kwargs):
+    def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
         """
         Initializes an object to manage communication between an MPI-based distributed
         system and a Dask-based framework. The class ensures proper allocation of workers
@@ -76,27 +74,23 @@ class Bridge(IBridge):
         :param kwargs: Passed to Handshake and Communicator
         :type kwargs: dict
         """
-        super().__init__(id, arrays_metadata, system_metadata, *args, **kwargs)
-        self.system_metadata = validate_system_metadata(system_metadata)
-        self.client: Client = self.system_metadata['connection']
+        super().__init__(comm, arrays_metadata, *args, **kwargs)
+        self.comm: ICommunicator = comm
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self.id = id
+        self.client: Client = get_client()
+        self.id = self.comm.Get_rank()
         self.workers = list(self.client.scheduler_info(n_workers=-1)["workers"].keys())
-        self.comm: ICommunicator = resolve_comm(comm, use_mpi_if_available=True,
-                                                client=self.client,
-                                                size=self.system_metadata['nb_bridges'],
-                                                *args, **kwargs)
+
         self._has_close_been_called = False
 
         logger.debug(f"[{self.id}] Bridge __init__() with:\n"
                      f"comm={self.comm}\n"
                      f"client={self.client}\n"
                      f"arrays_metadata={self.arrays_metadata}\n"
-                     f"system_metadata={self.system_metadata}\n"
                      f"workers={self.workers}")
 
         # blocking until analytics is ready
-        self.handshake = Handshake('bridge', self.client, id=id, max=self.system_metadata['nb_bridges'],
+        self.handshake = Handshake('bridge', self.client, id=self.id, max=self.comm.Get_size(),
                                    arrays_metadata=self.arrays_metadata, **kwargs)
 
     def __del__(self):

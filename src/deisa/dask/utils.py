@@ -30,22 +30,54 @@ import logging
 import os
 import sys
 
+from deisa.core import ICommunicator
 from distributed import Client, Lock, Variable
 
 logger = logging.getLogger(__name__)
 
 
-def get_connection_info(dask_scheduler_address: str | Client) -> Client:
+def get_client(timeout=10):
+    addr = os.getenv("DEISA_DASK_SCHEDULER_ADDRESS", "tcp://127.0.0.1:8787")
+    logger.info(f"get_client: DEISA_DASK_SCHEDULER_ADDRESS={addr}")
+    return get_connection_info(addr, timeout)
+
+
+def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
+    """
+    Computes and returns an MPI Cartesian communicator based on the number of desired
+    Cartesian coordinate dimensions.
+
+    This function uses the MPI library to calculate and create a Cartesian communicator
+    from the global MPI communicator (MPI.COMM_WORLD). The dimensions of the Cartesian coordinate
+    grid are determined dynamically based on the size of the Cartesian coordinate dimensions
+    requested by the user and the size of the MPI communicator.
+
+    :param cart_coord_dims: Number of Cartesian coordinate dimensions used to compute the
+        grid layout for the Cartesian communicator. Default is 1.
+    :type cart_coord_dims: int
+    :return: A new Cartesian communicator created from the MPI world communicator based
+        on the computed dimensions.
+    :rtype: mpi4py.MPI.Cartcomm
+    """
+    from mpi4py import MPI
+    mpi_comm = MPI.COMM_WORLD
+    dims = MPI.Compute_dims(mpi_comm.Get_size(), dims=cart_coord_dims)
+    return mpi_comm.Create_cart(dims)
+
+
+def get_connection_info(dask_scheduler_address: str | Client, timeout: float = 10) -> Client:
     logger.info(f"get_connection_info: {dask_scheduler_address}")
     if isinstance(dask_scheduler_address, Client):
         client = dask_scheduler_address
     elif isinstance(dask_scheduler_address, str):
         try:
-            client = Client(address=dask_scheduler_address, heartbeat_interval=f"{sys.maxsize}w")
+            client = Client(address=dask_scheduler_address, heartbeat_interval=f"{sys.maxsize}w",
+                            timeout=timeout)
         except ValueError:
             # try scheduler_file
             if os.path.isfile(dask_scheduler_address):
-                client = Client(scheduler_file=dask_scheduler_address, heartbeat_interval=f"{sys.maxsize}w")
+                client = Client(scheduler_file=dask_scheduler_address, heartbeat_interval=f"{sys.maxsize}w",
+                                timeout=timeout)
             else:
                 raise ValueError(
                     "dask_scheduler_address must be a string containing the address of the scheduler, "
@@ -56,6 +88,7 @@ def get_connection_info(dask_scheduler_address: str | Client) -> Client:
             "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
 
     return client
+
 
 def _get_actor(client: Client, clazz, **kwargs):
     def check_variable(dask_scheduler, name):
