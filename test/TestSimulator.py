@@ -31,6 +31,7 @@ import logging
 from typing import Tuple, List
 
 import numpy as np
+from distributed import Client
 
 from deisa.dask import Bridge
 from utils import FakeComm, async_close_bridges
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 class TestSimulation:
     __test__ = False
 
-    def __init__(self, client, arrays_metadata: dict[str, dict], mpi_parallelism: tuple, *args, **kwargs):
+    def __init__(self, client: Client, arrays_metadata: dict[str, dict], mpi_parallelism: tuple, *args, **kwargs):
         self.client = client
         self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
