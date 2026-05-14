@@ -39,9 +39,9 @@ import pytest
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
-from deisa.dask import Deisa
+from deisa.dask import Deisa, Bridge
 from deisa.dask.types import DeisaArray
-from utils import wait_for, dask_array_element_wise_equal
+from utils import wait_for, dask_array_element_wise_equal, FakeComm
 
 logging.basicConfig(level=logging.DEBUG)
 
