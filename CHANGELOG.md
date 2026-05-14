@@ -29,6 +29,7 @@ Types of changes:
 - Add the option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
 - Add DeisaArray wrapper to unify handling of Dask array and iteration
 - Add dependency on mpi4py
+- `Deisa.execute_callbacks`: unblock bridges, execute callbacks and wait for bridges to close
 
 ### Changed
 
@@ -44,3 +45,7 @@ Types of changes:
 ### Fixed
 
 - Handshake protocol throwing a `TimeoutError`.
+
+### Removed
+
+- Deisa.close() is no longer needed due to changes with handshake

@@ -27,7 +27,6 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import logging
-import time
 
 from distributed import Client, Future, get_client, Event
 
@@ -37,16 +36,17 @@ logger = logging.getLogger(__name__)
 
 
 class Handshake:
-    DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
-    DEISA_WAIT_FOR_GO_EVENT = 'deisa_handshake_wait_for_go'
-    DEISA_WAIT_FOR_DONE_EVENT = 'deisa_handshake_done'
+    _DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
+    _DEISA_WAIT_FOR_DONE_EVENT = 'deisa_handshake_done'
+    _DEISA_WAIT_FOR_BRIDGE_READY_EVENT = 'deisa_handshake_bridge_ready'
+    _DEISA_WAIT_FOR_BRIDGE_DONE_EVENT = 'deisa_handshake_bridge_done'
+    _DEISA_WAIT_FOR_ANALYTICS_READY_EVENT = 'deisa_handshake_analytics_ready'
 
     class HandshakeActor:
         bridges_ready = []
         bridges_done = []
         max_bridges = 0
         arrays_metadata = {}
-        analytics_ready = False
 
         def __init__(self):
             logger.debug('HandshakeActor.__init__()')
@@ -54,7 +54,6 @@ class Handshake:
             self.bridges_done = []
             self.max_bridges = 0
             self.arrays_metadata = {}
-            self.analytics_ready = False
             self.client = get_client()
 
         def add_bridge_ready(self, id: int, max: int) -> None:
@@ -68,18 +67,11 @@ class Handshake:
                 raise RuntimeError(f'add_bridge cannot be called more than {max} times.')
 
             self.bridges_ready.append(id)
-            if self.__is_everyone_ready():
-                self.__go()
 
         def add_bridge_done(self, id: int) -> None:
             self.bridges_done.append(id)
             if len(self.bridges_ready) == self.max_bridges:
-                Event(Handshake.DEISA_WAIT_FOR_DONE_EVENT, client=self.client).set()
-
-        def set_analytics_ready(self) -> None:
-            self.analytics_ready = True
-            if self.__are_bridges_ready():
-                self.__go()
+                Event(Handshake._DEISA_WAIT_FOR_BRIDGE_DONE_EVENT, client=self.client).set()
 
         def set_arrays_metadata(self, arrays_metadata: dict) -> None | Future:
             self.arrays_metadata = arrays_metadata
@@ -90,68 +82,57 @@ class Handshake:
         def get_max_bridges(self) -> int | Future:
             return self.max_bridges
 
-        def __are_bridges_ready(self) -> bool | Future:
+        def are_bridges_ready(self) -> bool | Future:
             return self.max_bridges != 0 and len(self.bridges_ready) == self.max_bridges
-
-        def __is_everyone_ready(self) -> bool | Future:
-            return self.__are_bridges_ready() and self.analytics_ready
-
-        def __go(self):
-            Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).set()
 
     def __init__(self, who: str, client: Client, **kwargs):
         self.client = client
         # self.client.direct_to_workers() # TODO
-        self.handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
-        assert self.handshake_actor is not None
+        self.__handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
+        assert self.__handshake_actor is not None
 
         if who == 'bridge':
             self.start_bridge(**kwargs)
         elif who == 'deisa':
-            self.start_deisa(**kwargs)
+            pass
         else:
             raise ValueError("Expecting 'bridge' or 'deisa'.")
 
-    def start_bridge(self, id: int, max: int, arrays_metadata: dict, wait_for_go=True, *args, **kwargs) -> None:
+    def start_bridge(self, id: int, max: int, arrays_metadata: dict, *args, **kwargs) -> None:
         """
         Bridge must wait for analytics to be ready.
         """
-        assert self.handshake_actor is not None
-        self.handshake_actor.add_bridge_ready(id, max).result()
+        assert self.__handshake_actor is not None
+        self.__handshake_actor.add_bridge_ready(id, max).result()
 
-        # TODO: change this so that the check is not done on id=0
+        # TODO: change this so that the check is not necessarily done on id=0
         if id == 0:
-            self.handshake_actor.set_arrays_metadata(arrays_metadata).result()
+            self.__handshake_actor.set_arrays_metadata(arrays_metadata).result()
+        # TODO: check that arrays_metadata is the same for all bridges
 
-        # wait for go
-        if wait_for_go:
-            self.__wait_for_go()
+        if self.__handshake_actor.are_bridges_ready().result():
+            Event(Handshake._DEISA_WAIT_FOR_BRIDGE_READY_EVENT, client=self.client).set()
 
-    def start_deisa(self, wait_for_go=True, *args, **kwargs) -> None:
-        """
-        When analytics is ready, notify all Bridges
-        """
-        assert self.handshake_actor is not None
-        self.handshake_actor.set_analytics_ready().result()
-
-        # wait for go
-        if wait_for_go:
-            self.__wait_for_go()
+        if kwargs.get('analytics_ready', False):
+            # bridges wait for analytics to be ready
+            Event(Handshake._DEISA_WAIT_FOR_ANALYTICS_READY_EVENT, client=self.client).wait()
 
     def get_arrays_metadata(self) -> dict:
-        assert self.handshake_actor is not None
-        return self.handshake_actor.get_arrays_metadata().result()
+        assert self.__handshake_actor is not None
+        return self.__handshake_actor.get_arrays_metadata().result()
 
     def get_nb_bridges(self) -> int:
-        assert self.handshake_actor is not None
-        return self.handshake_actor.get_max_bridges().result()
+        assert self.__handshake_actor is not None
+        return self.__handshake_actor.get_max_bridges().result()
 
-    def __wait_for_go(self) -> None:
-        Event(Handshake.DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
-
-    def wait_for_bridges(self):
-        if self.handshake_actor and self.handshake_actor.get_max_bridges().result() > 0:
-            Event(Handshake.DEISA_WAIT_FOR_DONE_EVENT, client=self.client).wait()
+    def deisa_ready(self):
+        Event(Handshake._DEISA_WAIT_FOR_ANALYTICS_READY_EVENT, client=self.client).set()
 
     def stop_bridge(self, id: int) -> None:
-        self.handshake_actor.add_bridge_done(id).result()
+        self.__handshake_actor.add_bridge_done(id).result()
+
+    def wait_for_bridges_to_start(self):
+        Event(Handshake._DEISA_WAIT_FOR_BRIDGE_READY_EVENT, client=self.client).wait()
+
+    def wait_for_bridges_to_finish(self):
+        Event(Handshake._DEISA_WAIT_FOR_BRIDGE_DONE_EVENT, client=self.client).wait()
