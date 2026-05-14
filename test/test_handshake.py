@@ -1,3 +1,4 @@
+import logging
 from multiprocessing import Process
 from typing import List
 
@@ -7,8 +8,7 @@ from distributed import LocalCluster
 from deisa.dask import get_connection_info
 from deisa.dask.handshake import Handshake
 
-
-# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.xdist_group(name="serial")
@@ -26,6 +26,8 @@ class TestHandshake:
     def start_deisa_handshake(address: str, nb_bridge: int):
         client = get_connection_info(address)
         handshake = Handshake('deisa', client)
+        handshake.deisa_ready()
+        handshake.wait_for_bridges_to_start()
         assert handshake.get_nb_bridges() == nb_bridge
         assert handshake.get_arrays_metadata() == {'hello': 'world'}
 
@@ -75,21 +77,21 @@ class TestHandshake:
         TestHandshake.start_processes(processes)
         TestHandshake.join_processes(processes)
 
-    # @pytest.mark.parametrize('nb_bridge', [128])
-    # def test_handshake_bridge_deisa_bridge(self, env_setup, nb_bridge: int):
-    #     cluster = env_setup
-    #     addr = cluster.scheduler.address
-    #     print(f"cluster={cluster}, addr={addr}", flush=True)
-    #
-    #     processes: List[Process] = []
-    #
-    #     for i in range(nb_bridge // 2):
-    #         processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
-    #
-    #     processes.append(Process(target=TestHandshake.start_deisa_handshake, args=(addr, nb_bridge)))
-    #
-    #     for i in range(nb_bridge // 2, nb_bridge):
-    #         processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
-    #
-    #     TestHandshake.start_processes(processes)
-    #     TestHandshake.join_processes(processes)
+    @pytest.mark.parametrize('nb_bridge', [128])
+    def test_handshake_interlace(self, env_setup, nb_bridge: int):
+        cluster = env_setup
+        addr = cluster.scheduler.address
+        print(f"cluster={cluster}, addr={addr}", flush=True)
+
+        processes: List[Process] = []
+
+        for i in range(nb_bridge // 2):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+
+        processes.append(Process(target=TestHandshake.start_deisa_handshake, args=(addr, nb_bridge)))
+
+        for i in range(nb_bridge // 2, nb_bridge):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+
+        TestHandshake.start_processes(processes)
+        TestHandshake.join_processes(processes)

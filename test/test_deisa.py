@@ -64,7 +64,6 @@ class TestDeisaCtor:
         deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
-        deisa.close()
 
     def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
         cluster = env_setup_tcp_cluster
@@ -73,7 +72,6 @@ class TestDeisaCtor:
         deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
-        deisa.close()
 
     def test_deisa_ctor_scheduler_file_error(self):
         with pytest.raises(ValueError) as e:
@@ -316,7 +314,7 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         time.sleep(.2)  # wait for bridges and deisa to be ready
 
@@ -349,9 +347,10 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['latest_window_size'] == min(i, window_size)), \
                 "callback was not called with correct window size"
 
-        assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
         sim.close_bridges()
-        deisa.close()
+        deisa.execute_callbacks()
+
+        assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
 
     @pytest.mark.parametrize('global_temperature_grid_size', [(8, 8), (8, 4)])
     @pytest.mark.parametrize('global_pressure_grid_size', [(8, 8), (8, 4)])
@@ -400,7 +399,7 @@ class TestUsingDaskCluster:
                                  },
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         time.sleep(.2)  # wait for bridges and deisa to be ready
 
@@ -478,6 +477,9 @@ class TestUsingDaskCluster:
                                           chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
                                                   global_temperature_grid_size[1] // mpi_parallelism[1]))
 
+        sim.close_bridges()
+        deisa.execute_callbacks()
+
         assert wait_for(lambda: 'latest_density' in context
                                 and dask_array_element_wise_equal(context['latest_density'], global_density_da)), \
             "callback was not called with correct data"
@@ -485,8 +487,6 @@ class TestUsingDaskCluster:
             "callback was not called with correct window size"
 
         assert context['counter'] == iteration, f"callback was not called {nb_iterations} times"
-        sim.close_bridges()
-        deisa.close()
 
     def test_sliding_window_callback_unregister(self, env_setup):
         client, cluster = env_setup
@@ -505,7 +505,7 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         time.sleep(.2)  # wait for bridges and deisa to be ready
 
@@ -536,7 +536,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
         sim.close_bridges()
-        deisa.close()
+        deisa.execute_callbacks()
 
     def test_sliding_window_callbacks_unregister(self, env_setup):
         client, cluster = env_setup
@@ -561,7 +561,7 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         context = {
             'counter': 0
@@ -598,7 +598,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
         sim.close_bridges()
-        deisa.close()
+        deisa.execute_callbacks()
 
     def test_sliding_window_callback_throws(self, env_setup):
         client, cluster = env_setup
@@ -616,7 +616,7 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         time.sleep(.2)  # wait for bridges and deisa to be ready
 
@@ -673,7 +673,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
         sim.close_bridges()
-        deisa.close()
+        deisa.execute_callbacks()
 
     def test_sliding_window_map_blocks(self, env_setup):
         client, cluster = env_setup
@@ -691,7 +691,7 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
+        deisa = Deisa()
 
         time.sleep(.2)
 
@@ -727,7 +727,7 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
 
         sim.close_bridges()
-        deisa.close()
+        deisa.execute_callbacks()
 
     # TODO: fix tests with issue #65 and #67
     # def test_set_get(self, env_setup):

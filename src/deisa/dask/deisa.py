@@ -88,14 +88,6 @@ class Deisa(IDeisa):
         self._callback_seq = 0  # unique counter
         self._received_futures: Set[str] = set()
 
-    def __del__(self):
-        self.close()
-
-    def close(self, wait_for_bridges=True):
-        logger.info(f"Closing deisa. wait_for_bridges={wait_for_bridges}")
-        if wait_for_bridges:
-            self.__wait_for_bridges()
-
     def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
         """Retrieve a Dask array for a given array name."""
 
@@ -142,7 +134,7 @@ class Deisa(IDeisa):
                     darr_chunks = [
                         da.from_delayed(
                             dask.delayed(Future(p["future"], client=self.client)),
-                            shape=p["shape"],   # TODO: use self.arrays_metadata[name]["chunk_shape"]
+                            shape=p["shape"],  # TODO: use self.arrays_metadata[name]["chunk_shape"]
                             dtype=p["dtype"],
                         )
                         for p in parts
@@ -307,7 +299,8 @@ class Deisa(IDeisa):
         else:
             var.delete()
 
-    def register(self, *callback_args: CallbackArgs, exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
+    def register(self, *callback_args: CallbackArgs,
+                 exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                  when: Literal['AND', 'OR'] = 'AND') -> Callable:
         pass
 
@@ -317,7 +310,21 @@ class Deisa(IDeisa):
         pass
 
     def execute_callbacks(self) -> None:
-        pass
+        """
+        Blocking call to execute all registered callbacks.
+        This method unblocks the simulation and ends when the Bridges are closed.
+        """
+        logger.info("execute_callbacks()")
+
+        # wait for bridges to be ready
+        self.handshake.wait_for_bridges_to_start()
+
+        logger.info("Bridges are ready, unblock bridges")
+        self.handshake.deisa_ready()
+
+        logger.info("execute_callbacks() waiting for bridges")
+        self.handshake.wait_for_bridges_to_finish()
+        logger.info("execute_callbacks() done")
 
     def _make_topic_handler(self, array_name):
         async def topic_handler(event):
@@ -415,13 +422,6 @@ class Deisa(IDeisa):
     def __next_callback_id(self):
         self._callback_seq += 1
         return f"{CALLBACK_PREFIX}{self._callback_seq}"
-
-    def __wait_for_bridges(self):
-        """
-        Wait for all bridges to finish.
-        Note: blocking call.
-        """
-        self.handshake.wait_for_bridges()
 
     @staticmethod
     async def __get_all_chunks(q: Queue, mpi_comm_size: int, timeout=None) -> list[tuple[dict, Future]]:
