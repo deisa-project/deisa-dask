@@ -9,7 +9,7 @@ from typing import Tuple
 
 import pytest
 
-from deisa.dask.types import DeisaArray
+from deisa.core.types import DeisaArray
 from utils import wait_for
 
 logging.basicConfig(level=logging.DEBUG)
