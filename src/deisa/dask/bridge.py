@@ -49,15 +49,6 @@ from deisa.dask.utils import get_client
 logger = logging.getLogger(__name__)
 
 
-def _validate_system_metadata(system_metadata: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(system_metadata, dict):
-        raise TypeError("system_metadata must be a dict")
-    if 'connection' not in system_metadata or not isinstance(system_metadata['connection'], Client):
-        raise ValueError("system_metadata must contain 'connection' of type Client")
-    if 'nb_bridges' not in system_metadata or not isinstance(system_metadata['nb_bridges'], int):
-        raise ValueError("system_metadata must contain 'nb_bridges' of type int")
-    return system_metadata
-
 class Bridge(IBridge):
     def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
         """
