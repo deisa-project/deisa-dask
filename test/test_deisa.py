@@ -243,7 +243,11 @@ class TestUsingDaskCluster:
                                  }
                              },
                              wait_for_go=False)
-        deisa = Deisa()
+        # deisa = Deisa()
+        deisa = Deisa(get_connection_info=lambda: client)
+        print("ici")
+        print(deisa.client)  # should not be None
+        print(deisa._topic_handlers.keys())  # should include 'my_array'
 
         time.sleep(.2)  # wait for bridges and deisa to be ready
 
@@ -258,7 +262,12 @@ class TestUsingDaskCluster:
             context['latest_data'] = window[-1]
             context['latest_window_size'] = len(window)
 
-        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        # deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=window_size)
+        # deisa.register_callback(window_callback, 'my_array', window_size=window_size)
+        # deisa.register_callback(window_callback, ('my_array', window_size=window_size))
+        print("là")
+        print(f"deisa.arrays_metadata={deisa.arrays_metadata}")
+        deisa.register_callback(window_callback, ('my_array', window_size))
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
