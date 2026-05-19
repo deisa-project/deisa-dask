@@ -41,6 +41,7 @@ Types of changes:
 - set Client `heartbeat_interval` to `sys.maxsize`
 - Change `TestSimulation` to use `asyncio` to run `bridge.send`
 - Gracefully stop bridges. Deisa waits for all bridges to close
+- Feedback is sent from Deisa to the Bridges
 
 ### Fixed
 
@@ -49,3 +50,4 @@ Types of changes:
 ### Removed
 
 - Deisa.close() is no longer needed due to changes with handshake
+- Deisa.delete() is no longer needed

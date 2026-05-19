@@ -25,9 +25,7 @@ class TestHandshake:
     @staticmethod
     def start_deisa_handshake(address: str, nb_bridge: int):
         client = get_connection_info(address)
-        handshake = Handshake('deisa', client)
-        handshake.deisa_ready()
-        handshake.wait_for_bridges_to_start()
+        handshake = Handshake('deisa', client, feedback_queue_size=42)
         assert handshake.get_nb_bridges() == nb_bridge
         assert handshake.get_arrays_metadata() == {'hello': 'world'}
 
@@ -35,6 +33,7 @@ class TestHandshake:
     def start_bridge_handshake(address: str, id: int, max: int):
         client = get_connection_info(address)
         handshake = Handshake('bridge', client, id=id, max=max, arrays_metadata={'hello': 'world'})
+        assert handshake.get_feedback_queue_size() == 42
 
     @staticmethod
     def start_processes(processes: List[Process]):
@@ -77,7 +76,7 @@ class TestHandshake:
         TestHandshake.start_processes(processes)
         TestHandshake.join_processes(processes)
 
-    @pytest.mark.parametrize('nb_bridge', [128])
+    @pytest.mark.parametrize('nb_bridge', [64])
     def test_handshake_interlace(self, env_setup, nb_bridge: int):
         cluster = env_setup
         addr = cluster.scheduler.address

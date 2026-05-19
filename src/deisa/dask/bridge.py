@@ -28,18 +28,19 @@
 # =============================================================================
 import logging
 import uuid
+from collections import deque, defaultdict
 from numbers import Number
-from typing import Any, Iterator, List, Dict
+from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Client, Variable
+from distributed import Client, Queue, Event
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
-from deisa.dask.deisa import VARIABLE_PREFIX, CLIENT_KEY
+from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
@@ -76,12 +77,18 @@ class Bridge(IBridge):
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
-        self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self.client: Client = get_client()
         self.id = self.comm.Get_rank()
-        self.workers = list(self.client.scheduler_info(n_workers=-1)["workers"].keys())
-
+        self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
+        self._feedback_queues = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
         self._has_close_been_called = False
+
+        self.client: Client | None = None
+        self.workers = list()
+        if self.id == 0:
+            self.client = get_client()
+            self.workers = list(self.client.scheduler_info(n_workers=-1)["workers"].keys())
+
+        self.workers = self.comm.bcast(self.workers, root=0)
 
         logger.debug(f"[{self.id}] Bridge __init__() with:\n"
                      f"comm={self.comm}\n"
@@ -92,6 +99,12 @@ class Bridge(IBridge):
         # blocking until analytics is ready
         self.handshake = Handshake('bridge', self.client, id=self.id, max=self.comm.Get_size(),
                                    arrays_metadata=self.arrays_metadata, **kwargs)
+
+        if self.id == 0 and kwargs.get("wait_for_go", True):
+            Event("deisa_wait", client=self.client).wait()
+
+        # TODO: use self.comm.barrier()
+        self.comm.gather(self.id, root=0)  # all ranks wait for id=0
 
     def __del__(self):
         self.close()
@@ -197,25 +210,44 @@ class Bridge(IBridge):
 
         # TODO: what to do if error ?
 
-    def get(self, key: str, default: Any = None, chunked: bool = False, delete: bool = True):
-        def get_variable(dask_scheduler, name):
-            ext = dask_scheduler.extensions["variables"]
-            v = ext.variables.get(name)
-            return v if v is not None else None
+    def get(self, key: str, timestep: Optional[int] = None, default: Any = None) -> Optional[Union[Deque, Any]]:
+        """
+        This method is non-blocking.
+        It returns :
+            - the value of the key if it exists and timestep is found, otherwise it returns default.
+            - if timestep is None, it returns the Queue or default.
+            - if the queue is returned, a copy of the queue is returned.
+        """
+        logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
+        fb_state: Dict = self._feedback_queues[key]
 
-        if chunked:
-            raise NotImplementedError()  # TODO
-        else:
-            var_name = f"{VARIABLE_PREFIX}{key}"
-            is_set = self.client.run_on_scheduler(get_variable, name=var_name)
-            if is_set:
-                var = Variable(var_name, client=self.client)
-                res = var.get()
-                if delete:
-                    var.delete()
-                return res
-            else:
-                return default
+        if self.id == 0:
+            if len(fb_state) == 0:
+                feedback_queue_size = self.handshake.get_feedback_queue_size()
+                fb_state[key] = {
+                    'q': Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=feedback_queue_size),
+                    'deque': deque(maxlen=feedback_queue_size)}
+
+            q: Queue = fb_state[key]['q']
+            d: deque = fb_state[key]['deque']
+
+            if q.qsize() != 0:
+                # List[(int, Any), ...]
+                full_q = q.get(batch=True)  # get all elements. This pops elements from the Dask queue.
+                for v in full_q: d.append(v)  # add all elements to deque
+            logger.debug(f"[{self.id}] get() fb_state={fb_state}")
+
+        d = self.comm.bcast(fb_state[key]['deque'], root=0)
+
+        if timestep is None:
+            return d
+
+        for t, v in d:
+            if timestep == t:
+                # found the timestep
+                return v
+
+        return default
 
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         if workers is None:

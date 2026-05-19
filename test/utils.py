@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import asyncio
 import threading
 import time
 from typing import Optional, Any
@@ -69,7 +70,11 @@ def dask_array_element_wise_equal(a, b):
     return (a == b).all().compute(), "a and b are not equal"
 
 
+def async_map(iterable, func, *args, **kwargs):
+    async def _f():
+        return await asyncio.gather(*[asyncio.to_thread(func, item, *args, **kwargs) for item in iterable])
 
+    return asyncio.run(_f())
 
 
 class FakeComm(ICommunicator):
