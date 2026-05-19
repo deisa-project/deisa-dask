@@ -91,20 +91,6 @@ class Deisa(IDeisa):
     def __default_exception_handler(exception: BaseException):
         logger.error(f"Exception thrown for callback id: {exception}")
 
-    # def register_sliding_window_callback(self,
-    #                                      callback: IDeisa.Callback,
-    #                                      array_name: str, window_size: int = DEFAULT_SLIDING_WINDOW_SIZE,
-    #                                      exception_handler: IDeisa.ExceptionHandler = __default_exception_handler) -> Callback_id:
-    #     """
-    #     Register a sliding-window callback for a single array.
-    #     """
-    #     parsed = [(array_name, window_size)]
-    #     return self._register_callback_impl(
-    #         callback,
-    #         parsed,
-    #         exception_handler=exception_handler,
-    #         when='AND')
-
     def register(self,
                 *callback_args,
                 exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
@@ -238,7 +224,7 @@ class Deisa(IDeisa):
 
         return callback_id
 
-    def unregister_sliding_window_callback(self, callback_id: Callback_id) -> None:
+    def unregister_callback(self, callback_id: Callback_id) -> None:
         cb_data = self._callbacks.pop(callback_id, None)
         if cb_data is None:
             return
@@ -266,16 +252,6 @@ class Deisa(IDeisa):
 
         value = (timestep, value)
         q.put(value)
-
-    # def register(self, *callback_args: CallbackArgs,
-    #              exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
-    #              when: Literal['AND', 'OR'] = 'AND') -> Callable:
-    #     pass
-
-    # def register_callback(self, callback: IDeisa.Callback, *callback_args: CallbackArgs,
-    #                       exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
-    #                       when: Literal['AND', 'OR'] = 'AND') -> Callable:
-    #     pass
 
     def execute_callbacks(self) -> None:
         """
@@ -376,7 +352,7 @@ class Deisa(IDeisa):
                 handler(callback_id, ex)
         except BaseException:
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
-            self.unregister_sliding_window_callback(callback_id)
+            self.unregister_callback(callback_id)
 
     def __update_futures_ownership(self, futures: Collection[Future]):
         # tell scheduler that my client is using these futures
