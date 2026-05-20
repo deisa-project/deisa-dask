@@ -43,6 +43,7 @@ Types of changes:
 - Gracefully stop bridges. Deisa waits for all bridges to close
 - Feedback is sent from Deisa to the Bridges
 - Single Dask Client, no matter how many Bridges. Bridge id=0 handles comm with scheduler
+- Bridge.close() now takes a timestep
 
 ### Fixed
 

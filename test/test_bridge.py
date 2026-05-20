@@ -92,7 +92,7 @@ class TestBridge:
         client, _ = env_setup
         bridge, _ = self.get_new_bridge()
         assert not bridge._has_close_been_called
-        bridge.close()
+        bridge.close(timestep=42)
         assert bridge._has_close_been_called
 
     def test_send_update_workers(self, env_setup):

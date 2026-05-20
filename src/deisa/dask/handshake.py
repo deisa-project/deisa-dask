@@ -52,6 +52,7 @@ class Handshake:
             self.bridges_ready = False
             self.analytics_ready = False
             self.feedback_queue_size = 1024
+            self.timestep: Optional[int] = None
 
         def set_bridges_ready(self, nb_bridges: int, arrays_metadata: dict) -> None:
             logger.debug(f"set_bridges_ready(): nb_bridges={nb_bridges}, arrays_metadata={arrays_metadata}, "
@@ -61,6 +62,10 @@ class Handshake:
             self.bridges_ready = True
             if self.analytics_ready:
                 self.__go()
+
+        def set_bridges_done(self, timestep: int) -> None:
+            logger.debug(f"set_bridges_done(): timestep={timestep}")
+            self.timestep = timestep
 
         def set_analytics_ready(self, feedback_queue_size: int) -> None:
             logger.debug(f"set_analytics_ready(): bridges_ready={self.bridges_ready}")
@@ -131,8 +136,10 @@ class Handshake:
     def wait_for_bridges(self):
         Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=self.client).wait()
 
-    def set_bridges_done(self):
-        logger.debug("set_bridges_done()")
+    def set_bridges_done(self, timestep: int):
+        logger.debug(f"set_bridges_done(): timestep={timestep}")
+        assert self.__handshake_actor is not None
+        self.__handshake_actor.set_bridges_done(timestep)
         Event(Handshake._DEISA_WAIT_FOR_BRIDGE_DONE_EVENT, client=self.client).set()
 
     def wait_for_bridges_to_finish(self):

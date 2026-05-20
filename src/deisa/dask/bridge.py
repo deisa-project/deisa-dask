@@ -28,6 +28,7 @@
 # =============================================================================
 import asyncio
 import logging
+import sys
 import uuid
 from collections import deque, defaultdict
 from numbers import Number
@@ -107,16 +108,16 @@ class Bridge(IBridge):
                                              arrays_metadata=self.arrays_metadata, **kwargs)
 
     def __del__(self):
-        self.close()
+        self.close(timestep=sys.maxsize)
 
-    def close(self):
+    def close(self, timestep: int) -> None:
         logger.info(f"[{self.id}] Bridge close()")
         if not self._has_close_been_called:
             self._has_close_been_called = True
             ids = self.comm.gather(self.id, root=0)  # TODO: replace with barrier
             if ids:
                 assert self.handshake
-                self.handshake.set_bridges_done()
+                self.handshake.set_bridges_done(timestep=timestep)
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True, *args, **kwargs):
         """
