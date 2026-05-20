@@ -1,13 +1,18 @@
 import argparse
+import logging
 import os
 import shutil
 import subprocess
 import sys
+from multiprocessing.pool import ThreadPool
 from typing import Tuple
 
 import pytest
 
 from deisa.dask.types import DeisaArray
+from utils import wait_for
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def mpi_gather_test():
@@ -27,6 +32,8 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     from mpi4py import MPI
     import numpy as np
     from deisa.dask import Bridge
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
 
     if comm == 'mpi-comm-world':
         bridge_comm = MPI.COMM_WORLD
@@ -58,14 +65,14 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     print(f"MPI {rank} of {size} started. scheduler_address={scheduler_address}, arrays_metadata={arrays_metadata}",
           flush=True)
 
-    bridge = Bridge(comm=bridge_comm,
-                    arrays_metadata=arrays_metadata,
-                    wait_for_go=False)
+    bridge = Bridge(comm=bridge_comm, arrays_metadata=arrays_metadata)
+
+    wait_for(lambda: bridge.get("hello", timestep=1) == "world", timeout=10, interval=1)
 
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
-
     bridge.send('temperature', to_send, iteration=1)
 
+    bridge.close()
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
@@ -101,15 +108,38 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     import numpy as np
 
     from distributed import LocalCluster
+    from deisa.dask import Deisa
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
+    print(f"client={client}", flush=True)
 
     os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
 
-    print(f"client={client}", flush=True)
-
     client.wait_for_workers(2, timeout=10)
+
+    def work():
+        logging.basicConfig(level=logging.DEBUG)
+
+        deisa = Deisa(timeout=10)
+
+        print(f"deisa={deisa}: deisa.arrays_metadata={deisa.arrays_metadata}", flush=True)
+
+        deisa.set("hello", "world", timestep=1)
+
+        def cb(window):
+            print(f"hello from cb. iteration={window[-1].t}", flush=True)
+            darr = window[-1]
+            assert isinstance(darr, DeisaArray)
+            assert darr.dask.sum().compute() == np.prod(
+                global_size), f"temperature sum should be the product of {global_size}"
+
+        deisa.register_sliding_window_callback(cb, array_name="temperature")
+        deisa.execute_callbacks()
+        return 0
+
+    pool = ThreadPool(processes=1)
+    async_result = pool.apply_async(work)
 
     parallelism = (parallelism,) * len(global_size)
 
@@ -128,14 +158,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     print("STDERR:\n", result.stderr, flush=True)
 
     assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-
-    # check result
-    from deisa.dask import Deisa
-
-    deisa = Deisa(wait_for_go=False, timeout=10)
-    darr = deisa.get_array('temperature', iteration=1)
-    assert isinstance(darr, DeisaArray)
-    assert darr.dask.sum().compute() == np.prod(global_size), f"temperature sum should be the product of {global_size}"
+    assert async_result.get(timeout=10) == 0
 
     cluster.close()
 

@@ -26,12 +26,16 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import asyncio
+import multiprocessing
 import threading
 import time
-from typing import Optional, Any
+from typing import Optional, Any, Literal, List
 
 import dask.array as da
 from deisa.core import ICommunicator
+
+from deisa.dask import Bridge
 
 
 def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
@@ -66,18 +70,34 @@ def wait_for(predicate, timeout=5.0, interval=0.01, nb_checks=1):
 def dask_array_element_wise_equal(a, b):
     assert isinstance(a, da.Array) or issubclass(type(b), da.Array), "a and b must be dask arrays"
     assert isinstance(b, da.Array) or issubclass(type(b), da.Array), "a and b must be dask arrays"
-    return (a == b).all().compute(), "a and b are not equal"
+    return (a.compute() == b.compute()).all(), "a and b are not equal"
 
 
+def async_map(iterable, func, *args, **kwargs):
+    async def _f():
+        return await asyncio.gather(*[asyncio.to_thread(func, item, *args, **kwargs) for item in iterable])
 
+    return asyncio.run(_f())
+
+
+def async_close_bridges(bridges: List[Bridge]):
+    async def _close_bridges():
+        await asyncio.gather(*[asyncio.to_thread(bridge.close) for bridge in bridges])
+
+    asyncio.run(_close_bridges())
 
 
 class FakeComm(ICommunicator):
     class State:
-        def __init__(self, size: int):
+        def __init__(self, size: int, mode: Literal["thread", "process"] = "thread"):
             self.size = size
 
-            self.condition = threading.Condition()
+            if mode == "thread":
+                self.condition = threading.Condition()
+            elif mode == "process":
+                self.condition = multiprocessing.Condition()
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
 
             # gather state
             self.gather_data: dict[int, Any] = {}

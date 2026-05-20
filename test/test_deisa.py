@@ -26,11 +26,11 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-import gc
 import logging
 import os.path
 import sys
 import time
+from collections import deque
 
 import dask
 import dask.array as da
@@ -41,7 +41,7 @@ from distributed import Client, LocalCluster, Queue, Variable
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, Bridge
 from deisa.dask.types import DeisaArray
-from utils import wait_for, dask_array_element_wise_equal, FakeComm
+from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -224,76 +224,6 @@ class TestUsingDaskCluster:
 
     @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
-    @pytest.mark.parametrize('nb_iterations', [1, 2, 5])
-    @pytest.mark.parametrize('update_workers', [False, True])
-    # @pytest.mark.parametrize('filter_workers', []) # TODO
-    def test_get_dask_array(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
-                            update_workers: bool,
-                            env_setup):
-        print(f"global_grid_size={global_grid_size} mpi_parallelism={mpi_parallelism} nb_iterations={nb_iterations}, "
-              f"update_workers={update_workers}")
-
-        client, cluster = env_setup
-
-        sim = TestSimulation(client,
-                             mpi_parallelism=mpi_parallelism,
-                             arrays_metadata={
-                                 'my_array': {
-                                     'global_shape': global_grid_size,
-                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
-                                                     global_grid_size[1] // mpi_parallelism[1]),
-                                     'chunk_position': (0, 0)  # TODO
-                                 }
-                             },
-                             wait_for_go=False)
-        deisa = Deisa()
-
-        for i in range(nb_iterations):
-            global_data = sim.generate_data('my_array', iteration=i, update_workers=update_workers)
-            global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
-                                                                global_grid_size[1] // mpi_parallelism[1]))
-            darr = deisa.get_array('my_array', iteration=i)
-
-            assert isinstance(darr, DeisaArray)
-            assert darr.t == i, "iteration does not match expected"
-
-            assert dask_array_element_wise_equal(darr, global_data_da), "callback was not called with correct data"
-
-    def test_get_dask_array_slow(self, env_setup):
-        # This tests for FutureCancelledError
-        client, cluster = env_setup
-        global_grid_size = (8, 8)
-        mpi_parallelism = (2, 2)
-
-        sim = TestSimulation(client,
-                             mpi_parallelism=mpi_parallelism,
-                             arrays_metadata={
-                                 'my_array': {
-                                     'global_shape': global_grid_size,
-                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
-                                                     global_grid_size[1] // mpi_parallelism[1]),
-                                     'chunk_position': (0, 0)  # TODO
-                                 }
-                             },
-                             wait_for_go=False)
-        deisa = Deisa(get_connection_info=lambda: client)
-
-        global_data = sim.generate_data('my_array', iteration=1)
-        global_data_da = da.from_array(global_data, chunks=(global_grid_size[0] // mpi_parallelism[0],
-                                                            global_grid_size[1] // mpi_parallelism[1]))
-
-        time.sleep(1)
-        gc.collect()
-        time.sleep(1)
-
-        darr = deisa.get_array('my_array', iteration=1)
-
-        assert isinstance(darr, DeisaArray)
-        assert darr.t == 1, "iteration does not match expected"
-        assert dask_array_element_wise_equal(global_data_da, darr.dask), "dask arrays are not equal"
-
-    @pytest.mark.parametrize('global_grid_size', [(8, 8), (32, 32), (32, 4), (4, 32)])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2), (1, 2), (2, 1)])
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('window_size', [1, 2])
     def test_sliding_window_callback_register(self, global_grid_size: tuple, mpi_parallelism: tuple, nb_iterations: int,
@@ -347,7 +277,7 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['latest_window_size'] == min(i, window_size)), \
                 "callback was not called with correct window size"
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
         assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
@@ -477,7 +407,7 @@ class TestUsingDaskCluster:
                                           chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
                                                   global_temperature_grid_size[1] // mpi_parallelism[1]))
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
         assert wait_for(lambda: 'latest_density' in context
@@ -535,7 +465,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
     def test_sliding_window_callbacks_unregister(self, env_setup):
@@ -597,7 +527,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
     def test_sliding_window_callback_throws(self, env_setup):
@@ -672,7 +602,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
     def test_sliding_window_map_blocks(self, env_setup):
@@ -726,83 +656,80 @@ class TestUsingDaskCluster:
             sim.generate_data('my_array', iteration=i)
             assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
 
-        sim.close_bridges()
+        async_close_bridges(sim.bridges)
         deisa.execute_callbacks()
 
     # TODO: fix tests with issue #65 and #67
-    # def test_set_get(self, env_setup):
-    #     client, _ = env_setup
-    #
-    #     comm_state = FakeComm.State(1)
-    #
-    #     bridge = Bridge(comm=FakeComm(comm_state, 0),
-    #                     arrays_metadata={},
-    #                     wait_for_go=False)
-    #
-    #     deisa = Deisa(get_connection_info=lambda: client)
-    #     deisa.set('hello', 'world', chunked=False)
-    #
-    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=False) == 'world')
-    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) == 'world')
-    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True) is None)
-    #     assert wait_for(lambda: bridge.get('hello', chunked=False, delete=True, default='hi') == 'hi')
-    #
-    #     bridge.close()
-    #     deisa.close()
-    #
-    # def test_set_from_sliding_window(self, env_setup):
-    #     client, _ = env_setup
-    #     global_grid_size = (8, 8)
-    #     mpi_parallelism = (1, 1)
-    #
-    #     sim = TestSimulation(client,
-    #                          mpi_parallelism=mpi_parallelism,
-    #                          arrays_metadata={
-    #                              'my_array': {
-    #                                  'size': global_grid_size,
-    #                                  'subsize': (global_grid_size[0] // mpi_parallelism[0],
-    #                                              global_grid_size[1] // mpi_parallelism[1])
-    #                              }
-    #                          },
-    #                          wait_for_go=False)
-    #
-    #     deisa = Deisa(get_connection_info=lambda: client)
-    #
-    #     time.sleep(.2)
-    #
-    #     context = {
-    #         'counter': 0
-    #     }
-    #
-    #     def window_callback(window: list[DeisaArray]):
-    #         print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
-    #         context['counter'] += 1
-    #         deisa.set('hello', 'world', chunked=False)
-    #
-    #     deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
-    #     sim.generate_data('my_array', iteration=1)
-    #     assert wait_for(lambda: context['counter'] == 1)
-    #     assert wait_for(lambda: sim.bridges[0].get('hello', chunked=False, delete=False) == 'world')
-    #
-    #     sim.close_bridges()
-    #     deisa.close()
-    #
-    # def test_set_delete_get(self, env_setup):
-    #     client, _ = env_setup
-    #
-    #     bridge = Bridge(id=0,
-    #                     arrays_metadata={},
-    #                     system_metadata={'connection': client, 'nb_bridges': 1},
-    #                     wait_for_go=False)
-    #
-    #     deisa = Deisa(get_connection_info=lambda: client)
-    #
-    #     time.sleep(.2)
-    #
-    #     deisa.set('hello', 'world', chunked=False)
-    #     assert bridge.get('hello', chunked=False, delete=False) == 'world'
-    #     deisa.delete('hello')
-    #     assert bridge.get('hello', chunked=False, delete=False, default=None) is None
-    #
-    #     bridge.close()
-    #     deisa.close()
+    @pytest.mark.parametrize('nb_bridges', [1, 4])
+    def test_set_get(self, env_setup, nb_bridges: int):
+        client, _ = env_setup
+
+        comm_state = FakeComm.State(nb_bridges)
+
+        bridges = [Bridge(comm=FakeComm(comm_state, rank),
+                          arrays_metadata={
+                              'my_array': {
+                                  'global_shape': (0,),
+                                  'chunk_shape': (0,),
+                                  'chunk_position': (rank,)  # TODO
+                              }
+                          },
+                          wait_for_go=False) for rank in range(nb_bridges)]
+
+        deisa = Deisa()
+
+        for ts in range(5):
+            deisa.set('hello', 'world', timestep=ts)
+
+            res = async_map(bridges, Bridge.get, 'hello', timestep=ts)
+            assert wait_for(lambda: len(res) == nb_bridges)
+            assert all(r == 'world' for r in res)
+
+            # a second call to get should return the same result
+            res = async_map(bridges, Bridge.get, 'hello', timestep=ts)
+            assert wait_for(lambda: len(res) == nb_bridges)
+            assert all(r == 'world' for r in res)
+
+            # without timestep, should return the full queue
+            res = async_map(bridges, Bridge.get, 'hello')
+            assert wait_for(lambda: len(res) == nb_bridges)
+            assert all(r == deque([(i, 'world') for i in range(ts + 1)]) for r in res)
+
+        async_close_bridges(bridges)
+
+    def test_set_from_sliding_window(self, env_setup):
+        client, _ = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (1, 1)
+
+        sim = TestSimulation(client,
+                             mpi_parallelism=mpi_parallelism,
+                             arrays_metadata={
+                                 'my_array': {
+                                     'global_shape': global_grid_size,
+                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
+                                                     global_grid_size[1] // mpi_parallelism[1]),
+                                     'chunk_position': (0, 0)  # TODO
+                                 }
+                             },
+                             wait_for_go=False)
+
+        deisa = Deisa()
+
+        time.sleep(.2)
+
+        context = {
+            'counter': 0
+        }
+
+        def window_callback(window: list[DeisaArray]):
+            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
+            context['counter'] += 1
+            deisa.set('hello', 'world', timestep=window[-1].t)
+
+        deisa.register_sliding_window_callback(window_callback, 'my_array', window_size=1)
+        sim.generate_data('my_array', iteration=1)
+        assert wait_for(lambda: context['counter'] == 1)
+        assert wait_for(lambda: sim.bridges[0].get('hello', timestep=1) == 'world')
+
+        async_close_bridges(sim.bridges)

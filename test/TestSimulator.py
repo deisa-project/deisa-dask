@@ -34,7 +34,7 @@ import numpy as np
 from distributed import Client
 
 from deisa.dask import Bridge
-from utils import FakeComm
+from utils import FakeComm, async_close_bridges
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +51,11 @@ class TestSimulation:
         self.bridges: List[Bridge] = [
             Bridge(comm=FakeComm(state=comm_state, rank=rank),
                    arrays_metadata=arrays_metadata,
-                   nb_bridges=nb_mpi_ranks,
                    *args, **kwargs)
             for rank in range(nb_mpi_ranks)]
+
+    def __del__(self):
+        async_close_bridges(self.bridges)
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
@@ -101,21 +103,15 @@ class TestSimulation:
 
             assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
 
-            loop = asyncio.get_event_loop()
-
             async def _bridge_send():
                 await asyncio.gather(*[asyncio.to_thread(bridge.send, array_name, chunks[i], iteration,
                                                          update_workers=update_workers)
                                        for i, bridge in enumerate(self.bridges)])
 
-            loop.run_until_complete(_bridge_send())
+            asyncio.run(_bridge_send())
 
         assert len(global_datas) == len(array_names)
         if len(global_datas) == 1:
             return global_datas[0]
         else:
             return tuple(global_datas)
-
-    def close_bridges(self):
-        for bridge in self.bridges:
-            bridge.close()

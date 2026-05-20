@@ -55,4 +55,4 @@ jobs:
           python -m pip install .[test,mpi]
       - name: MPI test with pytest
         run: |
-          pytest test/test_comm.py
+          pytest test/test_mpi.py

@@ -31,23 +31,21 @@ import asyncio
 import collections
 import logging
 import threading
-import time
 from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set, Collection
 
 import dask
 import dask.array as da
 import numpy as np
-from dask.array import Array
 from deisa.core import CallbackArgs
 from deisa.core.interface import IDeisa
-from distributed import Client, Future, Queue, Variable
+from distributed import Client, Future, Queue, Event
 
 from deisa.dask.handshake import Handshake
 from deisa.dask.types import DeisaArray
 from deisa.dask.utils import get_client
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
-VARIABLE_PREFIX: Final[str] = "deisa_variable_"
+FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
 CALLBACK_PREFIX: Final[str] = "deisa_cb_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
 CLIENT_KEY: Final[str] = "deisa"
@@ -72,9 +70,11 @@ class Deisa(IDeisa):
 
         super().__init__(feedback_queue_size, *args, **kwargs)
         self.client: Client = get_client(timeout=kwargs.get("timeout", 10))
+        self.feedback_queue_size = feedback_queue_size
 
         # blocking until all bridges are ready
-        self.handshake = Handshake('deisa', self.client, **kwargs)
+        self.handshake = Handshake(self.client)
+        self.handshake.deisa_ready(feedback_queue_size=feedback_queue_size, **kwargs)
 
         self.mpi_comm_size = self.handshake.get_nb_bridges()
         self.arrays_metadata = self.handshake.get_arrays_metadata()
@@ -87,72 +87,6 @@ class Deisa(IDeisa):
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
         self._received_futures: Set[str] = set()
-
-    def get_array(self, name: str, iteration=None, timeout=None) -> tuple[Array, int]:
-        """Retrieve a Dask array for a given array name."""
-
-        # arrays_metadata will look something like this:
-        # arrays_metadata = {
-        #     'global_t': {
-        #         'size': [20, 20]
-        #         'subsize': [10, 10]
-        #     }
-        #     'global_p': {
-        #         'size': [100, 100]
-        #         'subsize': [50, 50]
-        #     }
-
-        if name not in self.arrays_metadata:
-            raise ValueError(f"Array '{name}' is not known.")
-
-        start = time.time()
-
-        while True:
-            events = self.client.get_events(name)
-
-            if events:
-                # events: List[(ts, payload)]
-                payloads = [e[1] for e in events]
-
-                # Filter by iteration if requested
-                if iteration is not None:
-                    payloads = [p for p in payloads if p["iteration"] == iteration]
-
-                if payloads:
-                    # Take latest iteration if not specified
-                    payload = max(payloads, key=lambda p: p["iteration"])
-                    iteration = payload["iteration"]
-                    parts = payload["futures"]
-                    keys = [p["future"] for p in parts]
-
-                    self.__update_futures_ownership(keys)
-                    self._received_futures.update(keys)
-
-                    # reconstruct array
-                    parts = sorted(parts, key=lambda p: p["placement"])
-
-                    darr_chunks = [
-                        da.from_delayed(
-                            dask.delayed(Future(p["future"], client=self.client)),
-                            shape=p["shape"],  # TODO: use self.arrays_metadata[name]["chunk_shape"]
-                            dtype=p["dtype"],
-                        )
-                        for p in parts
-                    ]
-
-                    darr = self.__tile_dask_blocks(
-                        darr_chunks,
-                        self.arrays_metadata[name]["global_shape"]
-                    )
-
-                    logger.debug(f"[ITER {iteration}] {name} shape={darr.shape}")
-                    return DeisaArray(dask=darr, t=iteration)
-
-            # timeout handling
-            if timeout is not None and (time.time() - start) > timeout:
-                raise TimeoutError(f"Timeout waiting for array '{name}' iteration={iteration}")
-
-            time.sleep(0.01)  # avoid busy spin
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
@@ -282,22 +216,22 @@ class Deisa(IDeisa):
                 if not s:
                     del self._callbacks_by_array[array_name]
 
-    def set(self, key: str, data: Union[Future, object], chunked=False):
-        if chunked:
-            raise NotImplementedError()  # TODO
-        else:
-            var = Variable(f'{VARIABLE_PREFIX}{key}', client=self.client)
-            if self.client.asynchronous:
-                self.client.loop.add_callback(var.set, data)
-            else:
-                var.set(data)
+    def set(self, key: str, value: Any, timestep: int) -> None:
+        logger.debug(f"set() key={key}, value={value}, timestep={timestep}")
 
-    def delete(self, key: str) -> None:
-        var = Variable(f'{VARIABLE_PREFIX}{key}', client=self.client)
-        if self.client.asynchronous:
-            self.client.loop.add_callback(var.delete)
-        else:
-            var.delete()
+        q = Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=self.feedback_queue_size)
+
+        # TODO: check for consistency
+        # if q.qsize() > 0:
+        #     # check for consistency
+        #     t, _ = q.get()
+        #     if timestep < t:
+        #         raise ValueError(f"timestep {timestep} is smaller than previous timestep {t}")
+        #     elif timestep == t:
+        #         raise ValueError(f"timestep {timestep} has already been set")
+
+        value = (timestep, value)
+        q.put(value)
 
     def register(self, *callback_args: CallbackArgs,
                  exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
@@ -316,11 +250,8 @@ class Deisa(IDeisa):
         """
         logger.info("execute_callbacks()")
 
-        # wait for bridges to be ready
-        self.handshake.wait_for_bridges_to_start()
-
         logger.info("Bridges are ready, unblock bridges")
-        self.handshake.deisa_ready()
+        Event("deisa_wait", client=self.client).set()
 
         logger.info("execute_callbacks() waiting for bridges")
         self.handshake.wait_for_bridges_to_finish()
