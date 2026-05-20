@@ -59,8 +59,9 @@ class TestSimulation:
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
-        x = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][0])
-        y = np.linspace(-1, 1, self.arrays_metadata[array_name]['global_shape'][1])
+        shape = self.arrays_metadata[array_name]['global_shape']
+        x = np.linspace(-1, 1, shape[0])
+        y = np.linspace(-1, 1, shape[1])
         X, Y = np.meshgrid(x, y, indexing='ij')
 
         # Generate 2D Gaussian (bell curve)

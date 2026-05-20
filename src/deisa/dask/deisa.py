@@ -41,8 +41,7 @@ from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
 from deisa.dask.handshake import Handshake
-from deisa.dask.types import DeisaArray
-from deisa.dask.utils import get_client
+from deisa.dask.utils import get_client, build_deisa_array
 
 LOCK_PREFIX: Final[str] = "deisa_lock_"
 FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
@@ -305,7 +304,7 @@ class Deisa(IDeisa):
 
         # update sliding window
         d = state[array_name]
-        d["window"].append(DeisaArray(dask=darr, t=iteration))
+        d["window"].append(build_deisa_array(darr, iteration))
         d["changed"] = True
 
         ordered_array_names = cb_data["array_names"]
