@@ -100,7 +100,7 @@ class Handshake:
         """
         logger.debug(f"All bridges ready. nb_bridge={nb_bridge}, arrays_metadata={arrays_metadata}")
         assert self.__handshake_actor is not None
-        self.__handshake_actor.set_bridges_ready(nb_bridge, arrays_metadata)
+        self.__handshake_actor.set_bridges_ready(nb_bridge, arrays_metadata).result()
 
         # wait for go
         if wait_for_go:
@@ -112,7 +112,7 @@ class Handshake:
         """
         logger.debug("deisa ready.")
         assert self.__handshake_actor is not None
-        self.__handshake_actor.set_analytics_ready(feedback_queue_size)
+        self.__handshake_actor.set_analytics_ready(feedback_queue_size).result()
 
         # wait for go
         if wait_for_go:
@@ -139,7 +139,7 @@ class Handshake:
     def set_bridges_done(self, timestep: int):
         logger.debug(f"set_bridges_done(): timestep={timestep}")
         assert self.__handshake_actor is not None
-        self.__handshake_actor.set_bridges_done(timestep)
+        self.__handshake_actor.set_bridges_done(timestep).result()
         Event(Handshake._DEISA_WAIT_FOR_BRIDGE_DONE_EVENT, client=self.client).set()
 
     def wait_for_bridges_to_finish(self):
