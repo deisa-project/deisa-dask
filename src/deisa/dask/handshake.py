@@ -106,7 +106,7 @@ class Handshake:
         if wait_for_go:
             self.__wait_for_go()
 
-    def deisa_ready(self, feedback_queue_size: int = 1024, wait_for_go=True) -> None:
+    def deisa_ready(self, feedback_queue_size: int = 1024, wait_for_go=True, *args, **kwargs) -> None:
         """
         When analytics is ready, notify all Bridges
         """

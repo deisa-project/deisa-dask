@@ -72,7 +72,7 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
     bridge.send('temperature', to_send, iteration=1)
 
-    bridge.close()
+    bridge.close(timestep=1)
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
@@ -139,7 +139,12 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         return 0
 
     pool = ThreadPool(processes=1)
-    async_result = pool.apply_async(work)
+
+    def error_callback(e):
+        print(f"[ERROR] {e}", flush=True)
+        raise e
+
+    async_result = pool.apply_async(work, error_callback=error_callback)
 
     parallelism = (parallelism,) * len(global_size)
 

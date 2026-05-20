@@ -98,7 +98,6 @@ class Bridge(IBridge):
         logger.debug(f"[{self.id}] Bridge __init__(): pre-bcast")
         self.workers = self.comm.bcast(self.workers, root=0)
         logger.debug(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
-        print(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
 
         if self.id == 0:
             # all bridges are ready, tell handshake actor
