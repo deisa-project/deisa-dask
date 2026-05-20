@@ -90,7 +90,6 @@ class TestUsingDaskCluster:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         # teardown
-        client.close()
         cluster.close()
 
     @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
