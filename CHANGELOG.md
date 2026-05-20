@@ -18,17 +18,17 @@ Types of changes:
 
 ### Added
 
-- Add logger
+- logger
 - `pytest-timeout` to stop tests that can hang
-- Add MPI tests
-- Add communicator to Bridge (DaskComm, MPIComm)
-- Add option to select worker to scatter data to
-- Add `_get_actor` helper function in utils to start a singleton Actor
-- Add `pytest.ini`
-- Add the option to update the worker list, before `send()`, on a Bridge using `update_worker`
-- Add the option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
-- Add DeisaArray wrapper to unify handling of Dask array and iteration
-- Add dependency on mpi4py
+- MPI tests
+- Communicator to Bridge (DaskComm, MPIComm)
+- Option to select worker to scatter data to
+- `_get_actor` helper function in utils to start a singleton Actor
+- `pytest.ini`
+- Option to update the worker list, before `send()`, on a Bridge using `update_worker`
+- Option to filter the worker list, before `send()`, on a Bridge using `filter_worker`
+- DeisaArray wrapper to unify handling of Dask array and iteration
+- Dependency on mpi4py
 - `Deisa.execute_callbacks`: unblock bridges, execute callbacks and wait for bridges to close
 
 ### Changed
@@ -42,6 +42,7 @@ Types of changes:
 - Change `TestSimulation` to use `asyncio` to run `bridge.send`
 - Gracefully stop bridges. Deisa waits for all bridges to close
 - Feedback is sent from Deisa to the Bridges
+- Single Dask Client, no matter how many Bridges. Bridge id=0 handles comm with scheduler
 
 ### Fixed
 

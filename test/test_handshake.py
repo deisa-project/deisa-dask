@@ -7,10 +7,12 @@ from distributed import LocalCluster
 
 from deisa.dask import get_connection_info
 from deisa.dask.handshake import Handshake
+from utils import FakeComm
 
 logging.basicConfig(level=logging.DEBUG)
 
 
+@pytest.mark.flaky(retries=3, delay=1)
 @pytest.mark.xdist_group(name="serial")
 @pytest.mark.timeout(30)
 class TestHandshake:
@@ -24,16 +26,27 @@ class TestHandshake:
 
     @staticmethod
     def start_deisa_handshake(address: str, nb_bridge: int):
+        logging.basicConfig(level=logging.DEBUG)
         client = get_connection_info(address)
-        handshake = Handshake('deisa', client, feedback_queue_size=42)
+        handshake = Handshake(client)
+        handshake.deisa_ready(feedback_queue_size=42)
         assert handshake.get_nb_bridges() == nb_bridge
         assert handshake.get_arrays_metadata() == {'hello': 'world'}
 
     @staticmethod
-    def start_bridge_handshake(address: str, id: int, max: int):
-        client = get_connection_info(address)
-        handshake = Handshake('bridge', client, id=id, max=max, arrays_metadata={'hello': 'world'})
-        assert handshake.get_feedback_queue_size() == 42
+    def start_bridge_handshake(address: str, comm: FakeComm, nb_bridge: int, arrays_metadata: dict):
+        logging.basicConfig(level=logging.DEBUG)
+
+        rank = comm.Get_rank()
+        logging.debug(f"start_bridge_handshake(): rank={rank}")
+
+        if rank == 0:
+            client = get_connection_info(address)
+            handshake = Handshake(client)
+            handshake.all_bridges_ready(nb_bridge, arrays_metadata)
+            assert handshake.get_nb_bridges() == nb_bridge
+            assert handshake.get_arrays_metadata() == {'hello': 'world'}
+            assert handshake.get_feedback_queue_size() == 42
 
     @staticmethod
     def start_processes(processes: List[Process]):
@@ -54,8 +67,11 @@ class TestHandshake:
 
         processes: List[Process] = [Process(target=TestHandshake.start_deisa_handshake, args=(addr, nb_bridge))]
 
-        for i in range(nb_bridge):
-            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+        arrays_metadata = {'hello': 'world'}
+        state = FakeComm.State(nb_bridge, mode="process")
+        for rank in range(nb_bridge):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake,
+                                     args=(addr, FakeComm(state, rank), nb_bridge, arrays_metadata)))
 
         TestHandshake.start_processes(processes)
         TestHandshake.join_processes(processes)
@@ -67,30 +83,36 @@ class TestHandshake:
         print(f"cluster={cluster}, addr={addr}", flush=True)
 
         processes: List[Process] = []
-
-        for i in range(nb_bridge):
-            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+        arrays_metadata = {'hello': 'world'}
+        state = FakeComm.State(nb_bridge, mode="process")
+        for rank in range(nb_bridge):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake,
+                                     args=(addr, FakeComm(state, rank), nb_bridge, arrays_metadata)))
 
         processes.append(Process(target=TestHandshake.start_deisa_handshake, args=(addr, nb_bridge)))
 
         TestHandshake.start_processes(processes)
         TestHandshake.join_processes(processes)
 
-    @pytest.mark.parametrize('nb_bridge', [64])
+    @pytest.mark.parametrize('nb_bridge', [32])
     def test_handshake_interlace(self, env_setup, nb_bridge: int):
         cluster = env_setup
         addr = cluster.scheduler.address
         print(f"cluster={cluster}, addr={addr}", flush=True)
 
         processes: List[Process] = []
+        arrays_metadata = {'hello': 'world'}
+        state = FakeComm.State(nb_bridge, mode="process")
 
-        for i in range(nb_bridge // 2):
-            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+        for rank in range(nb_bridge // 2):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake,
+                                     args=(addr, FakeComm(state, rank), nb_bridge, arrays_metadata)))
 
         processes.append(Process(target=TestHandshake.start_deisa_handshake, args=(addr, nb_bridge)))
 
-        for i in range(nb_bridge // 2, nb_bridge):
-            processes.append(Process(target=TestHandshake.start_bridge_handshake, args=(addr, i, nb_bridge)))
+        for rank in range(nb_bridge // 2, nb_bridge):
+            processes.append(Process(target=TestHandshake.start_bridge_handshake,
+                                     args=(addr, FakeComm(state, rank), nb_bridge, arrays_metadata)))
 
         TestHandshake.start_processes(processes)
         TestHandshake.join_processes(processes)

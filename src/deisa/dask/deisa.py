@@ -73,7 +73,8 @@ class Deisa(IDeisa):
         self.feedback_queue_size = feedback_queue_size
 
         # blocking until all bridges are ready
-        self.handshake = Handshake('deisa', self.client, feedback_queue_size=feedback_queue_size, **kwargs)
+        self.handshake = Handshake(self.client)
+        self.handshake.deisa_ready(feedback_queue_size=feedback_queue_size, **kwargs)
 
         self.mpi_comm_size = self.handshake.get_nb_bridges()
         self.arrays_metadata = self.handshake.get_arrays_metadata()

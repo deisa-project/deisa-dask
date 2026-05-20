@@ -4,9 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from multiprocessing.pool import ThreadPool
-from threading import Thread
 from typing import Tuple
 
 import pytest
@@ -74,6 +72,7 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
     bridge.send('temperature', to_send, iteration=1)
 
+    bridge.close()
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
@@ -113,10 +112,9 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0)
     client = Client(cluster)
+    print(f"client={client}", flush=True)
 
     os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
-
-    print(f"client={client}", flush=True)
 
     client.wait_for_workers(2, timeout=10)
 
@@ -137,7 +135,6 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
                 global_size), f"temperature sum should be the product of {global_size}"
 
         deisa.register_sliding_window_callback(cb, array_name="temperature")
-
         deisa.execute_callbacks()
         return 0
 
