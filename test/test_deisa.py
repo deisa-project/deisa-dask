@@ -36,18 +36,18 @@ import dask
 import dask.array as da
 import numpy as np
 import pytest
+from deisa.core.types import DeisaArray
 from distributed import Client, LocalCluster, Queue, Variable
 
 from TestSimulator import TestSimulation
 from deisa.dask import Deisa, Bridge
-from deisa.core.types import DeisaArray
+from deisa.dask.utils import build_deisa_array
 from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges
 
 logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.timeout(10)
-
 @pytest.mark.xdist_group(name="serial")
 class TestDeisaCtor:
     @pytest.fixture(scope="class")
@@ -215,14 +215,7 @@ class TestUsingDaskCluster:
         assert res['dtype'] == data.dtype
 
         darr = da.from_delayed(dask.delayed(res["f"]), res["shape"], dtype=res["dtype"])
-
-        darr = DeisaArray(
-            0,
-            darr.__dask_graph__(),
-            name=darr.name,
-            chunks=darr.chunks,
-            meta=np.empty(0, dtype=darr.dtype)
-        )
+        darr = build_deisa_array(darr, 0)
         assert isinstance(darr, DeisaArray)
         assert darr.compute().shape == (2, 2)
         assert darr.compute().all() == data.all()
@@ -738,3 +731,8 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: sim.bridges[0].get('hello', timestep=1) == 'world')
 
         async_close_bridges(sim.bridges, 1)
+
+    def test_deisa_array_ctor(self, env_setup):
+        dask_arr = da.from_array(np.ones(1))
+        deisa_array = build_deisa_array(dask_arr, 0)
+        assert dask_array_element_wise_equal(dask_arr, deisa_array)

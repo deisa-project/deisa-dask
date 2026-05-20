@@ -30,7 +30,8 @@ import logging
 import os
 import sys
 
-from deisa.core import ICommunicator
+import dask.array as da
+from deisa.core import ICommunicator, DeisaArray
 from distributed import Client, Lock, Variable
 
 logger = logging.getLogger(__name__)
@@ -106,3 +107,13 @@ def _get_actor(client: Client, clazz, **kwargs):
             actor_future = client.submit(clazz, actor=True, **kwargs)
             Variable(key, client=client).set(actor_future)
             return actor_future.result()
+
+
+def build_deisa_array(darr: da.Array, timestep: int) -> DeisaArray:
+    return DeisaArray(t=timestep,
+                      dask=darr.dask,
+                      name=darr.name,
+                      chunks=darr.chunks,
+                      dtype=darr.dtype,
+                      meta=darr._meta,
+                      shape=darr.shape)

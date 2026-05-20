@@ -30,6 +30,7 @@ Types of changes:
 - DeisaArray wrapper to unify handling of Dask array and iteration
 - Dependency on mpi4py
 - `Deisa.execute_callbacks`: unblock bridges, execute callbacks and wait for bridges to close
+- `utils.build_deisa_array()` to build a DeisaArray from a Dask Array
 
 ### Changed
 
