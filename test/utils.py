@@ -80,9 +80,9 @@ def async_map(iterable, func, *args, **kwargs):
     return asyncio.run(_f())
 
 
-def async_close_bridges(bridges: List[Bridge]):
+def async_close_bridges(bridges: List[Bridge], timestep: int):
     async def _close_bridges():
-        await asyncio.gather(*[asyncio.to_thread(bridge.close) for bridge in bridges])
+        await asyncio.gather(*[asyncio.to_thread(bridge.close, timestep=timestep) for bridge in bridges])
 
     asyncio.run(_close_bridges())
 

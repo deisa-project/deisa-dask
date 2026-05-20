@@ -277,7 +277,7 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: context['latest_window_size'] == min(i, window_size)), \
                 "callback was not called with correct window size"
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, nb_iterations)
         deisa.execute_callbacks()
 
         assert wait_for(lambda: context['counter'] == nb_iterations), f"callback was not called {nb_iterations} times"
@@ -407,7 +407,7 @@ class TestUsingDaskCluster:
                                           chunks=(global_temperature_grid_size[0] // mpi_parallelism[0],
                                                   global_temperature_grid_size[1] // mpi_parallelism[1]))
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, iteration)
         deisa.execute_callbacks()
 
         assert wait_for(lambda: 'latest_density' in context
@@ -465,7 +465,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, 2)
         deisa.execute_callbacks()
 
     def test_sliding_window_callbacks_unregister(self, env_setup):
@@ -527,7 +527,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1), "callback should be called"
         assert wait_for(lambda: context['latest_timestep'] == 2), "callback should be called"
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, 2)
         deisa.execute_callbacks()
 
     def test_sliding_window_callback_throws(self, env_setup):
@@ -602,7 +602,7 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, 4)
         deisa.execute_callbacks()
 
     def test_sliding_window_map_blocks(self, env_setup):
@@ -656,10 +656,9 @@ class TestUsingDaskCluster:
             sim.generate_data('my_array', iteration=i)
             assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, 4)
         deisa.execute_callbacks()
 
-    # TODO: fix tests with issue #65 and #67
     @pytest.mark.parametrize('nb_bridges', [1, 4])
     def test_set_get(self, env_setup, nb_bridges: int):
         client, _ = env_setup
@@ -695,7 +694,7 @@ class TestUsingDaskCluster:
             assert wait_for(lambda: len(res) == nb_bridges)
             assert all(r == deque([(i, 'world') for i in range(ts + 1)]) for r in res)
 
-        async_close_bridges(bridges)
+        async_close_bridges(bridges, 4)
 
     def test_set_from_sliding_window(self, env_setup):
         client, _ = env_setup
@@ -732,4 +731,4 @@ class TestUsingDaskCluster:
         assert wait_for(lambda: context['counter'] == 1)
         assert wait_for(lambda: sim.bridges[0].get('hello', timestep=1) == 'world')
 
-        async_close_bridges(sim.bridges)
+        async_close_bridges(sim.bridges, 1)
