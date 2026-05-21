@@ -56,7 +56,7 @@ class TestDeisaCtor:
     @pytest.fixture(scope="class")
     def env_setup_tcp_cluster(self):
         cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
-                               dashboard_address=None, worker_dashboard_address=None,
+                               dashboard_address=":0", worker_dashboard_address=":0",
                                host='127.0.0.1', scheduler_port=4242)
         client = Client(cluster)
         client.wait_for_workers(1, timeout=20)
@@ -91,8 +91,7 @@ class TestUsingDaskCluster:
     def env_setup(self):
         self.state: Dict[str, Any] = {"counter": 0}
         cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False,
-                               dashboard_address=None,
-                               worker_dashboard_address=None)
+                               dashboard_address=":0", worker_dashboard_address=":0")
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster)
         client.wait_for_workers(2, timeout=10)
@@ -104,8 +103,7 @@ class TestUsingDaskCluster:
     def env_setup_class(self):
         self.state: Dict[str, Any] = {"counter": 0}
         cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=False,
-                               dashboard_address=None,
-                               worker_dashboard_address=None)
+                               dashboard_address=":0", worker_dashboard_address=":0")
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster)
         client.wait_for_workers(1, timeout=10)
@@ -321,7 +319,7 @@ class TestUsingDaskCluster:
     class MapBlocks(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             def map_block_function(block, block_info=None):
-                print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
+                # print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
                 return np.array([[1]])
 
             @deisa.register(Window('temperature', size=expected_window_size['temperature'])

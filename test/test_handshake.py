@@ -19,7 +19,7 @@ class TestHandshake:
     @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True,
-                               dashboard_address=None, worker_dashboard_address=None)
+                               dashboard_address=":0", worker_dashboard_address=":0")
         cluster.wait_for_workers(2, timeout=10)
         yield cluster
         # teardown

@@ -43,7 +43,7 @@ class TestBridge:
     @pytest.fixture(scope="function")
     def env_setup(self):
         cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
-                               dashboard_address=None, worker_dashboard_address=None)
+                               dashboard_address=":0", worker_dashboard_address=":0")
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster)
         client.wait_for_workers(1, timeout=10)

@@ -111,7 +111,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     from deisa.dask import Deisa
 
     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, host='127.0.0.1', scheduler_port=0,
-                           dashboard_address=None, worker_dashboard_address=None)
+                           dashboard_address=":0", worker_dashboard_address=":0")
     client = Client(cluster)
     print(f"client={client}", flush=True)
 
