@@ -77,5 +77,8 @@ jobs:
           print('OK: mpi4py flavor matches', impl)
           "
       - name: MPI test with pytest
+        env:
+          HYDRA_IFACE: lo
+          UCX_NET_DEVICES: lo
         run: |
           pytest test/test_mpi.py
