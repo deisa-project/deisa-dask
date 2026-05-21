@@ -132,10 +132,14 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
             print(f"hello from cb. iteration={window[-1].t}", flush=True)
             darr = window[-1]
             assert isinstance(darr, DeisaArray)
-            assert darr.dask.sum().compute() == np.prod(
+            assert darr.sum().compute() == np.prod(
                 global_size), f"temperature sum should be the product of {global_size}"
 
-        deisa.register_callback(cb, "temperature")
+        def exception_handler(exception: BaseException):
+            print(f"exception_handler: exception={exception}", flush=True)
+            pytest.fail("exception thrown in callback") # TODO: this should fail the test
+
+        deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
         return 0
 
