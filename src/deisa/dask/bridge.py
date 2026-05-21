@@ -111,12 +111,15 @@ class Bridge(IBridge):
 
     def close(self, timestep: int) -> None:
         logger.info(f"[{self.id}] Bridge close()")
-        if not self._has_close_been_called:
-            self._has_close_been_called = True
-            ids = self.comm.gather(self.id, root=0)  # TODO: replace with barrier
-            if ids:
-                assert self.handshake
-                self.handshake.set_bridges_done(timestep=timestep)
+        try:
+            if not self._has_close_been_called:
+                self._has_close_been_called = True
+                ids = self.comm.gather(self.id, root=0)  # TODO: replace with barrier
+                if ids:
+                    assert self.handshake
+                    self.handshake.set_bridges_done(timestep=timestep)
+        except Exception as e:
+            logger.error(f"[{self.id}] Cloud not cleanly close bridge. exception={e}")
 
     def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True, *args, **kwargs):
         """
