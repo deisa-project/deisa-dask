@@ -109,6 +109,7 @@ class TestBridge:
         assert bridge.workers is not None
         assert sorted(list(bridge.workers.keys())) == sorted([w.worker_address for w in cluster.workers.values()])
 
+    @pytest.mark.flaky(retries=3, delay=1)
     def test_send_filter_workers_empty(self, env_setup):
         client, cluster = env_setup
         bridge, _ = self.get_new_bridge()

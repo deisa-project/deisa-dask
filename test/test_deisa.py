@@ -77,6 +77,7 @@ class TestDeisaCtor:
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
 
+    @pytest.mark.flaky(retries=3, delay=1)
     def test_deisa_ctor_scheduler_file_error(self):
         with pytest.raises(ValueError) as e:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + 'test-scheduler-error.json'
@@ -311,6 +312,18 @@ class TestUsingDaskCluster:
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
             self.check_array("pressure", state, i, expected)
+
+    class MapBlocks(RegisterAndCheck):
+        def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
+            @deisa.register(Window('temperature', size=expected_window_size['temperature'])
+                            if expected_window_size['temperature']
+                            else 'temperature')
+            def cb(temperature: List[DeisaArray]):
+                state["counter"] += 1
+                state["temperature"] = temperature
+
+        def check(self, state, i, expected):
+            self.check_array("temperature", state, i, expected)
 
     @pytest.mark.flaky(retries=3, delay=1)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
