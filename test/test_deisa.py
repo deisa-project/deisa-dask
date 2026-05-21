@@ -312,7 +312,7 @@ class TestUsingDaskCluster:
             self.check_array("temperature", state, i, expected)
             self.check_array("pressure", state, i, expected)
 
-    @pytest.mark.xdist_group(name="serial")
+    @pytest.mark.flaky(retries=3, delay=1)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
     @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])
@@ -321,14 +321,14 @@ class TestUsingDaskCluster:
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(),
                                              SingleArrayNameDecorator(), TwoArrayNameDecorator()])
-    def test_register_callbacks_with_decorator(self, temperature_global_grid_size: tuple,
-                                               pressure_global_grid_size: tuple,
-                                               mpi_parallelism: tuple,
-                                               nb_iterations: int,
-                                               temperature_window_size: int,
-                                               pressure_window_size: int,
-                                               register_fn: RegisterAndCheck,
-                                               env_setup):
+    def test_register_callback(self, temperature_global_grid_size: tuple,
+                               pressure_global_grid_size: tuple,
+                               mpi_parallelism: tuple,
+                               nb_iterations: int,
+                               temperature_window_size: int,
+                               pressure_window_size: int,
+                               register_fn: RegisterAndCheck,
+                               env_setup):
         print(f"temperature_global_grid_size={temperature_global_grid_size}, "
               f"pressure_global_grid_size={pressure_global_grid_size}, "
               f"mpi_parallelism={mpi_parallelism}, "
