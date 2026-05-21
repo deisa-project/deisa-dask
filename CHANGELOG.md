@@ -55,3 +55,7 @@ Types of changes:
 
 - Deisa.close() is no longer needed due to changes with handshake
 - Deisa.delete() is no longer needed
+
+### Deprecated
+
+- Deisa.unregister_callback will be removed in version 1.0.0
