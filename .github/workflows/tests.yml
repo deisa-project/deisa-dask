@@ -45,6 +45,13 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Set MPI compiler
+        run: |
+          if [ "${{ matrix.mpi-impl }}" = "openmpi" ]; then
+            echo "MPICC=mpicc" >> $GITHUB_ENV
+          else
+            echo "MPICC=mpicc.mpich" >> $GITHUB_ENV
+          fi
       - name: Install MPI
         run: |
           sudo apt-get update
@@ -53,6 +60,12 @@ jobs:
           else
             sudo apt-get install -y mpich libmpich-dev
           fi
+      - name: Check MPI version
+        run: |
+          mpirun --version || true
+          mpiexec --version || true
+          which mpirun
+          which mpiexec
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
