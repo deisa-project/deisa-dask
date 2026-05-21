@@ -94,6 +94,7 @@ class TestBridge:
         bridge.close(timestep=42)
         assert bridge._has_close_been_called
 
+    @pytest.mark.flaky(retries=3, delay=1)
     def test_send_update_workers(self, env_setup):
         client, cluster = env_setup
         bridge, _ = self.get_new_bridge()

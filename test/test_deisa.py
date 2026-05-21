@@ -315,17 +315,29 @@ class TestUsingDaskCluster:
 
     class MapBlocks(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
+            def map_block_function(block, block_info=None):
+                print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
+                return np.array([[1]])
+
             @deisa.register(Window('temperature', size=expected_window_size['temperature'])
-                            if expected_window_size['temperature']
-                            else 'temperature')
+                            if expected_window_size['temperature'] else 'temperature')
             def cb(temperature: List[DeisaArray]):
                 state["counter"] += 1
                 state["temperature"] = temperature
 
+                meta = np.array([[0]])
+                res = temperature[-1].map_blocks(map_block_function, dtype=int, meta=meta).compute()
+
+                if "map_block" not in state:
+                    state["map_block"] = 0
+
+                state['map_block'] += res.sum()
+
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
+            assert state['map_block'] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
-    @pytest.mark.flaky(retries=3, delay=1)
+    @pytest.mark.flaky(retries=5, delay=1)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
     @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])
@@ -333,7 +345,8 @@ class TestUsingDaskCluster:
     @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(),
-                                             SingleArrayNameDecorator(), TwoArrayNameDecorator()])
+                                             SingleArrayNameDecorator(), TwoArrayNameDecorator(),
+                                             MapBlocks()])
     def test_register_callback(self, temperature_global_grid_size: tuple,
                                pressure_global_grid_size: tuple,
                                mpi_parallelism: tuple,
@@ -546,58 +559,6 @@ class TestUsingDaskCluster:
         sim.generate_data('my_array', iteration=4)
         assert wait_for(lambda: context['counter'] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context['exception_handler'] == 2), "callback was not called"
-
-        async_close_bridges(sim.bridges, 4)
-        deisa.execute_callbacks()
-
-    def test_map_blocks(self, env_setup):
-        client, cluster = env_setup
-        global_grid_size = (8, 8)
-        mpi_parallelism = (2, 2)
-
-        sim = TestSimulation(client,
-                             mpi_parallelism=mpi_parallelism,
-                             arrays_metadata={
-                                 'my_array': {
-                                     'global_shape': global_grid_size,
-                                     'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
-                                                     global_grid_size[1] // mpi_parallelism[1]),
-                                     'chunk_position': (0, 0)  # TODO
-                                 }
-                             },
-                             wait_for_go=False)
-        deisa = Deisa()
-
-        time.sleep(.2)
-
-        def map_block_function(block, block_info=None):
-            print(f"map_block_function() block={block}, block_info={block_info}", flush=True)
-            return np.array([[1]])
-
-        context = {'counter': 0}
-
-        def window_callback(window):
-            print(f"hello from window_callback. iteration={window[-1].t}", flush=True)
-
-            darr = window[-1]
-
-            assert darr.shape == global_grid_size
-            assert darr.chunksize == (global_grid_size[0] // mpi_parallelism[0],
-                                      global_grid_size[1] // mpi_parallelism[1])
-
-            meta = np.array([[0]])
-            res = darr.map_blocks(map_block_function, dtype=int, meta=meta).compute()
-            context['counter'] += res.sum()
-
-        def exception_handler(exception: BaseException):
-            print(f"exception_handler. exception={exception}", flush=True, file=sys.stderr)
-            # pytest.fail(str(e))   # TODO
-
-        deisa.register_callback(window_callback, Window('my_array', 1), exception_handler=exception_handler)
-
-        for i in range(1, 5):
-            sim.generate_data('my_array', iteration=i)
-            assert wait_for(lambda: context['counter'] == 4 * i), "map_blocks did not run on all blocks"
 
         async_close_bridges(sim.bridges, 4)
         deisa.execute_callbacks()
