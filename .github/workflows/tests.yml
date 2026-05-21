@@ -55,6 +55,22 @@ jobs:
           python -m pip install dask==${{ matrix.dask-version }} distributed==${{ matrix.dask-version }}
           python -m pip install .
           python -m pip install .[test,mpi]
+      - name: Verify mpi4py links to correct MPI
+        run: |
+          python -c "
+          from mpi4py import MPI
+          version = MPI.Get_library_version()
+          print('mpi4py linked to:', version)
+          impl = '${{ matrix.mpi-impl }}'
+          version_lower = version.lower()
+          if impl == 'openmpi':
+              assert 'open mpi' in version_lower or 'openmpi' in version_lower, \
+                  f'Expected OpenMPI but got: {version}'
+          elif impl == 'mpich':
+              assert 'mpich' in version_lower or 'hydra' in version_lower, \
+                  f'Expected MPICH but got: {version}'
+          print('OK: mpi4py flavor matches', impl)
+          "
       - name: MPI test with pytest
         run: |
           pytest test/test_mpi.py
