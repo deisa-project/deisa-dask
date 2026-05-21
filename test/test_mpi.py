@@ -134,7 +134,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
             assert darr.dask.sum().compute() == np.prod(
                 global_size), f"temperature sum should be the product of {global_size}"
 
-        deisa.register_sliding_window_callback(cb, array_name="temperature")
+        deisa.register_callback(cb, "temperature")
         deisa.execute_callbacks()
         return 0
 
