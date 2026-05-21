@@ -28,6 +28,7 @@
 # =============================================================================
 import asyncio
 import logging
+import sys
 from typing import Tuple, List
 
 import numpy as np
@@ -55,7 +56,7 @@ class TestSimulation:
             for rank in range(nb_mpi_ranks)]
 
     def __del__(self):
-        async_close_bridges(self.bridges)
+        async_close_bridges(self.bridges, timestep=sys.maxsize)
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid

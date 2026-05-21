@@ -31,6 +31,7 @@ Types of changes:
 - Dependency on mpi4py
 - `Deisa.execute_callbacks`: unblock bridges, execute callbacks and wait for bridges to close
 - `utils.build_deisa_array()` to build a DeisaArray from a Dask Array
+- Deisa decorator to register callbacks
 
 ### Changed
 

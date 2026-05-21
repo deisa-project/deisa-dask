@@ -36,7 +36,7 @@ from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set,
 import dask
 import dask.array as da
 import numpy as np
-from deisa.core import CallbackArgs
+from deisa.core import CallbackArgs, Window
 from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
@@ -91,96 +91,71 @@ class Deisa(IDeisa):
     def __default_exception_handler(exception: BaseException):
         logger.error(f"Exception thrown for callback id: {exception}")
 
-    def register(self,
-                *callback_args,
-                exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
-                when: Literal['AND', 'OR'] = 'AND',) -> Callable:
+    def register(self, *callback_args: CallbackArgs,
+                 exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
+                 when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
         Decorator that registers the decorated function as a sliding-window callback.
 
-        Supported forms:
-            @deisa.register("my_array")                           # default window size
-            @deisa.register("my_array", "arr2")                   # two arrays, default window size
-            @deisa.register("my_array", 1)                        # single array, explicit window size
-            @deisa.register(("my_array", 1), ("arr2", 2))         # explicit per-array window sizes
-            @deisa.register(("my_array", 1), ("arr2", 2), "arr3") # mixed
+        Supports for callback_args:
+        Default window size is 1.
+        @deisa.register("arr1")                             # default window size
+        @deisa.register("arr1", "arr2")                     # two arrays, default window size
+        @deisa.register(Window("arr1"))                     # default window size
+        @deisa.register(Window("arr1", 2))                  # window size 2
+        @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
+        @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
         """
-        # Case for only one array with its positional 'window_size'
-        # but not a tuple : ("my_array", 1) and not (("my_array", 1))
-        if len(callback_args) == 2 and isinstance(callback_args[0], str) and isinstance(callback_args[1], int):
-            expanded_callback_args = ((callback_args[0], callback_args[1]),)
-        else:
-            expanded_callback_args = tuple(
-                (callback_arg, DEFAULT_SLIDING_WINDOW_SIZE) if isinstance(callback_arg, str) else callback_arg
-                for callback_arg in callback_args
-            )
 
         def decorator(callback: IDeisa.Callback) -> IDeisa.Callback:
-            self.register_callback(
-                callback, *expanded_callback_args,
-                exception_handler=exception_handler,
-                when=when)
-            return callback
+            return self.register_callback(callback, *callback_args,
+                                          exception_handler=exception_handler,
+                                          when=when)
+
         return decorator
 
-    def register_callback(self,
-                          callback: IDeisa.Callback,
-                          *callback_args: Callback_args,
+    def register_callback(self, callback: IDeisa.Callback, *callback_args: CallbackArgs,
                           exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
-                          when: Literal['AND', 'OR'] = 'AND') -> Callback_id:
+                          when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
-        Register a sliding-window callback for one or more arrays.
+        Decorator that registers the decorated function as a sliding-window callback.
 
-        Supports:
-          - "array"
-          - ("array", window_size)
-          - mixed forms
+        Supports for callback_args:
+        Default window size is 1.
+        @deisa.register("arr1")                             # default window size
+        @deisa.register("arr1", "arr2")                     # two arrays, default window size
+        @deisa.register(Window("arr1"))                     # default window size
+        @deisa.register(Window("arr1", 2))                  # window size 2
+        @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
+        @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
         """
-        print(f"register_callback entered, callback_args={callback_args}", flush=True)
+        logger.debug(f"register_callback: callback={callback}, callback_args={callback_args}")
         if not callback_args:
-            raise TypeError(
-                "register_callback requires at least one array name "
-                "or (name, window_size) tuple"
-            )
+            raise TypeError("register_callback requires at least one array name or a list of Window(name, window_size)")
 
-        parsed: List[Tuple[str, int]] = []
+        parsed: List[Window] = []
 
         for arg in callback_args:
-            print(f"processing callback_arg={arg}", flush=True)
             if isinstance(arg, str):
-                parsed.append((arg, DEFAULT_SLIDING_WINDOW_SIZE))
-            elif isinstance(arg, tuple):
-                if len(arg) == 1:
-                    parsed.append((arg[0], DEFAULT_SLIDING_WINDOW_SIZE))
-                elif len(arg) == 2:
-                    name, ws = arg
-                    if not isinstance(name, str) or not isinstance(ws, int):
-                        raise TypeError("tuple must be (str, int)")
-                    parsed.append((name, ws))
-                else:
-                    raise TypeError("tuple must be (str,) or (str, int)")
+                parsed.append(Window(arg, size=DEFAULT_SLIDING_WINDOW_SIZE))
+            elif isinstance(arg, Window):
+                parsed.append(arg)
             else:
                 raise TypeError("callback_args must be str or tuple")
 
-        print(f"parsed={parsed}, calling _register_callback_impl", flush=True)
-        return self._register_callback_impl(
+        callback_id = self._register_callback_impl(
             callback,
             parsed,
             exception_handler=exception_handler,
             when=when)
+        callback.callback_id = callback_id
+        return callback
 
     def _register_callback_impl(self,
-                                                callback: IDeisa.Callback,
-                                                parsed: List[Tuple[str, int]],
-                                                *,
-                                                exception_handler: IDeisa.ExceptionHandler,
-                                                when: Literal['AND', 'OR']) -> Callback_id:
-        """
-        Supports:
-          - (callback, "array_name", window_size=K)
-          - (callback, ("name1", k1), ("name2", k2), ..., when='AND')
-          - mixed: (callback, "a", ("b", 3)) -> "a" gets default window_size
-        """
+                                callback: IDeisa.Callback,
+                                parsed: List[Window],
+                                exception_handler: IDeisa.ExceptionHandler,
+                                when: Literal['AND', 'OR']) -> Callback_id:
 
         if when not in ('AND', 'OR'):
             raise ValueError("when must be 'AND' or 'OR'")
@@ -225,6 +200,8 @@ class Deisa(IDeisa):
         return callback_id
 
     def unregister_callback(self, callback_id: Callback_id) -> None:
+        # also accept a decorated callback function, which stores its id in .callback_id
+        callback_id = getattr(callback_id, 'callback_id', callback_id)
         cb_data = self._callbacks.pop(callback_id, None)
         if cb_data is None:
             return
@@ -349,7 +326,7 @@ class Deisa(IDeisa):
         try:
             handler = cb_data["exception_handler"]
             if handler:
-                handler(callback_id, ex)
+                handler(ex)
         except BaseException:
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
             self.unregister_callback(callback_id)
