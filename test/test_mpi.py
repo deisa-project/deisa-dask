@@ -113,7 +113,7 @@ def build_mpi_cmd(n: int, extra_args: list) -> list:
     launcher = get_mpi_launcher()
     cmd = [launcher, "-n", str(n)]
     if mpi_flavor() == "openmpi":
-        cmd.append("--oversubscribe")          # OpenMPI only
+        cmd.append("--oversubscribe")
     cmd += [sys.executable, "-u", __file__] + extra_args
     return cmd
 
