@@ -97,6 +97,10 @@ class TestUsingDaskCluster:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         # teardown
+
+        time.sleep(2)   # TODO: find a better way to wait for all tasks to be finished
+
+        client.close()
         cluster.close()
 
     @pytest.fixture(scope="class")
@@ -412,6 +416,8 @@ class TestUsingDaskCluster:
                 "pressure": {"global_da": global_pressure_da,
                              "window_size": pressure_window_size}
             })
+
+        del deisa
 
     def test_callback_throws(self, env_setup):
         client, cluster = env_setup

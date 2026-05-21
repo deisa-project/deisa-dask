@@ -118,6 +118,7 @@ class Bridge(IBridge):
                 if ids:
                     assert self.handshake
                     self.handshake.set_bridges_done(timestep=timestep)
+                    self.client.close()
         except Exception as e:
             logger.error(f"[{self.id}] Cloud not cleanly close bridge. exception={e}")
 
