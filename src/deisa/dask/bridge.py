@@ -197,7 +197,7 @@ class Bridge(IBridge):
                 keys.append(d['future-info']['future'])
 
             # only update the scheduler with who has what and register the future once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes, client=self.client.id)
+            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
 
             # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler.
             # TODO: id=0 can use a queue
