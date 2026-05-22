@@ -61,10 +61,12 @@ jobs:
           python -m pip install .[test,mpi]
       - name: Check MPI
         run: |
-          which mpicc
-          which mpiexec
           mpicc --version
-          mpiexec -n 2 hostname
+          mpiexec --version
+          python - <<'PY'
+          from mpi4py import MPI
+          print(MPI.Get_library_version())
+          PY
       - name: MPI test with pytest
         env:
           MPI_IMPL: ${{ matrix.mpi-impl }}
