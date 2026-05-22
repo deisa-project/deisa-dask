@@ -29,7 +29,6 @@
 import abc
 import logging
 import os.path
-import sys
 import time
 from collections import deque
 from typing import List, Dict, Any
@@ -51,7 +50,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.timeout(10)
-@pytest.mark.xdist_group(name="serial")
 class TestDeisaCtor:
     @pytest.fixture(scope="class")
     def env_setup_tcp_cluster(self):
@@ -97,9 +95,6 @@ class TestUsingDaskCluster:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         # teardown
-
-        time.sleep(5)   # TODO: find a better way to wait for all tasks to be finished
-
         client.close()
         cluster.close()
 
@@ -264,8 +259,8 @@ class TestUsingDaskCluster:
     class SingleArrayName(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             def cb(temperature: List[DeisaArray]):
-                state["counter"] += 1
                 state["temperature"] = temperature
+                state["counter"] += 1
 
             deisa.register_callback(cb,
                                     Window('temperature', size=expected_window_size['temperature'])
@@ -277,9 +272,9 @@ class TestUsingDaskCluster:
     class TwoArrayName(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             def cb(temperature: List[DeisaArray], pressure: List[DeisaArray]):
-                state["counter"] += 1
                 state["temperature"] = temperature
                 state["pressure"] = pressure
+                state["counter"] += 1
 
             deisa.register_callback(cb,
                                     Window('temperature', size=expected_window_size['temperature'])
@@ -297,8 +292,8 @@ class TestUsingDaskCluster:
                             if expected_window_size['temperature']
                             else 'temperature')
             def cb(temperature: List[DeisaArray]):
-                state["counter"] += 1
                 state["temperature"] = temperature
+                state["counter"] += 1
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
@@ -312,9 +307,9 @@ class TestUsingDaskCluster:
                             if expected_window_size['pressure']
                             else "pressure")
             def cb(temperature: List[DeisaArray], pressure: List[DeisaArray]):
-                state["counter"] += 1
                 state["temperature"] = temperature
                 state["pressure"] = pressure
+                state["counter"] += 1
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
@@ -329,9 +324,6 @@ class TestUsingDaskCluster:
             @deisa.register(Window('temperature', size=expected_window_size['temperature'])
                             if expected_window_size['temperature'] else 'temperature')
             def cb(temperature: List[DeisaArray]):
-                state["counter"] += 1
-                state["temperature"] = temperature
-
                 meta = np.array([[0]])
                 res = temperature[-1].map_blocks(map_block_function, dtype=int, meta=meta).compute()
 
@@ -339,12 +331,13 @@ class TestUsingDaskCluster:
                     state["map_block"] = 0
 
                 state['map_block'] += res.sum()
+                state["temperature"] = temperature
+                state["counter"] += 1
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
             assert state['map_block'] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
-    @pytest.mark.flaky(retries=5, delay=1)
     @pytest.mark.timeout(30)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
