@@ -86,6 +86,7 @@ class Deisa(IDeisa):
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
         self._received_futures: Set[str] = set()
+        self._tasks = set()
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
@@ -302,14 +303,20 @@ class Deisa(IDeisa):
         def _call_callback():
             async def _run():
                 try:
-                    await asyncio.to_thread(
-                        cb_data["callback"],
-                        *windows
-                    )
+                    await asyncio.to_thread(cb_data["callback"], *windows)
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
 
-            asyncio.create_task(_run())
+            def _free_window(_):
+                # The next call to append will remove the 1st element. Might as well remove it now to free memory earlier.
+                dq = d["window"]
+                if len(dq) == dq.maxlen:
+                    dq.popleft()
+
+            task = asyncio.create_task(_run())
+            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(_free_window)
+            self._tasks.add(task)
 
         if cb_data["when"] == "OR":
             _call_callback()

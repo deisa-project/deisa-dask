@@ -29,7 +29,6 @@
 import abc
 import logging
 import os.path
-import sys
 import time
 from collections import deque
 from typing import List, Dict, Any
@@ -51,7 +50,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 
 @pytest.mark.timeout(10)
-@pytest.mark.xdist_group(name="serial")
 class TestDeisaCtor:
     @pytest.fixture(scope="class")
     def env_setup_tcp_cluster(self):
@@ -97,9 +95,6 @@ class TestUsingDaskCluster:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         # teardown
-
-        time.sleep(5)   # TODO: find a better way to wait for all tasks to be finished
-
         client.close()
         cluster.close()
 
@@ -344,7 +339,6 @@ class TestUsingDaskCluster:
             self.check_array("temperature", state, i, expected)
             assert state['map_block'] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
-    @pytest.mark.flaky(retries=5, delay=1)
     @pytest.mark.timeout(30)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])

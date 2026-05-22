@@ -8,8 +8,8 @@ from multiprocessing.pool import ThreadPool
 from typing import Tuple
 
 import pytest
-
 from deisa.core.types import DeisaArray
+
 from utils import wait_for
 
 logging.basicConfig(level=logging.DEBUG)
@@ -137,7 +137,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
         def exception_handler(exception: BaseException):
             print(f"exception_handler: exception={exception}", flush=True)
-            pytest.fail("exception thrown in callback") # TODO: this should fail the test
+            pytest.fail("exception thrown in callback")  # TODO: this should fail the test
 
         deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
