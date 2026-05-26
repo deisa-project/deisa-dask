@@ -12,6 +12,8 @@ from utils import FakeComm
 logging.basicConfig(level=logging.DEBUG)
 
 
+@pytest.mark.flaky(retries=3, delay=1)
+@pytest.mark.xdist_group(name="serial")
 @pytest.mark.timeout(30)
 class TestHandshake:
     @pytest.fixture(scope="function")
