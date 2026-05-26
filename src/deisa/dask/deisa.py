@@ -68,7 +68,7 @@ class Deisa(IDeisa):
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
         super().__init__(feedback_queue_size, *args, **kwargs)
-        self.client: Client = get_client(timeout=kwargs.get("timeout", 10))
+        self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa")
         self.feedback_queue_size = feedback_queue_size
 
         # blocking until all bridges are ready

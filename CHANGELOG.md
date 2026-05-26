@@ -46,6 +46,7 @@ Types of changes:
 - Feedback is sent from Deisa to the Bridges
 - Single Dask Client, no matter how many Bridges. Bridge id=0 handles comm with scheduler
 - Bridge.close() now takes a timestep
+- `get_client` and `get_connection_info` now pass args and kwargs to the Client ctor
 
 ### Fixed
 

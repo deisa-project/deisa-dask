@@ -89,7 +89,7 @@ class Bridge(IBridge):
 
         if self.id == 0:
             # only id 0 has a real dask client
-            self.client = get_client(timeout=kwargs.get("timeout", 10))
+            self.client = get_client(timeout=kwargs.get("timeout", 10), name="bridge")
             assert self.client is not None, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]

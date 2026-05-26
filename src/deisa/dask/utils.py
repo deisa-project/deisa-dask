@@ -28,7 +28,6 @@
 # =============================================================================
 import logging
 import os
-import sys
 
 import dask.array as da
 from deisa.core import ICommunicator, DeisaArray
@@ -37,10 +36,10 @@ from distributed import Client, Lock, Variable
 logger = logging.getLogger(__name__)
 
 
-def get_client(timeout=10):
+def get_client(*args, **kwargs):
     addr = os.getenv("DEISA_DASK_SCHEDULER_ADDRESS", "tcp://127.0.0.1:8787")
     logger.info(f"get_client: DEISA_DASK_SCHEDULER_ADDRESS={addr}")
-    return get_connection_info(addr, timeout)
+    return get_connection_info(addr, *args, **kwargs)
 
 
 def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
@@ -66,17 +65,17 @@ def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
     return mpi_comm.Create_cart(dims)
 
 
-def get_connection_info(dask_scheduler_address: str | Client, timeout: float = 10) -> Client:
+def get_connection_info(dask_scheduler_address: str | Client, *args, **kwargs) -> Client:
     logger.info(f"get_connection_info: {dask_scheduler_address}")
     if isinstance(dask_scheduler_address, Client):
         client = dask_scheduler_address
     elif isinstance(dask_scheduler_address, str):
         try:
-            client = Client(address=dask_scheduler_address, timeout=timeout)
+            client = Client(address=dask_scheduler_address, *args, **kwargs)
         except ValueError:
             # try scheduler_file
             if os.path.isfile(dask_scheduler_address):
-                client = Client(scheduler_file=dask_scheduler_address, timeout=timeout)
+                client = Client(scheduler_file=dask_scheduler_address, *args, **kwargs)
             else:
                 raise ValueError(
                     "dask_scheduler_address must be a string containing the address of the scheduler, "
