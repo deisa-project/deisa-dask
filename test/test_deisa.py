@@ -90,7 +90,7 @@ class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
         self.state: Dict[str, Any] = {"counter": 0}
-        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False,
+        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True,
                                dashboard_address=":0", worker_dashboard_address=":0")
         cluster.wait_for_workers(2, timeout=10)
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
