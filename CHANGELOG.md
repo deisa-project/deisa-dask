@@ -16,6 +16,8 @@ Types of changes:
 
 ## [Unreleased]
 
+## [0.4.0]
+
 ### Added
 
 - logger
