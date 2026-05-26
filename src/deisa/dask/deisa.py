@@ -318,11 +318,6 @@ class Deisa(IDeisa):
             task.add_done_callback(_free_window)
             self._tasks.add(task)
 
-            # The next call to append will remove the 1st element. Might as well remove it now to free memory earlier.
-            dq = d["window"]
-            if len(dq) == dq.maxlen:
-                dq.popleft()
-
         if cb_data["when"] == "OR":
             _call_callback()
             d["changed"] = False

@@ -83,15 +83,11 @@ def has_mpi_launcher() -> bool:
 def get_mpi_launcher() -> str | None:
     impl = os.environ.get("MPI_IMPL", "unknown")
     candidates = {
-        "openmpi": ["mpirun", "mpiexec"],
-        "mpich":   ["mpirun.mpich", "mpiexec.mpich"],
-        "unknown": ["mpirun", "mpiexec"],
+        "openmpi": "mpirun",
+        "mpich":   "mpiexec.mpich",
+        "unknown": "mpirun",
     }
-    for name in candidates[impl]:
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
+    return shutil.which(candidates[impl])
 
 
 def build_mpi_cmd(n: int, extra_args: list) -> list:
