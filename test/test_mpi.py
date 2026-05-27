@@ -84,7 +84,7 @@ def get_mpi_launcher() -> str | None:
     impl = os.environ.get("MPI_IMPL", "unknown")
     candidates = {
         "openmpi": "mpirun",
-        "mpich":   "mpiexec.mpich",
+        "mpich":   "mpiexec",
         "unknown": "mpirun",
     }
     return shutil.which(candidates[impl])

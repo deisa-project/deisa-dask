@@ -33,6 +33,7 @@ jobs:
 
   mpi-tests:
     runs-on: ubuntu-latest
+    # Set safe ucx layers for online CI (fix for uncommon CI nodes)
     env:
       UCX_TLS: tcp,self,shm
     strategy:
