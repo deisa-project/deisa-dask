@@ -33,6 +33,8 @@ jobs:
 
   mpi-tests:
     runs-on: ubuntu-latest
+    env:
+      UCX_TLS: tcp,self,shm
     strategy:
       fail-fast: false
       matrix:
