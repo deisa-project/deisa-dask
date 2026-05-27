@@ -53,8 +53,6 @@ logger = logging.getLogger(__name__)
 _scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
 _update_data_is_async = asyncio.iscoroutinefunction(Worker.update_data)
 
-
-
 class Bridge(IBridge):
     def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
         """
@@ -94,11 +92,15 @@ class Bridge(IBridge):
         self.client = None
 
         if self.id == 0:
-            # only id 0 has a real dask client
             self.client = get_client(timeout=kwargs.get("timeout", 10), name="bridge")
-            assert self.client is not None, "client cannot be None for Bridge id 0."
-            # get all workers from scheduler
+            assert self.client is not None
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
+        else:
+            # only id 0 has a real dask client
+            try:
+                self.client = get_client(timeout=kwargs.get("timeout", 10), name=f"bridge-{self.id}")
+            except Exception:
+                self.client = None  # pure in-process mode, asyncio.run path handles this
 
         # retrieve workers from rank 0 and bcast
         logger.debug(f"[{self.id}] Bridge __init__(): pre-bcast")

@@ -250,7 +250,7 @@ class TestBridge:
         assert len(stored_ids) > 0, \
             "No ndarray key found in any worker's data store"
         assert original_id in stored_ids, \
-            "In-process scatter made a copy — no worker holds the original object"
+            "In-process scatter made a copy, no worker holds the original object"
 
     def test_send_uses_remote_path(self, env_setup_remote, caplog):
         client, cluster = env_setup_remote
