@@ -76,8 +76,29 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
-def has_mpirun():
-    return shutil.which("mpirun") is not None
+def has_mpi_launcher() -> bool:
+    return shutil.which("mpirun") is not None or shutil.which("mpiexec") is not None
+
+
+def get_mpi_launcher() -> str | None:
+    impl = os.environ.get("MPI_IMPL", "unknown")
+    candidates = {
+        "openmpi": "mpirun",
+        "mpich":   "mpiexec.mpich",
+        "unknown": "mpirun",
+    }
+    return shutil.which(candidates[impl])
+
+
+def build_mpi_cmd(n: int, extra_args: list) -> list:
+    launcher = get_mpi_launcher()
+    if launcher is None:
+        raise RuntimeError("No MPI launcher found")
+    cmd = [launcher, "-n", str(n)]
+    if os.environ.get("MPI_IMPL") == "openmpi":
+        cmd.append("--oversubscribe")
+    cmd += [sys.executable, "-u", __file__] + extra_args
+    return cmd
 
 
 def is_xdist():
@@ -86,10 +107,10 @@ def is_xdist():
 
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
-@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+@pytest.mark.skipif(not has_mpi_launcher(), reason="mpirun/mpiexec not available")
 @pytest.mark.parametrize('i', [1, 2, 4, 8])
 def test_mpi_gather(i):
-    cmd = ["mpirun", "-n", str(i), "--oversubscribe", sys.executable, "-u", __file__, "--mpi-gather"]
+    cmd = build_mpi_cmd(i, ["--mpi-gather"])
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     print("STDOUT:\n", result.stdout, flush=True)
@@ -99,7 +120,7 @@ def test_mpi_gather(i):
 
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
-@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+@pytest.mark.skipif(not has_mpi_launcher(), reason="mpirun/mpiexec not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
 @pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world'])
@@ -153,13 +174,13 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     parallelism = (parallelism,) * len(global_size)
 
-    cmd = ["mpirun", "-n", str(np.prod(parallelism)), "--oversubscribe", sys.executable, "-u", __file__,
-           "--mpi-bridge",
+    cmd = build_mpi_cmd(
+          np.prod(parallelism),
+          ["--mpi-bridge",
            "--scheduler-address", cluster.scheduler.address,
            "--global-size", str(global_size),
            "--parallelism", str(parallelism),
-           "--comm", comm
-           ]
+           "--comm", comm])
     print(f"cmd={cmd}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -167,10 +188,11 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     print("STDOUT:\n", result.stdout, flush=True)
     print("STDERR:\n", result.stderr, flush=True)
 
-    assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
-    assert async_result.get(timeout=10) == 0
-
-    cluster.close()
+    try:
+        assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        assert async_result.get(timeout=10) == 0
+    finally:
+        cluster.close()
 
 
 # ENTRY POINT SWITCH
