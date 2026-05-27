@@ -39,14 +39,20 @@ from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue
 from distributed.protocol import to_serialize
-from distributed.utils_comm import scatter_to_workers
+from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
+from distributed.worker import Worker, _global_workers
 from tlz import valmap
+import inspect
 
 from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
+
+_scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
+_update_data_is_async = asyncio.iscoroutinefunction(Worker.update_data)
+
 
 
 class Bridge(IBridge):
@@ -167,8 +173,9 @@ class Bridge(IBridge):
             for w in workers:
                 if not isinstance(w, str):
                     raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
-        else:
-            assert isinstance(workers, dict), f"workers must be a dict, got {type(workers)}"
+
+        # Ensure "workers" is a list before scatter
+        if isinstance(workers, dict):
             workers = list(workers.keys())
 
         # Send data to worker
@@ -298,9 +305,65 @@ class Bridge(IBridge):
 
         assert isinstance(data, dict)
 
-        data2 = valmap(to_serialize, data)
+        # Split workers between in-process and remote
+        local_worker_map: dict[str, Any] = {
+            w.address: w
+            for w in _global_workers
+        }
+        in_process = [w for w in workers if w in local_worker_map]
+        remote     = [w for w in workers if w not in local_worker_map]
 
-        _, who_has, nbytes = await scatter_to_workers(workers, data2)
+        logger.debug(
+            f"[{self.id}] __scatter(): "
+            f"in_process={in_process}, remote={remote}"
+        )
+
+        who_has: dict = {}
+        nbytes:  dict = {}
+
+        # Unified round-robin across all workers, per-key routing
+        remote_data: dict = {}
+        remote_targets: dict[str, str] = {}  # key which target worker addr
+
+        for i, (key, val) in enumerate(data.items()):
+            target_addr = workers[i % len(workers)]
+
+            if target_addr in local_worker_map:
+                # In-process path, direct write with no copy
+                worker = local_worker_map[target_addr]
+                if _update_data_is_async:
+                    await worker.update_data({key: val})
+                else:
+                    worker.update_data({key: val})
+
+                stored = worker.data[key]
+                assert id(stored) == id(val), (
+                    f"In-process scatter copied data "
+                    f"id(original)={id(val)}, id(stored)={id(stored)}"
+                )
+                logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
+
+                who_has[key] = [target_addr]
+                nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+            else:
+                # Remote path, existing scatter
+                remote_data[key] = val
+                remote_targets[key] = target_addr
+
+        # Batch scatter all remote keys
+        if remote_data:
+            data2 = valmap(to_serialize, remote_data)
+            if _scatter_needs_rpc:
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    [remote_targets[k] for k in remote_data], data2, self.client.rpc)
+            else:
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    [remote_targets[k] for k in remote_data], data2)
+
+            for k, addrs in remote_who_has.items():
+                who_has[k] = list(addrs)
+            for k, v in remote_nbytes.items():
+                nbytes[k] = v
 
         out = {
             k: {
