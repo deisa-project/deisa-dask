@@ -153,14 +153,6 @@ class TestBridge:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         cluster.close()
-    # def env_setup_inproc(self):
-    #     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=False, dashboard_address=None)
-    #     client = Client(cluster)
-    #     client.wait_for_workers(2, timeout=10)
-    #     yield client, cluster
-    #     client.close()
-    #     cluster.close()
-
 
     @pytest.fixture
     def env_setup_remote(self):
@@ -171,14 +163,6 @@ class TestBridge:
         client.wait_for_workers(2, timeout=10)
         yield client, cluster
         cluster.close()
-    # def env_setup_remote(self):
-    #     cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True, dashboard_address=None)
-    #     client = Client(cluster)
-    #     client.wait_for_workers(2, timeout=10)
-    #     yield client, cluster
-    #     client.close()
-    #     cluster.close()
-
 
     @pytest.fixture
     def env_setup_mixed(self):
@@ -203,27 +187,6 @@ class TestBridge:
         client.sync(_stop, inproc_worker)
         client.close()
         cluster.close()
-    # def env_setup_mixed(self):
-    #     # One remote worker (separate process)
-    #     cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True, dashboard_address=None)
-    #     client = Client(cluster)
-    #     client.wait_for_workers(1, timeout=10)
-
-    #     # One in-process worker connecting to the same scheduler
-    #     from distributed import Worker
-    #     async def _start():
-    #         return await Worker(cluster.scheduler.address, nthreads=1)
-    #     async def _stop(w):
-    #         await w.close()
-
-    #     inproc_worker = client.sync(_start)
-    #     client.wait_for_workers(2, timeout=10)
-
-    #     yield client, cluster, inproc_worker
-
-    #     client.sync(_stop, inproc_worker)
-    #     client.close()
-    #     cluster.close()
 
     def test_send_uses_inprocess_path(self, env_setup_inproc, caplog):
         client, cluster = env_setup_inproc
