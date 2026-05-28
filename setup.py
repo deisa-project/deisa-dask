@@ -68,7 +68,7 @@ setup(name='deisa-dask',
 
       install_requires=[
           "deisa-core>=0.5.0",
-          'dask',
+          'dask>=2024.9.0',
           'distributed',
           "toolz",  # version constraint from distributed
       ],

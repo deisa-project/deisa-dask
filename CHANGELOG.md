@@ -16,6 +16,10 @@ Types of changes:
 
 ## [Unreleased]
 
+### Changed
+
+- set minimal dask version to 2024.9.0
+
 ## [0.4.1]
 
 ### Removed
