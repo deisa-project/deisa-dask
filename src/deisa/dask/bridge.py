@@ -199,8 +199,7 @@ class Bridge(IBridge):
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            # 'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
-            'placement': self.id  # TODO
+            'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)

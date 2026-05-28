@@ -30,7 +30,7 @@ import asyncio
 import multiprocessing
 import threading
 import time
-from typing import Optional, Any, Literal, List
+from typing import Optional, Any, Literal, List, Sequence
 
 import dask.array as da
 from deisa.core import ICommunicator
@@ -198,3 +198,61 @@ class FakeComm(ICommunicator):
                 state.condition.notify_all()
             else:
                 state.condition.wait_for(lambda: state.barrier_generation != generation)
+
+
+class FakeCartComm(FakeComm):
+    def __init__(self, state: FakeComm.State, rank: int, dims: Sequence[int], periods: Optional[Sequence[bool]] = None):
+        super().__init__(state, rank)
+
+        self._dims = tuple(dims)
+        self._periods = tuple(periods or [False] * len(dims))
+
+        size = 1
+        for d in self._dims:
+            size *= d
+
+        if size != state.size:
+            raise ValueError(f"Cartesian dimensions {self._dims} do not match communicator size {state.size}")
+
+    @property
+    def dims(self) -> tuple[int, ...]:
+        return self._dims
+
+    @property
+    def periods(self) -> tuple[bool, ...]:
+        return self._periods
+
+    def Get_coords(self, rank: int) -> list[int]:
+        """
+        Compatible with mpi4py MPI.Cartcomm.Get_coords.
+
+        Converts a linear rank into Cartesian coordinates
+        using row-major ordering.
+        """
+        if not (0 <= rank < self._state.size):
+            raise ValueError(f"Invalid rank: {rank}")
+
+        coords = [0] * len(self._dims)
+        r = rank
+        for i in range(len(self._dims) - 1, -1, -1):
+            dim = self._dims[i]
+            coords[i] = r % dim
+            r //= dim
+        return coords
+
+    def Get_cart_rank(self, coords: Sequence[int]) -> int:
+        """
+        Reverse mapping: Cartesian coordinates -> rank.
+        """
+        if len(coords) != len(self._dims):
+            raise ValueError(f"Expected {len(self._dims)} coordinates, got {len(coords)}")
+
+        rank = 0
+        for coord, dim, periodic in zip(coords, self._dims, self._periods):
+            c = coord
+            if periodic:
+                c %= dim
+            elif not (0 <= c < dim):
+                raise ValueError(f"Coordinate {coord} out of bounds for dim {dim}")
+            rank = rank * dim + c
+        return rank

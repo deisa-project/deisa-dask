@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import asyncio
 import logging
 import os
 
@@ -34,7 +35,7 @@ import pytest
 from distributed import Client, LocalCluster
 
 from deisa.dask import Bridge
-from utils import FakeComm
+from utils import FakeComm, FakeCartComm
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -143,3 +144,40 @@ class TestBridge:
             return list(workers.keys())
 
         bridge.send('temperature', np.ones(1), timestep=0, update_workers=True, filter_workers=filter)
+
+    def test_cart_comm(self, env_setup):
+        client, cluster = env_setup
+
+        arrays_metadata = {
+            'temperature': {
+                'global_shape': (8, 8),
+                'chunk_shape': (4, 4),
+                'chunk_position': (0, 0)
+            }}
+        comm_state = FakeComm.State(4)
+
+        bridges = [Bridge(comm=FakeCartComm(comm_state, rank, dims=(2, 2)),
+                          arrays_metadata=arrays_metadata,
+                          wait_for_go=False) for rank in range(4)]
+
+        async def _bridge_send():
+            await asyncio.gather(*[asyncio.to_thread(bridge.send, 'temperature',
+                                                     np.ones(arrays_metadata['temperature']['chunk_shape']),
+                                                     timestep=0)
+                                   for i, bridge in enumerate(bridges)])
+
+        asyncio.run(_bridge_send())
+
+        event = client.get_events('temperature')
+        assert len(event) == 1
+        _, info = event[0]
+        assert info['array_name'] == 'temperature'
+        assert info['iteration'] == 0
+        assert len(info['futures']) == 4
+        for f in info['futures']:
+            assert f['placement'] in [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+        async def _bridge_close():
+            await asyncio.gather(*[asyncio.to_thread(bridge.close, 0) for i, bridge in enumerate(bridges)])
+
+        asyncio.run(_bridge_close())
