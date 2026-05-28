@@ -105,7 +105,7 @@ class TestBridge:
         cluster.scale(2)
         cluster.wait_for_workers(2)
 
-        bridge.send('temperature', np.ones(1), iteration=0, update_workers=True)
+        bridge.send('temperature', np.ones(1), timestep=0, update_workers=True)
 
         assert bridge.workers is not None
         assert sorted(list(bridge.workers.keys())) == sorted([w.worker_address for w in cluster.workers.values()])
@@ -119,7 +119,7 @@ class TestBridge:
             return []
 
         with pytest.raises(TypeError) as e:
-            bridge.send('temperature', np.ones(1), iteration=0, filter_workers=filter)
+            bridge.send('temperature', np.ones(1), timestep=0, filter_workers=filter)
 
     def test_send_filter_workers_without_update_workers_valid(self, env_setup):
         client, cluster = env_setup
@@ -132,7 +132,7 @@ class TestBridge:
                 assert addr in [w.worker_address for w in cluster.workers.values()]
             return list(workers.keys())
 
-        bridge.send('temperature', np.ones(1), iteration=0, update_workers=False, filter_workers=filter)
+        bridge.send('temperature', np.ones(1), timestep=0, update_workers=False, filter_workers=filter)
 
     def test_send_filter_workers_with_update_workers_valid(self, env_setup):
         client, cluster = env_setup
@@ -142,4 +142,4 @@ class TestBridge:
             assert isinstance(workers, dict)
             return list(workers.keys())
 
-        bridge.send('temperature', np.ones(1), iteration=0, update_workers=True, filter_workers=filter)
+        bridge.send('temperature', np.ones(1), timestep=0, update_workers=True, filter_workers=filter)
