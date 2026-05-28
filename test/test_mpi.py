@@ -77,28 +77,7 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
 
 
 def has_mpi_launcher() -> bool:
-    return shutil.which("mpirun") is not None or shutil.which("mpiexec") is not None
-
-
-def get_mpi_launcher() -> str | None:
-    impl = os.environ.get("MPI_IMPL", "unknown")
-    candidates = {
-        "openmpi": "mpirun",
-        "mpich":   "mpiexec",
-        "unknown": "mpirun",
-    }
-    return shutil.which(candidates[impl])
-
-
-def build_mpi_cmd(n: int, extra_args: list) -> list:
-    launcher = get_mpi_launcher()
-    if launcher is None:
-        raise RuntimeError("No MPI launcher found")
-    cmd = [launcher, "-n", str(n)]
-    if os.environ.get("MPI_IMPL") == "openmpi":
-        cmd.append("--oversubscribe")
-    cmd += [sys.executable, "-u", __file__] + extra_args
-    return cmd
+    return shutil.which("mpirun") is not None
 
 
 def is_xdist():
@@ -110,7 +89,10 @@ def is_xdist():
 @pytest.mark.skipif(not has_mpi_launcher(), reason="mpirun/mpiexec not available")
 @pytest.mark.parametrize('i', [1, 2, 4, 8])
 def test_mpi_gather(i):
-    cmd = build_mpi_cmd(i, ["--mpi-gather"])
+    cmd = ["mpirun", "-n", str(i)]
+    if os.environ.get("MPI_IMPL") == "openmpi":
+        cmd.append("--oversubscribe")
+    cmd += [sys.executable, "-u", __file__, "--mpi-gather"]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     print("STDOUT:\n", result.stdout, flush=True)
@@ -174,13 +156,16 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     parallelism = (parallelism,) * len(global_size)
 
-    cmd = build_mpi_cmd(
-          np.prod(parallelism),
-          ["--mpi-bridge",
+    cmd = ["mpirun", "-n", str(np.prod(parallelism))] 
+    if os.environ.get("MPI_IMPL") == "openmpi":
+        cmd.append("--oversubscribe")
+    cmd += [sys.executable, "-u", __file__,
+           "--mpi-bridge",
            "--scheduler-address", cluster.scheduler.address,
            "--global-size", str(global_size),
            "--parallelism", str(parallelism),
-           "--comm", comm])
+           "--comm", comm
+           ]
     print(f"cmd={cmd}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
