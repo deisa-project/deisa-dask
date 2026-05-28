@@ -70,7 +70,7 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     wait_for(lambda: bridge.get("hello", timestep=1) == "world", timeout=10, interval=1)
 
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
-    bridge.send('temperature', to_send, iteration=1)
+    bridge.send('temperature', to_send, timestep=1)
 
     bridge.close(timestep=1)
     print(f"MPI {rank} of {size} finished", flush=True)

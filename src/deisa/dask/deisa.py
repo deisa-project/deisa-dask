@@ -58,12 +58,17 @@ class Deisa(IDeisa):
 
     def __init__(self, feedback_queue_size: int = 1024, *args, **kwargs) -> None:
         """
-        Initializes the distributed processing environment and configures workers using
-        a Dask scheduler. This class handles setting up a Dask client and ensures the
-        specified number of workers are available for distributed computation tasks.
+        Initializes a class instance, configuring the client and setting up the necessary
+        infrastructure for interactions. This includes setting up the necessary feedback
+        queue length, performing handshake operations with the client, and initializing
+        various metadata structures.
 
-        :param get_connection_info: A function that returns a connected Dask Client.
-        :type get_connection_info: Callable
+        :param feedback_queue_size: The maximum size of the feedback queue. Defaults to 1024.
+        :type feedback_queue_size: int
+        :param args: Additional positional arguments passed to the initializer.
+        :type args: tuple
+        :param kwargs: Additional keyword arguments passed to the initializer.
+        :type kwargs: dict
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
@@ -96,9 +101,13 @@ class Deisa(IDeisa):
                  exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                  when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
-        Decorator that registers the decorated function as a sliding-window callback.
+        Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
 
-        Supports for callback_args:
+        This function acts as a decorator that allows you to register a callback with
+        parameters provided through ``callback_args``. It also handles exceptions using the
+        ``exception_handler`` and defines the execution rules with ``when`` parameter.
+
+        Supports:
         Default window size is 1.
         @deisa.register("arr1")                             # default window size
         @deisa.register("arr1", "arr2")                     # two arrays, default window size
@@ -106,6 +115,14 @@ class Deisa(IDeisa):
         @deisa.register(Window("arr1", 2))                  # window size 2
         @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
         @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+
+        :param callback_args: Variable-length arguments representing callback-specific parameters.
+        :param exception_handler: Optional exception handler to manage errors during callback execution.
+            Defaults to ``__default_exception_handler``.
+        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+            Defaults to 'AND'.
+        :return: A callable that wraps the provided callback with the configured parameters and logic.
+        :rtype: Callable
         """
 
         def decorator(callback: IDeisa.Callback) -> IDeisa.Callback:
@@ -119,9 +136,13 @@ class Deisa(IDeisa):
                           exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                           when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
-        Decorator that registers the decorated function as a sliding-window callback.
+        Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
 
-        Supports for callback_args:
+        This function allows you to register a callback with parameters provided through
+        ``callback_args``. It also handles exceptions using the ``exception_handler``
+        and defines the execution rules with ``when`` parameter.
+
+        Supports:
         Default window size is 1.
         @deisa.register("arr1")                             # default window size
         @deisa.register("arr1", "arr2")                     # two arrays, default window size
@@ -129,6 +150,15 @@ class Deisa(IDeisa):
         @deisa.register(Window("arr1", 2))                  # window size 2
         @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
         @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+
+        :param callback: Callback function to register.
+        :param callback_args: Variable-length arguments representing callback-specific parameters.
+        :param exception_handler: Optional exception handler to manage errors during callback execution.
+            Defaults to ``__default_exception_handler``.
+        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+            Defaults to 'AND'.
+        :return: A callable that wraps the provided callback with the configured parameters and logic.
+        :rtype: Callable
         """
         logger.debug(f"register_callback: callback={callback}, callback_args={callback_args}")
         if not callback_args:
@@ -215,6 +245,18 @@ class Deisa(IDeisa):
                     del self._callbacks_by_array[array_name]
 
     def set(self, key: str, value: Any, timestep: int) -> None:
+        """
+        Sets a value in a queue for a given key, associating it with a specific timestep. This action is
+        intended to store feedback or other time-specific data for the provided key.
+
+        :param key: The identifier for which the value is to be set.
+        :type key: str
+        :param value: The value to be stored, associated with the key and timestep.
+        :type value: Any
+        :param timestep: The timestamp that corresponds to when the value is set.
+        :type timestep: int
+        :return: None
+        """
         logger.debug(f"set() key={key}, value={value}, timestep={timestep}")
 
         q = Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=self.feedback_queue_size)
@@ -233,8 +275,16 @@ class Deisa(IDeisa):
 
     def execute_callbacks(self) -> None:
         """
-        Blocking call to execute all registered callbacks.
-        This method unblocks the simulation and ends when the Bridges are closed.
+        Executes a series of callbacks and waits for necessary processes to finish.
+
+        This method handles the execution of callbacks related to bridges and their
+        completion while also ensuring the orchestration of subsequent tasks. It is
+        responsible for unblocking bridges and waiting for dependencies to signal
+        completion.
+
+        :param self: The instance of the class invoking this method.
+
+        :return: None
         """
         logger.info("execute_callbacks()")
 
@@ -243,6 +293,9 @@ class Deisa(IDeisa):
 
         logger.info("execute_callbacks() waiting for bridges")
         self.handshake.wait_for_bridges_to_finish()
+
+        # TODO: wait for analysis to be finish
+
         logger.info("execute_callbacks() done")
 
     def _make_topic_handler(self, array_name):

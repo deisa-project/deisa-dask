@@ -19,6 +19,7 @@ Types of changes:
 ### Changed
 
 - set minimal dask version to 2024.9.0
+- rename Bridge.send's iteration argument to timetep
 
 ## [0.4.1]
 
