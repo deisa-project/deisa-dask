@@ -37,7 +37,7 @@ from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Queue
+from distributed import Queue, Client
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
@@ -81,12 +81,12 @@ class Bridge(IBridge):
         self._has_close_been_called = False
         self.workers = None
         self.handshake = None
-        self.client = None
+        self.client: Optional[Client] = None
 
         if self.id == 0:
             # only id 0 has a real dask client
             self.client = get_client(timeout=kwargs.get("timeout", 10), name="bridge")
-            assert self.client is not None, "client cannot be None for Bridge id 0."
+            assert self.client, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
 
@@ -130,9 +130,10 @@ class Bridge(IBridge):
         try:
             if not self._has_close_been_called:
                 self._has_close_been_called = True
-                ids = self.comm.gather(self.id, root=0)  # TODO: replace with barrier
-                if ids:
-                    assert self.handshake
+                self.comm.barrier()
+                if self.id == 0:
+                    assert self.handshake, "handshake cannot be None for Bridge id 0."
+                    assert self.client, "client cannot be None for Bridge id 0."
                     self.handshake.set_bridges_done(timestep=timestep)
                     self.client.close()
         except Exception as e:

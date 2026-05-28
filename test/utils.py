@@ -109,6 +109,10 @@ class FakeComm(ICommunicator):
             self.bcast_ready = False
             self.bcast_count = 0
 
+            # barrier state
+            self.barrier_count = 0
+            self.barrier_generation = 0
+
     def __init__(self, state: State, rank: int):
         self._state = state
         self._rank = rank
@@ -181,3 +185,16 @@ class FakeComm(ICommunicator):
                 state.bcast_count = 0
 
             return result
+
+    def barrier(self) -> None:
+        state = self._state
+        with state.condition:
+            generation = state.barrier_generation
+            state.barrier_count += 1
+            # Last participant releases everybody
+            if state.barrier_count == state.size:
+                state.barrier_count = 0
+                state.barrier_generation += 1
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.barrier_generation != generation)
