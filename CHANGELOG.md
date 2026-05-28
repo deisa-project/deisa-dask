@@ -20,6 +20,7 @@ Types of changes:
 
 - set minimal dask version to 2024.9.0
 - rename Bridge.send's iteration argument to timetep
+- bridge.send: per bridge id and iteration round-robin over the workers
 
 ## [0.4.1]
 
