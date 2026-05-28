@@ -405,7 +405,7 @@ class TestUsingDaskCluster:
                                                chunks=(pressure_global_grid_size[0] // mpi_parallelism[0],
                                                        pressure_global_grid_size[1] // mpi_parallelism[1]))
 
-            assert wait_for(lambda: self.state['counter'] == i, timeout=300), "callback was not called"
+            assert wait_for(lambda: self.state['counter'] == i, timeout=10), "callback was not called"
 
             register_fn.check(self.state, i, {
                 "temperature": {"global_da": global_temperature_da,
