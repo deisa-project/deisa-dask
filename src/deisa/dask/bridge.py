@@ -187,7 +187,10 @@ class Bridge(IBridge):
                     raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
         else:
             assert isinstance(workers, dict), f"workers must be a dict, got {type(workers)}"
-            workers = list(workers.keys())
+            workers = sorted(list(workers.keys()))
+            # per bridge id and iteration round-robin over the workers
+            index = (timestep + self.id) % len(workers)
+            workers = [workers[index]]
 
         # Send data to worker
         res = self._better_scatter(chunk, workers=workers, hash=False)  # send data to workers
