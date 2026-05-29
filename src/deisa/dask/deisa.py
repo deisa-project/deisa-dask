@@ -308,6 +308,7 @@ class Deisa(IDeisa):
             """
             tasks = [task for task in dask_scheduler.tasks.keys()
                      if isinstance(task, str)
+                     # Note: This may be an issue if the Dask scheduler is used by multiple users
                      if not task.startswith(KEY_PREFIX)]
             return len(tasks)
 
