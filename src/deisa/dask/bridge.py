@@ -42,8 +42,7 @@ from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
-from deisa.dask.constants import KEY_PREFIX
-from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
+from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 

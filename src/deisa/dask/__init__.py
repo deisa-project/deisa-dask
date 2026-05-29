@@ -10,5 +10,6 @@ except PackageNotFoundError:
     from .__version__ import __version__  # fallback
 
 from .bridge import Bridge
+from .constants import *
 from .deisa import Deisa
 from .utils import get_connection_info

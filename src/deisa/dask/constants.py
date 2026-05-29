@@ -1,6 +1,5 @@
 from typing import Final
 
-LOCK_PREFIX: Final[str] = "deisa_lock_"
 FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
 CALLBACK_PREFIX: Final[str] = "deisa_cb_"
 DEFAULT_SLIDING_WINDOW_SIZE: int = 1
