@@ -35,7 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     # Restrict UCX transport selection for CI stability
     env:
-      UCX_TLS: tcp,self,shm
+      UCX_TLS: tcp,self
+      FI_PROVIDER: tcp
     strategy:
       fail-fast: false
       matrix:
