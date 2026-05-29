@@ -16,6 +16,19 @@ Types of changes:
 
 ## [Unreleased]
 
+### Changed
+
+- set minimal dask version to 2024.9.0
+- rename Bridge.send's iteration argument to timetep
+- bridge.send: per bridge id and iteration round-robin over the workers
+- use barrier instead of gather in bridge close
+
+## [0.4.1]
+
+### Removed
+
+- dependency on `uuid`
+
 ## [0.4.0]
 
 ### Added
