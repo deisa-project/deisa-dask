@@ -25,7 +25,7 @@ Types of changes:
 
 - set minimal dask version to 2024.9.0
 - rename Bridge.send's iteration argument to timetep
-- bridge.send: per bridge id and iteration round-robin over the workers
+- bridge.send: per bridge id and iteration round-robin over the workers so that data is not scattered to the same worker
 - use barrier instead of gather in bridge close
 - bridge.execute_callbacks: wait for all tasks to finish before closing
 - prefix Future keys with `KEY_PREFIX` to help identify associated tasks
