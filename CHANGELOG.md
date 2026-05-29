@@ -16,12 +16,20 @@ Types of changes:
 
 ## [Unreleased]
 
+### Added
+
+- constants.py: to regroup constants
+- Deisa.__del__: to cleanup stored Futures
+
 ### Changed
 
 - set minimal dask version to 2024.9.0
 - rename Bridge.send's iteration argument to timetep
 - bridge.send: per bridge id and iteration round-robin over the workers
 - use barrier instead of gather in bridge close
+- bridge.execute_callbacks: wait for all tasks to finish before closing
+- prefix Future keys with `KEY_PREFIX` to help identify associated tasks
+- use a `weakref` inside the topic handler to avoid circular references
 
 ## [0.4.1]
 

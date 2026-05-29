@@ -27,6 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import abc
+import asyncio
 import logging
 import os.path
 import time
@@ -44,7 +45,7 @@ from TestSimulator import TestSimulation
 from deisa.dask import Deisa, Bridge
 from deisa.dask.deisa import DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.utils import build_deisa_array
-from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges
+from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges, FakeCartComm
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -647,3 +648,43 @@ class TestUsingDaskCluster:
         dask_arr = da.from_array(np.ones(1))
         deisa_array = build_deisa_array(dask_arr, 0)
         assert dask_array_element_wise_equal(dask_arr, deisa_array)
+
+    def test_wait_for_tasks(self, env_setup):
+        client, cluster = env_setup
+
+        arrays_metadata = {
+            'temperature': {
+                'global_shape': (8, 8),
+                'chunk_shape': (4, 4),
+                'chunk_position': (0, 0)
+            }}
+        comm_state = FakeComm.State(4)
+
+        bridges = [Bridge(comm=FakeCartComm(comm_state, rank, dims=(2, 2)),
+                          arrays_metadata=arrays_metadata,
+                          wait_for_go=False) for rank in range(4)]
+
+        deisa = Deisa()
+
+        @deisa.register(Window('temperature', size=2))
+        def cb(temperatures):
+            temperatures[-1].sum().compute()
+
+        async def _bridge_send(ts: int):
+            await asyncio.gather(*[asyncio.to_thread(bridge.send, 'temperature',
+                                                     np.ones(arrays_metadata['temperature']['chunk_shape']),
+                                                     timestep=ts)
+                                   for i, bridge in enumerate(bridges)])
+
+        for ts in range(5):
+            asyncio.run(_bridge_send(ts))
+
+        async def _bridge_close():
+            await asyncio.gather(*[asyncio.to_thread(bridge.close, 0) for i, bridge in enumerate(bridges)])
+
+        asyncio.run(_bridge_close())
+
+        deisa.execute_callbacks()
+        del deisa
+
+        assert len(cluster.scheduler.tasks) == 1  # 1 because of HandshakeActor
