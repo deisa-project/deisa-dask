@@ -236,7 +236,7 @@ class TestBridge:
         print(f"original buffer address: {hex(original_buffer_addr)}", flush=True)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
-            bridge.send('temperature', data, iteration=0)
+            bridge.send('temperature', data, timestep=0)
 
         assert any('in_process=' in r.message and 'remote=[]' in r.message
                 for r in caplog.records), \
@@ -263,7 +263,7 @@ class TestBridge:
         data = np.ones(1)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
-            bridge.send('temperature', data, iteration=0)
+            bridge.send('temperature', data, timestep=0)
 
         # Verify routing, no in-process workers from this process perspective
         assert any('in_process=[]' in r.message
@@ -293,7 +293,7 @@ class TestBridge:
         original_id = id(data)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
-            bridge.send('temperature', data, iteration=0)
+            bridge.send('temperature', data, timestep=0)
 
         # Verify routing log detected both worker types
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
