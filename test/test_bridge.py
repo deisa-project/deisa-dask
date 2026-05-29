@@ -299,6 +299,10 @@ class TestBridge:
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
         assert len(routing_records) > 0, "No routing log found"
         routing_msg = routing_records[0]
+        print("ici")
+        print(routing_records[0])
+        info = client.scheduler_info()["workers"]
+        print(info)
         assert 'in_process=[]' not in routing_msg, "Expected at least one in-process worker"
         assert 'remote=[]' not in routing_msg, "Expected at least one remote worker"
 
