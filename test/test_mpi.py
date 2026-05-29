@@ -82,7 +82,8 @@ def has_mpirun():
 
 def build_mpirun_cmd(n: int, extra_args: list) -> list:
     cmd = ["mpirun", "-n", str(n)]
-    if os.environ.get("MPI_IMPL") == "openmpi":
+    mpi_impl = os.environ.get("MPI_IMPL", "openmpi")
+    if mpi_impl == "openmpi":
         cmd.append("--oversubscribe")
     cmd += [sys.executable, "-u", __file__] + extra_args
     return cmd
