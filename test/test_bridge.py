@@ -193,27 +193,29 @@ class TestBridge:
         bridge, _ = self.get_new_bridge()
 
         data = np.ones(1)
-        original_id = id(data)
+        original_buffer_addr = data.__array_interface__['data'][0]
+        print(f"original buffer address: {hex(original_buffer_addr)}", flush=True)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, iteration=0)
 
-        # Verify routing, at least one worker should be in-process, none remote
         assert any('in_process=' in r.message and 'remote=[]' in r.message
                 for r in caplog.records), \
             "Expected all workers to be in-process"
 
-        # Verify zero-copy directly, the original object must be stored in one of the in-process workers and not a copy
-        stored_ids = [
-            id(w.data[key])
+        stored_buffer_addrs = [
+            w.data[key].__array_interface__['data'][0]
             for w in cluster.workers.values()
             for key in w.data
             if key.startswith('ndarray-')
         ]
-        assert len(stored_ids) > 0, \
+        print(f"stored buffer addresses: {[hex(a) for a in stored_buffer_addrs]}", flush=True)
+
+        assert len(stored_buffer_addrs) > 0, \
             "No ndarray key found in any worker's data store"
-        assert original_id in stored_ids, \
-            "In-process scatter made a copy, no worker holds the original object"
+        assert original_buffer_addr in stored_buffer_addrs, \
+            f"Zero-copy failed: original buffer {hex(original_buffer_addr)} " \
+            f"not found in stored buffers {[hex(a) for a in stored_buffer_addrs]}"
 
     def test_send_uses_remote_path(self, env_setup_remote, caplog):
         client, cluster = env_setup_remote
