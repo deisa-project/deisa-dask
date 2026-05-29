@@ -30,6 +30,7 @@ Types of changes:
 - bridge.execute_callbacks: wait for all tasks to finish before closing
 - prefix Future keys with `KEY_PREFIX` to help identify associated tasks
 - use a `weakref` inside the topic handler to avoid circular references
+- move constants from `deisa.py` to `constants.py`
 
 ## [0.4.1]
 

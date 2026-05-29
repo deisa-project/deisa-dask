@@ -33,7 +33,7 @@ import logging
 import threading
 import time
 import weakref
-from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set, Collection
+from typing import Callable, Union, Tuple, List, Literal, Any, Dict, Set, Collection
 
 import dask
 import dask.array as da
@@ -42,15 +42,10 @@ from deisa.core import CallbackArgs, Window
 from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
-from deisa.dask.constants import KEY_PREFIX
+from deisa.dask.constants import KEY_PREFIX, CALLBACK_PREFIX, CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, \
+    DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client, build_deisa_array
-
-LOCK_PREFIX: Final[str] = "deisa_lock_"
-FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
-CALLBACK_PREFIX: Final[str] = "deisa_cb_"
-DEFAULT_SLIDING_WINDOW_SIZE: int = 1
-CLIENT_KEY: Final[str] = "deisa"
 
 logger = logging.getLogger(__name__)
 
