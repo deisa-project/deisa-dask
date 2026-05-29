@@ -50,7 +50,12 @@ from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
 
-_scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
+# _scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
+_sig = inspect.signature(_scatter_to_workers)
+_scatter_needs_rpc = (
+    'rpc' in _sig.parameters and
+    _sig.parameters['rpc'].default is inspect.Parameter.empty
+)
 _update_data_is_async = asyncio.iscoroutinefunction(Worker.update_data)
 
 class Bridge(IBridge):
@@ -295,24 +300,36 @@ class Bridge(IBridge):
     #         finally:
     #             loop.close()
 
+    # def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
+    #     logger.debug(f"[{self.id}] scatter to {workers}")
+    #     if workers is None:
+    #         workers = self.workers
+
+    #     if self.client:
+    #         return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
+    #     else:
+    #         loop = asyncio.new_event_loop()
+    #         try:
+    #             print(f"[{self.id}] _better_scatter: running loop", flush=True)
+    #             result = loop.run_until_complete(self.__scatter(data, workers=workers, hash=hash))
+    #             print(f"[{self.id}] _better_scatter: loop done, result={result}", flush=True)
+    #             return result
+    #         finally:
+    #             print(f"[{self.id}] _better_scatter: closing loop", flush=True)
+    #             loop.close()
+    #             print(f"[{self.id}] _better_scatter: loop closed", flush=True)
+
+    # sans direct connect
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         logger.debug(f"[{self.id}] scatter to {workers}")
         if workers is None:
             workers = self.workers
 
         if self.client:
-            return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
+            return self.client.sync(
+                self.__scatter, data, workers=workers, hash=hash)
         else:
-            loop = asyncio.new_event_loop()
-            try:
-                print(f"[{self.id}] _better_scatter: running loop", flush=True)
-                result = loop.run_until_complete(self.__scatter(data, workers=workers, hash=hash))
-                print(f"[{self.id}] _better_scatter: loop done, result={result}", flush=True)
-                return result
-            finally:
-                print(f"[{self.id}] _better_scatter: closing loop", flush=True)
-                loop.close()
-                print(f"[{self.id}] _better_scatter: loop closed", flush=True)
+            return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
 
     async def __scatter(self, data, workers=None, hash=False):
         if isinstance(workers, (str, Number)):
@@ -432,55 +449,90 @@ class Bridge(IBridge):
         #     else:
         #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(targets, data2)
 
+        # if remote_data:
+        #     data2 = valmap(to_serialize, remote_data)
+        #     targets = [remote_targets[k] for k in remote_data]
+
+        #     if self.client is not None:
+        #         if _scatter_needs_rpc:
+        #             _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+        #                 targets, data2, self.client.rpc)
+        #         else:
+        #             _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+        #                 targets, data2)
+        #     # else:
+        #     #     # Non-rank-0: no client, send directly to each target worker
+        #     #     from distributed.comm import connect
+        #     #     for key, val in remote_data.items():
+        #     #         target = remote_targets[key]
+        #     #         comm = await connect(target)
+        #     #         try:
+        #     #             await comm.write({
+        #     #                 "op": "update_data",
+        #     #                 "data": {key: to_serialize(val)}
+        #     #             })
+        #     #             await comm.read()
+        #     #         finally:
+        #     #             await comm.close()
+        #     #         remote_who_has[key] = [target]
+        #     #         remote_nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+
+        #     else:
+        #         from distributed.comm import connect
+        #         for key, val in remote_data.items():
+        #             target = remote_targets[key]
+        #             print(f"[{self.id}] connecting to {target}", flush=True)
+        #             comm = await connect(target)
+        #             print(f"[{self.id}] connected to {target}", flush=True)
+        #             try:
+        #                 await comm.write({
+        #                     "op": "update_data",
+        #                     "data": {key: to_serialize(val)},
+        #                 })
+        #                 print(f"[{self.id}] wrote to {target}", flush=True)
+        #                 response = await comm.read()
+        #                 print(f"[{self.id}] read response from {target}: {response}", flush=True)
+        #             finally:
+        #                 await comm.close()
+        #             remote_who_has[key] = [target]
+        #             remote_nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+        #             print(f"[{self.id}] done with {target}", flush=True)
+
+        #     for k, addrs in remote_who_has.items():
+        #         who_has[k] = list(addrs)
+        #     for k, v in remote_nbytes.items():
+        #         nbytes[k] = v
+
+        # # sans direct connect
+        # if remote_data:
+        #     data2 = valmap(to_serialize, remote_data)
+        #     targets = [remote_targets[k] for k in remote_data]
+        #     if _scatter_needs_rpc:
+        #         if self.client is None:
+        #             raise RuntimeError(
+        #                 "scatter_to_workers requires rpc but no client available. "
+        #                 "This version of distributed requires rpc which is only accessible from rank 0."
+        #             )
+        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+        #             targets, data2, self.client.rpc)
+        #     else:
+        #         _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+        #             targets, data2)
+        #     for k, addrs in remote_who_has.items():
+        #         who_has[k] = list(addrs)
+        #     for k, v in remote_nbytes.items():
+        #         nbytes[k] = v
+
         if remote_data:
             data2 = valmap(to_serialize, remote_data)
             targets = [remote_targets[k] for k in remote_data]
-
-            if self.client is not None:
-                if _scatter_needs_rpc:
-                    _, remote_who_has, remote_nbytes = await _scatter_to_workers(
-                        targets, data2, self.client.rpc)
-                else:
-                    _, remote_who_has, remote_nbytes = await _scatter_to_workers(
-                        targets, data2)
-            # else:
-            #     # Non-rank-0: no client, send directly to each target worker
-            #     from distributed.comm import connect
-            #     for key, val in remote_data.items():
-            #         target = remote_targets[key]
-            #         comm = await connect(target)
-            #         try:
-            #             await comm.write({
-            #                 "op": "update_data",
-            #                 "data": {key: to_serialize(val)}
-            #             })
-            #             await comm.read()
-            #         finally:
-            #             await comm.close()
-            #         remote_who_has[key] = [target]
-            #         remote_nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
-
+            if _scatter_needs_rpc and self.client is not None:
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    targets, data2, self.client.rpc)
             else:
-                from distributed.comm import connect
-                for key, val in remote_data.items():
-                    target = remote_targets[key]
-                    print(f"[{self.id}] connecting to {target}", flush=True)
-                    comm = await connect(target)
-                    print(f"[{self.id}] connected to {target}", flush=True)
-                    try:
-                        await comm.write({
-                            "op": "update_data",
-                            "data": {key: to_serialize(val)},
-                        })
-                        print(f"[{self.id}] wrote to {target}", flush=True)
-                        response = await comm.read()
-                        print(f"[{self.id}] read response from {target}: {response}", flush=True)
-                    finally:
-                        await comm.close()
-                    remote_who_has[key] = [target]
-                    remote_nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
-                    print(f"[{self.id}] done with {target}", flush=True)
-
+                # si récent 'distributed', ou pas de client (si pas sur le rang zéro)
+                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
+                    targets, data2)
             for k, addrs in remote_who_has.items():
                 who_has[k] = list(addrs)
             for k, v in remote_nbytes.items():
