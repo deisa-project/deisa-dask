@@ -239,7 +239,13 @@ class Bridge(IBridge):
                 } for d in gathered_data]
             }
             logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
-            self.client.log_event(array_name, to_send)
+            try:
+                self.client.log_event(array_name, to_send)
+            except TypeError as e:
+                import json
+                logger.error(f"[{self.id}] send() log_event failed: {e}")
+                logger.error(f"[{self.id}] send() to_send types: {json.dumps(to_send, default=lambda o: str(type(o)))}")
+                raise
 
         # TODO: what to do if error ?
 
