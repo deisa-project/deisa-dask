@@ -337,6 +337,8 @@ class Bridge(IBridge):
             f"[{self.id}] __scatter(): "
             f"in_process={in_process}, remote={remote}"
         )
+        logger.debug(f"LOCAL WORKER MAP KEYS: {list(local_worker_map.keys())}")
+        logger.debug(f"TARGET WORKERS REQUESTED: {workers}")
 
         who_has: dict = {}
         nbytes:  dict = {}
