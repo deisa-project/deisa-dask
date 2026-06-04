@@ -29,7 +29,6 @@
 import asyncio
 import logging
 import os
-import time
 
 import numpy as np
 import pytest
@@ -238,18 +237,11 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
-        time.sleep(.1)
 
         assert any('in_process=' in r.message and 'remote=[]' in r.message
                 for r in caplog.records), \
             "Expected all workers to be in-process"
 
-        # stored_buffer_addrs = [
-        #     w.data[key].__array_interface__['data'][0]
-        #     for w in cluster.workers.values()
-        #     for key in w.data
-        #     if key.startswith('ndarray-')
-        # ]
         stored_buffer_addrs = [
             w.data[key].__array_interface__['data'][0]
             for w in cluster.workers.values()
@@ -272,7 +264,6 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
-        time.sleep(.1)
 
         # Verify routing, no in-process workers from this process perspective
         assert any('in_process=[]' in r.message
@@ -281,7 +272,7 @@ class TestBridge:
 
         # Verify data arrived on a worker via the scheduler
         who_has = client.who_has()
-        ndarray_keys = [k for k in who_has if k.startswith('ndarray-')]
+        ndarray_keys = [k for k in who_has if 'ndarray-' in k]
         assert len(ndarray_keys) > 0, \
             "No ndarray key found on any worker after remote scatter"
         assert all(len(who_has[k]) > 0 for k in ndarray_keys), \
@@ -303,7 +294,6 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
-        time.sleep(.1)
 
         # Verify routing log detected both worker types
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
@@ -318,14 +308,14 @@ class TestBridge:
 
         # Verify the key landed on exactly one worker
         who_has = client.who_has()
-        ndarray_keys = [k for k in who_has if k.startswith('ndarray-')]
+        ndarray_keys = [k for k in who_has if 'ndarray-' in k]
         assert len(ndarray_keys) > 0, "No ndarray key found after scatter"
         all_holders = {addr for k in ndarray_keys for addr in who_has[k]}
         assert len(all_holders) == 1, "Key should be on exactly one worker"
 
         # Verify zero-copy if it landed on the in-process worker
         if inproc_addr in all_holders:
-            in_process_keys = [key for key in inproc_worker.data if key.startswith('ndarray-')]
+            in_process_keys = [key for key in inproc_worker.data if 'ndarray-' in key]
             stored_ids = [id(inproc_worker.data[key]) for key in in_process_keys]
             assert original_id in stored_ids, \
                 "In-process scatter made a copy"

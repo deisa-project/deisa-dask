@@ -285,7 +285,6 @@ class Bridge(IBridge):
 
         return default
 
-    # sans direct connect
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         logger.debug(f"[{self.id}] scatter to {workers}")
         if workers is None:
