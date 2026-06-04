@@ -29,6 +29,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import numpy as np
 import pytest
@@ -237,16 +238,23 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
+        time.sleep(.1)
 
         assert any('in_process=' in r.message and 'remote=[]' in r.message
                 for r in caplog.records), \
             "Expected all workers to be in-process"
 
+        # stored_buffer_addrs = [
+        #     w.data[key].__array_interface__['data'][0]
+        #     for w in cluster.workers.values()
+        #     for key in w.data
+        #     if key.startswith('ndarray-')
+        # ]
         stored_buffer_addrs = [
             w.data[key].__array_interface__['data'][0]
             for w in cluster.workers.values()
             for key in w.data
-            if key.startswith('ndarray-')
+            if 'ndarray-' in key
         ]
         print(f"stored buffer addresses: {[hex(a) for a in stored_buffer_addrs]}", flush=True)
 
@@ -264,6 +272,7 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
+        time.sleep(.1)
 
         # Verify routing, no in-process workers from this process perspective
         assert any('in_process=[]' in r.message
@@ -294,6 +303,7 @@ class TestBridge:
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
+        time.sleep(.1)
 
         # Verify routing log detected both worker types
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]

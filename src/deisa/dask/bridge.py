@@ -414,6 +414,9 @@ class Bridge(IBridge):
             for k, v in remote_nbytes.items():
                 nbytes[k] = v
 
+        for addr, worker in local_worker_map.items():
+            logger.debug(f"Worker {addr} post-scatter keys in memory: {list(worker.data.keys())}")
+
         out = {
             k: {
                 'future': k,
