@@ -178,15 +178,15 @@ class Bridge(IBridge):
             workers = dict(self.workers)
 
         if kwargs.get('filter_workers', False):
-          workers = kwargs['filter_workers'](workers)
-          # check return type
-          if not isinstance(workers, list):
-              raise TypeError(f"worker_filter must return a list, got {type(workers)}")
-          if len(workers) == 0:
-              raise TypeError("worker_filter must return a non-empty list")
-          for w in workers:
-              if not isinstance(w, str):
-                  raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
+            workers = kwargs['filter_workers'](workers)
+            # check return type
+            if not isinstance(workers, list):
+                raise TypeError(f"worker_filter must return a list, got {type(workers)}")
+            if len(workers) == 0:
+                raise TypeError("worker_filter must return a non-empty list")
+            for w in workers:
+                if not isinstance(w, str):
+                    raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
 
         # Ensure "workers" is a list before scatter
         if isinstance(workers, dict):
@@ -287,6 +287,7 @@ class Bridge(IBridge):
 
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         logger.debug(f"[{self.id}] scatter to {workers}")
+
         if workers is None:
             workers = self.workers
 
@@ -349,26 +350,6 @@ class Bridge(IBridge):
         # Unified round-robin across all workers, per-key routing
         remote_data: dict = {}
         remote_targets: dict[str, str] = {}  # key which target worker addr
-
-        # for i, (key, val) in enumerate(data.items()):
-        #     target_addr = workers[i % len(workers)]
-
-        #     if target_addr in local_worker_map:
-        #         # In-process path, direct write with no copy
-        #         worker = local_worker_map[target_addr]
-        #         worker.update_data({key: val})
-        #         stored = worker.data[key]
-        #         assert id(stored) == id(val), (
-        #             f"In-process scatter copied data "
-        #             f"id(original)={id(val)}, id(stored)={id(stored)}"
-        #         )
-        #         logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
-        #         who_has[key] = [target_addr]
-        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
-        #     else:
-        #         # Remote path, existing scatter
-        #         remote_data[key] = val
-        #         remote_targets[key] = target_addr
 
         # Track what we update in-process to report to the scheduler
         inproc_who_has = {}

@@ -322,3 +322,4 @@ class TestBridge:
         else:
             assert all_holders & remote_addrs, \
                 "Key holder is neither in-process nor a known remote worker"
+            
