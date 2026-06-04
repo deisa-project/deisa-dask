@@ -32,20 +32,27 @@ import sys
 import uuid
 from collections import deque, defaultdict
 from numbers import Number
+from itertools import cycle
 from typing import Any, Iterator, List, Dict, Optional, Union, Deque
+
+from tlz import drop, groupby, merge, valmap
 
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue, Client
-from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
 from distributed.worker import _global_workers
+from distributed.core import rpc
+from distributed.utils import All
+from distributed.protocol import to_serialize
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
+
+_round_robin_counter = [0]
 
 
 class Bridge(IBridge):
@@ -333,7 +340,8 @@ class Bridge(IBridge):
             f"in_process={in_process}, remote={remote}"
         )
 
-        _, who_has, nbytes = await _scatter_to_workers(
+        # _, who_has, nbytes = await _scatter_to_workers(
+        _, who_has, nbytes = await self.scatter_to_workers(
             workers,
             data,
             local_worker_map=local_worker_map,
@@ -350,3 +358,77 @@ class Bridge(IBridge):
             assert len(out) == 1
             out = list(out.values())[0]
         return out
+
+
+    async def scatter_to_workers(
+        self,
+        workers,
+        data,
+        rpc=rpc,
+        local_worker_map: dict = None,
+        scheduler=None,
+        client_id: str = None,
+    ):
+        assert isinstance(data, dict)
+        local_worker_map = local_worker_map or {}
+
+        workers = sorted(workers)
+        names = list(data.keys())
+
+        worker_iter = drop(_round_robin_counter[0] % len(workers), cycle(workers))
+        _round_robin_counter[0] += len(data)
+
+        L = list(zip(worker_iter, names, data.values()))
+
+        who_has: dict = {}
+        nbytes:  dict = {}
+
+        # In-process, zero-copy
+        inproc_L = [(w, k, v) for w, k, v in L if w in local_worker_map]
+        if inproc_L:
+            inproc_who_has = {}
+            inproc_nbytes  = {}
+            for addr, key, val in inproc_L:
+                worker = local_worker_map[addr]
+                worker.update_data({key: val})
+                assert id(worker.data[key]) == id(val), \
+                    f"In-process scatter copied data: id(orig)={id(val)}"
+                size = int(val.nbytes) if hasattr(val, "nbytes") else sys.getsizeof(val)
+                who_has[key]       = [addr]
+                nbytes[key]        = size
+                inproc_who_has[key] = [addr]
+                inproc_nbytes[key]  = size
+
+            if scheduler is not None:
+                await scheduler.update_data(
+                    who_has=inproc_who_has,
+                    nbytes=inproc_nbytes,
+                    client=client_id,
+                )
+
+        # Remote, serialize and RPC
+        remote_L = [(w, k, v) for w, k, v in L if w not in local_worker_map]
+        if remote_L:
+            d = {
+                worker: {key: value for _, key, value in v}
+                for worker, v in groupby(0, remote_L).items()
+            }
+            d_serialized = {
+                worker: valmap(to_serialize, chunk)
+                for worker, chunk in d.items()
+            }
+            rpcs = {addr: rpc(addr) for addr in d_serialized}
+            try:
+                out = await All([
+                    rpcs[address].update_data(data=v)
+                    for address, v in d_serialized.items()
+                ])
+            finally:
+                for r in rpcs.values():
+                    await r.close_rpc()
+
+            nbytes.update(merge(o["nbytes"] for o in out))
+            for k, v in groupby(1, remote_L).items():
+                who_has[k] = [w for w, _, _ in v]
+
+        return (names, who_has, nbytes)
