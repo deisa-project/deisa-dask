@@ -340,12 +340,40 @@ class Bridge(IBridge):
         logger.debug(f"LOCAL WORKER MAP KEYS: {list(local_worker_map.keys())}")
         logger.debug(f"TARGET WORKERS REQUESTED: {workers}")
 
+        # Check directly inside the internal memory store of the local worker object
+        for addr, worker in local_worker_map.items():
+            print(f"Worker {addr} keys in memory: {list(worker.data.keys())}")
+
         who_has: dict = {}
         nbytes:  dict = {}
 
         # Unified round-robin across all workers, per-key routing
         remote_data: dict = {}
         remote_targets: dict[str, str] = {}  # key which target worker addr
+
+        # for i, (key, val) in enumerate(data.items()):
+        #     target_addr = workers[i % len(workers)]
+
+        #     if target_addr in local_worker_map:
+        #         # In-process path, direct write with no copy
+        #         worker = local_worker_map[target_addr]
+        #         worker.update_data({key: val})
+        #         stored = worker.data[key]
+        #         assert id(stored) == id(val), (
+        #             f"In-process scatter copied data "
+        #             f"id(original)={id(val)}, id(stored)={id(stored)}"
+        #         )
+        #         logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
+        #         who_has[key] = [target_addr]
+        #         nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+        #     else:
+        #         # Remote path, existing scatter
+        #         remote_data[key] = val
+        #         remote_targets[key] = target_addr
+
+        # Track what we update in-process to report to the scheduler
+        inproc_who_has = {}
+        inproc_nbytes = {}
 
         for i, (key, val) in enumerate(data.items()):
             target_addr = workers[i % len(workers)]
@@ -361,12 +389,22 @@ class Bridge(IBridge):
                 )
                 logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
                 who_has[key] = [target_addr]
-                nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+                size = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
+                nbytes[key] = size
+                inproc_who_has[key] = [target_addr]
+                inproc_nbytes[key] = size
             else:
                 # Remote path, existing scatter
                 remote_data[key] = val
                 remote_targets[key] = target_addr
 
+        if inproc_who_has and self.client is not None:
+            await self.client.scheduler.update_data(
+                who_has=inproc_who_has, 
+                nbytes=inproc_nbytes,
+                client=self.client.id
+            )
+        
         if remote_data:
             data2 = valmap(to_serialize, remote_data)
             targets = [remote_targets[k] for k in remote_data]
