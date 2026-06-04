@@ -40,9 +40,8 @@ from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue, Client
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
-from distributed.worker import Worker, _global_workers
+from distributed.worker import _global_workers
 from tlz import valmap
-import inspect
 
 from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
@@ -50,13 +49,6 @@ from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
 
-# _scatter_needs_rpc = 'rpc' in inspect.signature(_scatter_to_workers).parameters
-_sig = inspect.signature(_scatter_to_workers)
-_scatter_needs_rpc = (
-    'rpc' in _sig.parameters and
-    _sig.parameters['rpc'].default is inspect.Parameter.empty
-)
-_update_data_is_async = asyncio.iscoroutinefunction(Worker.update_data)
 
 class Bridge(IBridge):
     def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
@@ -98,12 +90,6 @@ class Bridge(IBridge):
             assert self.client, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
-        # else:
-        #     # only id 0 has a real dask client
-        #     try:
-        #         self.client = get_client(timeout=kwargs.get("timeout", 10), name=f"bridge-{self.id}")
-        #     except Exception:
-        #         self.client = None  # pure in-process mode, asyncio.run path handles this
 
         # retrieve workers from rank 0 and bcast
         logger.debug(f"[{self.id}] Bridge __init__(): pre-bcast")
@@ -201,29 +187,21 @@ class Bridge(IBridge):
           for w in workers:
               if not isinstance(w, str):
                   raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
-        # else:
-        #   assert isinstance(workers, dict), f"workers must be a dict, got {type(workers)}"
-        #   workers = sorted(list(workers.keys()))
-        #   # per bridge id and iteration round-robin over the workers
-        # #   index = (timestep + self.id) % len(workers)
-        # #   workers = [workers[index]]
 
         # Ensure "workers" is a list before scatter
         if isinstance(workers, dict):
             workers = list(workers.keys())
 
         # Send data to worker
-        res = self._better_scatter(chunk, workers=workers, hash=False)
+        res = self._better_scatter(chunk, workers=workers, hash=False) # send data to workers
 
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
             'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
         }
-        print(f"[{self.id}] send(): about to gather", flush=True)
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
-        print(f"[{self.id}] send(): gather done", flush=True)
         logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
 
         if gathered_data is not None:
@@ -315,7 +293,10 @@ class Bridge(IBridge):
 
         if self.client:
             return self.client.sync(
-                self.__scatter, data, workers=workers, hash=hash)
+                self.__scatter,
+                data,
+                workers=workers,
+                hash=hash)
         else:
             return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
 
@@ -370,18 +351,13 @@ class Bridge(IBridge):
             if target_addr in local_worker_map:
                 # In-process path, direct write with no copy
                 worker = local_worker_map[target_addr]
-                if _update_data_is_async:
-                    await worker.update_data({key: val})
-                else:
-                    worker.update_data({key: val})
-
+                worker.update_data({key: val})
                 stored = worker.data[key]
                 assert id(stored) == id(val), (
                     f"In-process scatter copied data "
                     f"id(original)={id(val)}, id(stored)={id(stored)}"
                 )
                 logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
-
                 who_has[key] = [target_addr]
                 nbytes[key] = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
             else:
@@ -392,13 +368,7 @@ class Bridge(IBridge):
         if remote_data:
             data2 = valmap(to_serialize, remote_data)
             targets = [remote_targets[k] for k in remote_data]
-            if _scatter_needs_rpc and self.client is not None:
-                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
-                    targets, data2, self.client.rpc)
-            else:
-                # si récent 'distributed', ou pas de client (si pas sur le rang zéro)
-                _, remote_who_has, remote_nbytes = await _scatter_to_workers(
-                    targets, data2)
+            _, remote_who_has, remote_nbytes = await _scatter_to_workers(targets, data2)
             for k, addrs in remote_who_has.items():
                 who_has[k] = list(addrs)
             for k, v in remote_nbytes.items():
