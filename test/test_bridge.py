@@ -175,7 +175,7 @@ class TestBridge:
         assert info['iteration'] == 0
         assert len(info['futures']) == 4
         for f in info['futures']:
-            assert f['placement'] in [(0, 0), (0, 1), (1, 0), (1, 1)]
+            assert f['chunk_position'] in [(0, 0), (0, 1), (1, 0), (1, 1)]
 
         async def _bridge_close():
             await asyncio.gather(*[asyncio.to_thread(bridge.close, 0) for i, bridge in enumerate(bridges)])

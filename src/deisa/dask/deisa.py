@@ -339,7 +339,7 @@ class Deisa(IDeisa):
 
                 _weak_self.__update_futures_ownership(keys)
 
-                parts = sorted(futures, key=lambda p: p['placement'])
+                parts = sorted(futures, key=lambda p: p['chunk_position'])
 
                 darr_chunks = [
                     da.from_delayed(

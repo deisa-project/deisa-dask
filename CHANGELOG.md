@@ -31,6 +31,7 @@ Types of changes:
 - prefix Future keys with `KEY_PREFIX` to help identify associated tasks
 - use a `weakref` inside the topic handler to avoid circular references
 - move constants from `deisa.py` to `constants.py`
+- use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
 
 ## [0.4.1]
 

@@ -61,12 +61,12 @@ class Bridge(IBridge):
                     'temperature': {
                         'global_shape': [20, 20],
                         'chunk_shape': [10, 10],
-                        'position': [0, 0]
+                        'chunk_position': [0, 0]
                     }
                     'pressure': {
                         'global_shape': [20, 20],
                         'chunk_shape': [10, 10],
-                        'position': [0, 0]
+                        'chunk_position': [0, 0]
                     }
         :type arrays_metadata: Dict[str, Dict]
         :param args: Additional positional arguments for the initialization.
@@ -160,6 +160,9 @@ class Bridge(IBridge):
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
+        if array_name not in self.arrays_metadata:
+            raise ValueError(f"array {array_name} is unknown.")
+
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
@@ -202,7 +205,7 @@ class Bridge(IBridge):
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            'placement': self.comm.Get_coords(self.id) if hasattr(self.comm, 'Get_coords') else self.id
+            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
@@ -235,7 +238,7 @@ class Bridge(IBridge):
                     'future': d['future-info']['future'],
                     'shape': chunk.shape,
                     'dtype': str(chunk.dtype),
-                    'placement': d['placement']
+                    'chunk_position': d['chunk_position']
                 } for d in gathered_data]
             }
             logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
