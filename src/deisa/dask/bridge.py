@@ -38,10 +38,8 @@ import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue, Client
-from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
 from distributed.worker import _global_workers
-from tlz import valmap
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
@@ -317,94 +315,33 @@ class Bridge(IBridge):
             unpack = True
             data = [data]
         if isinstance(data, (list, tuple)):
-            if hash:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + tokenize(x) for x in data]
-            else:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
+            names = [
+                KEY_PREFIX + "-" + type(x).__name__ + "-" +
+                (tokenize(x) if hash else uuid.uuid4().hex)
+                for x in data
+            ]
             data = dict(zip(names, data))
 
         assert isinstance(data, dict)
 
-        # Split workers between in-process and remote
-        local_worker_map: dict[str, Any] = {
-            w.address: w
-            for w in _global_workers
-        }
+        local_worker_map = {w.address: w for w in _global_workers}
+
         in_process = [w for w in workers if w in local_worker_map]
         remote     = [w for w in workers if w not in local_worker_map]
-
         logger.debug(
             f"[{self.id}] __scatter(): "
             f"in_process={in_process}, remote={remote}"
         )
-        logger.debug(f"LOCAL WORKER MAP KEYS: {list(local_worker_map.keys())}")
-        logger.debug(f"TARGET WORKERS REQUESTED: {workers}")
 
-        # Check directly inside the internal memory store of the local worker object
-        for addr, worker in local_worker_map.items():
-            print(f"Worker {addr} keys in memory: {list(worker.data.keys())}")
+        _, who_has, nbytes = await _scatter_to_workers(
+            workers,
+            data,
+            local_worker_map=local_worker_map,
+            scheduler=self.client.scheduler if self.client else None,
+            client_id=self.client.id       if self.client else None,
+        )
 
-        who_has: dict = {}
-        nbytes:  dict = {}
-
-        # Unified round-robin across all workers, per-key routing
-        remote_data: dict = {}
-        remote_targets: dict[str, str] = {}  # key which target worker addr
-
-        # Track what we update in-process to report to the scheduler
-        inproc_who_has = {}
-        inproc_nbytes = {}
-
-        for i, (key, val) in enumerate(data.items()):
-            target_addr = workers[i % len(workers)]
-
-            if target_addr in local_worker_map:
-                # In-process path, direct write with no copy
-                worker = local_worker_map[target_addr]
-                worker.update_data({key: val})
-                stored = worker.data[key]
-                assert id(stored) == id(val), (
-                    f"In-process scatter copied data "
-                    f"id(original)={id(val)}, id(stored)={id(stored)}"
-                )
-                logger.debug(f"[{self.id}] Check zero-copy : key={key}, id={id(val)}")
-                who_has[key] = [target_addr]
-                size = int(val.nbytes) if hasattr(val, 'nbytes') else sys.getsizeof(val)
-                nbytes[key] = size
-                inproc_who_has[key] = [target_addr]
-                inproc_nbytes[key] = size
-            else:
-                # Remote path, existing scatter
-                remote_data[key] = val
-                remote_targets[key] = target_addr
-
-        if inproc_who_has and self.client is not None:
-            await self.client.scheduler.update_data(
-                who_has=inproc_who_has, 
-                nbytes=inproc_nbytes,
-                client=self.client.id
-            )
-        
-        if remote_data:
-            data2 = valmap(to_serialize, remote_data)
-            targets = [remote_targets[k] for k in remote_data]
-            _, remote_who_has, remote_nbytes = await _scatter_to_workers(targets, data2)
-            for k, addrs in remote_who_has.items():
-                who_has[k] = list(addrs)
-            for k, v in remote_nbytes.items():
-                nbytes[k] = v
-
-        for addr, worker in local_worker_map.items():
-            logger.debug(f"Worker {addr} post-scatter keys in memory: {list(worker.data.keys())}")
-
-        out = {
-            k: {
-                'future': k,
-                'who_has': who_has,
-                'nbytes': nbytes
-            }
-            for k in data
-        }
+        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
