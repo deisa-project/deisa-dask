@@ -80,12 +80,12 @@ def has_mpirun():
     return shutil.which("mpirun") is not None
 
 
-def build_mpirun_cmd(n: int, extra_args: list) -> list:
+def build_mpirun_cmd(n: int, *extra_args) -> list:
     cmd = ["mpirun", "-n", str(n)]
     mpi_impl = os.environ.get("MPI_IMPL", "openmpi")
     if mpi_impl == "openmpi":
         cmd.append("--oversubscribe")
-    cmd += [sys.executable, "-u", __file__] + extra_args
+    cmd += [sys.executable, "-u", __file__] + [*extra_args]
     return cmd
 
 
@@ -98,7 +98,7 @@ def is_xdist():
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('i', [1, 2, 4, 8])
 def test_mpi_gather(i):
-    cmd = build_mpirun_cmd(i, ["--mpi-gather"])
+    cmd = build_mpirun_cmd(i, "--mpi-gather")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     print("STDOUT:\n", result.stdout, flush=True)
@@ -164,11 +164,11 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     cmd = build_mpirun_cmd(
         np.prod(parallelism),
-        ["--mpi-bridge",
+        "--mpi-bridge",
         "--scheduler-address", cluster.scheduler.address,
         "--global-size", str(global_size),
         "--parallelism", str(parallelism),
-        "--comm", comm])
+        "--comm", comm)
 
     print(f"cmd={cmd}", flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
