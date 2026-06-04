@@ -31,6 +31,7 @@ from typing import Optional
 
 from distributed import Future, get_client, Event, Client
 
+from deisa.dask.constants import KEY_PREFIX
 from deisa.dask.utils import _get_actor
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,8 @@ class Handshake:
         self.client = client
         self.__handshake_actor: Optional[Handshake.HandshakeActor] = None
         if self.client:
-            self.__handshake_actor = _get_actor(self.client, Handshake.HandshakeActor)
+            self.__handshake_actor = _get_actor(self.client, Handshake.HandshakeActor,
+                                                key=f"{KEY_PREFIX}-HandshakeActor")
             assert self.__handshake_actor is not None
 
     def all_bridges_ready(self, nb_bridge: int, arrays_metadata: dict, wait_for_go=True) -> None:

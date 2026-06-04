@@ -31,7 +31,9 @@ import asyncio
 import collections
 import logging
 import threading
-from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set, Collection
+import time
+import weakref
+from typing import Callable, Union, Tuple, List, Literal, Any, Dict, Set, Collection
 
 import dask
 import dask.array as da
@@ -40,14 +42,10 @@ from deisa.core import CallbackArgs, Window
 from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
+from deisa.dask.constants import KEY_PREFIX, CALLBACK_PREFIX, CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, \
+    DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client, build_deisa_array
-
-LOCK_PREFIX: Final[str] = "deisa_lock_"
-FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
-CALLBACK_PREFIX: Final[str] = "deisa_cb_"
-DEFAULT_SLIDING_WINDOW_SIZE: int = 1
-CLIENT_KEY: Final[str] = "deisa"
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +88,16 @@ class Deisa(IDeisa):
         self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
-        self._received_futures: Set[str] = set()
         self._tasks = set()
+
+    def __del__(self):
+        # delete Futures
+        for cb in self._callbacks.values():
+            for a in cb['state'].values():
+                a['window'].clear()
+
+        del self._callbacks
+        self.client.close()
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
@@ -294,12 +300,34 @@ class Deisa(IDeisa):
         logger.info("execute_callbacks() waiting for bridges")
         self.handshake.wait_for_bridges_to_finish()
 
-        # TODO: wait for analysis to be finish
+        # wait for analysis to be finish
+        def _check_deisa_tasks(dask_scheduler):
+            """
+            Analyzes the tasks on the Dask scheduler to determine the number
+            of tasks that are strings that do not start with the deisa task prefix.
+            """
+            tasks = [task for task in dask_scheduler.tasks.keys()
+                     if isinstance(task, str)
+                     # Note: This may be an issue if the Dask scheduler is used by multiple users
+                     if not task.startswith(KEY_PREFIX)]
+            return len(tasks)
+
+        while (nb_running_tasks := self.client.run_on_scheduler(_check_deisa_tasks)) > 0:
+            logger.info(f"execute_callbacks() waiting for {nb_running_tasks} tasks to finish")
+            time.sleep(1)
 
         logger.info("execute_callbacks() done")
 
     def _make_topic_handler(self, array_name):
+        # use a weak reference to avoid circular references.
+        weak_self = weakref.ref(self)
+
         async def topic_handler(event):
+            _weak_self = weak_self()
+            if _weak_self is None:
+                logger.error(f"topic_handler: weak_self is None, array_name={array_name}")
+                raise RuntimeError("weak_self is None")
+
             try:
                 _, payload = event
 
@@ -309,22 +337,22 @@ class Deisa(IDeisa):
                 futures = payload["futures"]
                 keys = [p["future"] for p in futures]
 
-                self.__update_futures_ownership(keys)
-                self._received_futures.update(keys)
+                _weak_self.__update_futures_ownership(keys)
 
                 parts = sorted(futures, key=lambda p: p['placement'])
 
                 darr_chunks = [
                     da.from_delayed(
-                        dask.delayed(Future(p["future"], client=self.client)),
+                        dask.delayed(Future(p["future"], client=_weak_self.client)),
                         shape=p["shape"], dtype=p["dtype"],
                     ) for p in parts]
 
-                darr = self.__tile_dask_blocks(darr_chunks, self.arrays_metadata[array_name]["global_shape"])
+                darr = _weak_self.__tile_dask_blocks(darr_chunks,
+                                                     _weak_self.arrays_metadata[array_name]["global_shape"])
 
                 # dispatch to interested callbacks
-                for callback_id in list(self._callbacks_by_array.get(array_name, [])):
-                    cb_data = self._callbacks.get(callback_id)
+                for callback_id in list(_weak_self._callbacks_by_array.get(array_name, [])):
+                    cb_data = _weak_self._callbacks.get(callback_id)
                     if cb_data is None:
                         continue
 
@@ -332,9 +360,9 @@ class Deisa(IDeisa):
                         continue
 
                     try:
-                        self._process_callback(callback_id, cb_data, array_name, darr, iteration)
+                        _weak_self._process_callback(callback_id, cb_data, array_name, darr, iteration)
                     except Exception as e:
-                        self._handle_callback_exception(callback_id, cb_data, e)
+                        _weak_self._handle_callback_exception(callback_id, cb_data, e)
 
             except Exception as e:
                 logger.error(f"topic_handler: topic handler error array_name={array_name}, e={e}")

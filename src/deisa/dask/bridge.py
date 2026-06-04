@@ -43,7 +43,7 @@ from distributed.utils_comm import scatter_to_workers as _scatter_to_workers
 from distributed.worker import _global_workers
 from tlz import valmap
 
-from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
+from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
@@ -161,13 +161,12 @@ class Bridge(IBridge):
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
-        rank = self.comm.Get_rank()
         assert isinstance(self.workers, dict)
-        workers = dict(self.workers)
+        workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
         if kwargs.get('update_workers', False):
             # only update worker list if requested
-            if rank == 0:
+            if self.id == 0:
                 assert self.client is not None, "client cannot be None for Bridge id 0."
                 # rank 0 retrieve workers and bcast to other bridges
                 workers = self.client.scheduler_info(n_workers=-1)["workers"]
@@ -176,6 +175,7 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() pre-bcast workers={workers}")
             self.workers = self.comm.bcast(workers, root=0)
             logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
+            workers = dict(self.workers)
 
         if kwargs.get('filter_workers', False):
           workers = kwargs['filter_workers'](workers)
@@ -198,7 +198,7 @@ class Bridge(IBridge):
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
+            'placement': self.comm.Get_coords(self.id) if hasattr(self.comm, 'Get_coords') else self.id
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
@@ -318,9 +318,9 @@ class Bridge(IBridge):
             data = [data]
         if isinstance(data, (list, tuple)):
             if hash:
-                names = [type(x).__name__ + "-" + tokenize(x) for x in data]
+                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + tokenize(x) for x in data]
             else:
-                names = [type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
+                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
             data = dict(zip(names, data))
 
         assert isinstance(data, dict)
