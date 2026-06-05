@@ -35,8 +35,6 @@ from numbers import Number
 from itertools import cycle
 from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 
-from tlz import drop, groupby, merge, valmap
-
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
@@ -45,6 +43,7 @@ from distributed.worker import _global_workers
 from distributed.core import rpc
 from distributed.utils import All
 from distributed.protocol import to_serialize
+from tlz import drop, groupby, merge, valmap
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
@@ -334,19 +333,18 @@ class Bridge(IBridge):
         local_worker_map = {w.address: w for w in _global_workers}
 
         in_process = [w for w in workers if w in local_worker_map]
-        remote     = [w for w in workers if w not in local_worker_map]
+        remote = [w for w in workers if w not in local_worker_map]
         logger.debug(
             f"[{self.id}] __scatter(): "
             f"in_process={in_process}, remote={remote}"
         )
 
-        # _, who_has, nbytes = await _scatter_to_workers(
         _, who_has, nbytes = await self.scatter_to_workers(
             workers,
             data,
             local_worker_map=local_worker_map,
             scheduler=self.client.scheduler if self.client else None,
-            client_id=self.client.id       if self.client else None,
+            client_id=self.client.id if self.client else None,
         )
 
         out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
@@ -381,23 +379,23 @@ class Bridge(IBridge):
         L = list(zip(worker_iter, names, data.values()))
 
         who_has: dict = {}
-        nbytes:  dict = {}
+        nbytes: dict = {}
 
         # In-process, zero-copy
         inproc_L = [(w, k, v) for w, k, v in L if w in local_worker_map]
         if inproc_L:
             inproc_who_has = {}
-            inproc_nbytes  = {}
+            inproc_nbytes = {}
             for addr, key, val in inproc_L:
                 worker = local_worker_map[addr]
                 worker.update_data({key: val})
                 assert id(worker.data[key]) == id(val), \
                     f"In-process scatter copied data: id(orig)={id(val)}"
                 size = int(val.nbytes) if hasattr(val, "nbytes") else sys.getsizeof(val)
-                who_has[key]       = [addr]
-                nbytes[key]        = size
+                who_has[key] = [addr]
+                nbytes[key] = size
                 inproc_who_has[key] = [addr]
-                inproc_nbytes[key]  = size
+                inproc_nbytes[key] = size
 
             if scheduler is not None:
                 await scheduler.update_data(

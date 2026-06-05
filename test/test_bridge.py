@@ -238,6 +238,7 @@ class TestBridge:
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
 
+        # Verify routing, only in-process workers from this process perspective
         assert any('in_process=' in r.message and 'remote=[]' in r.message
                 for r in caplog.records), \
             "Expected all workers to be in-process"
@@ -261,6 +262,8 @@ class TestBridge:
         bridge, _ = self.get_new_bridge()
 
         data = np.ones(1)
+        original_buffer_addr = data.__array_interface__['data'][0]
+        print(f"original buffer address: {hex(original_buffer_addr)}", flush=True)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
@@ -271,6 +274,8 @@ class TestBridge:
             "Expected no in-process workers for remote cluster"
 
         # Verify data arrived on a worker via the scheduler
+        # Buffer address cannot be checked directly since remote workers
+        # are in separate OS processes with independent memory spaces
         who_has = client.who_has()
         ndarray_keys = [k for k in who_has if 'ndarray-' in k]
         assert len(ndarray_keys) > 0, \
@@ -290,7 +295,8 @@ class TestBridge:
         assert len(remote_addrs) > 0, "No remote worker in bridge.workers"
 
         data = np.ones(1)
-        original_id = id(data)
+        original_buffer_addr = data.__array_interface__['data'][0]
+        print(f"original buffer address: {hex(original_buffer_addr)}", flush=True)
 
         with caplog.at_level(logging.DEBUG, logger='deisa.dask.bridge'):
             bridge.send('temperature', data, timestep=0)
@@ -299,10 +305,7 @@ class TestBridge:
         routing_records = [r.message for r in caplog.records if 'in_process=' in r.message]
         assert len(routing_records) > 0, "No routing log found"
         routing_msg = routing_records[0]
-        print("ici")
-        print(routing_records[0])
-        info = client.scheduler_info()["workers"]
-        print(info)
+        print(routing_msg)
         assert 'in_process=[]' not in routing_msg, "Expected at least one in-process worker"
         assert 'remote=[]' not in routing_msg, "Expected at least one remote worker"
 
@@ -313,13 +316,20 @@ class TestBridge:
         all_holders = {addr for k in ndarray_keys for addr in who_has[k]}
         assert len(all_holders) == 1, "Key should be on exactly one worker"
 
-        # Verify zero-copy if it landed on the in-process worker
         if inproc_addr in all_holders:
+            # In-process worker holds the data, verify zero-copy via buffer address
             in_process_keys = [key for key in inproc_worker.data if 'ndarray-' in key]
-            stored_ids = [id(inproc_worker.data[key]) for key in in_process_keys]
-            assert original_id in stored_ids, \
-                "In-process scatter made a copy"
+            stored_buffer_addrs = [
+                inproc_worker.data[key].__array_interface__['data'][0]
+                for key in in_process_keys
+            ]
+            print(f"stored buffer addresses: {[hex(a) for a in stored_buffer_addrs]}", flush=True)
+            assert len(stored_buffer_addrs) > 0, "No ndarray key found in in-process worker's data store"
+            assert original_buffer_addr in stored_buffer_addrs, \
+                f"Zero-copy failed: original buffer {hex(original_buffer_addr)} " \
+                f"not found in stored buffers {[hex(a) for a in stored_buffer_addrs]}"
         else:
+            # Remote worker holds the data: buffer address cannot be checked
+            # across process boundaries, verify placement only
             assert all_holders & remote_addrs, \
                 "Key holder is neither in-process nor a known remote worker"
-            
