@@ -27,6 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import abc
+import asyncio
 import logging
 import os.path
 import time
@@ -44,7 +45,7 @@ from TestSimulator import TestSimulation
 from deisa.dask import Deisa, Bridge
 from deisa.dask.deisa import DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.utils import build_deisa_array
-from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges
+from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges, FakeCartComm
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -85,7 +86,6 @@ class TestDeisaCtor:
             Deisa(wait_for_go=False)
 
 
-@pytest.mark.xdist_group(name="serial")
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
@@ -100,21 +100,9 @@ class TestUsingDaskCluster:
         client.close()
         cluster.close()
 
-    @pytest.fixture(scope="class")
-    def env_setup_class(self):
-        self.state: Dict[str, Any] = {"counter": 0}
-        cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=False,
-                               dashboard_address=":0", worker_dashboard_address=":0")
-        os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
-        client = Client(cluster)
-        client.wait_for_workers(1, timeout=10)
-        yield client, cluster
-        # teardown
-        cluster.close()
-
     @pytest.mark.parametrize('global_shape', [(32, 32), (32, 16), (16, 32)])
     @pytest.mark.parametrize('local_shape', [(16, 16), (2, 2), (8, 1), (8, 1)])
-    def test_reconstruct_global_dask_array_2d(self, env_setup_class, global_shape, local_shape):
+    def test_reconstruct_global_dask_array_2d(self, env_setup, global_shape, local_shape):
         print(f"global_shape={global_shape} local_shape={local_shape}")
 
         state = da.random.RandomState(42)
@@ -146,7 +134,7 @@ class TestUsingDaskCluster:
 
     @pytest.mark.parametrize('global_shape', [(32, 32, 32), (32, 32, 16), (32, 16, 32), (16, 32, 32), (64, 32, 16)])
     @pytest.mark.parametrize('local_shape', [(16, 16, 16), (8, 8, 1), (8, 1, 8), (1, 8, 8)])
-    def test_reconstruct_global_dask_array_3d(self, env_setup_class, global_shape, local_shape):
+    def test_reconstruct_global_dask_array_3d(self, env_setup, global_shape, local_shape):
         print(f"global_shape={global_shape} local_shape={local_shape}")
 
         state = da.random.RandomState(42)
@@ -178,11 +166,11 @@ class TestUsingDaskCluster:
         assert dask_array_element_wise_equal(reconstructed_global_data,
                                              global_data), "reconstructed global data does not match original"
 
-    def test_reconstruct_global_dask_array_none(self, env_setup_class):
+    def test_reconstruct_global_dask_array_none(self, env_setup):
         with pytest.raises(ValueError):
             Deisa._Deisa__tile_dask_blocks(None, (2, 2))  # access private staticmethod
 
-    def test_reconstruct_global_dask_array_empty(self, env_setup_class):
+    def test_reconstruct_global_dask_array_empty(self, env_setup):
         with pytest.raises(ValueError):
             Deisa._Deisa__tile_dask_blocks([], (2, 2))  # access private staticmethod
 
@@ -340,7 +328,6 @@ class TestUsingDaskCluster:
             self.check_array("temperature", state, i, expected)
             assert state['map_block'] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
-    # @pytest.mark.flaky(retries=3, delay=1)
     @pytest.mark.timeout(30)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
@@ -647,3 +634,43 @@ class TestUsingDaskCluster:
         dask_arr = da.from_array(np.ones(1))
         deisa_array = build_deisa_array(dask_arr, 0)
         assert dask_array_element_wise_equal(dask_arr, deisa_array)
+
+    def test_wait_for_tasks(self, env_setup):
+        client, cluster = env_setup
+
+        arrays_metadata = {
+            'temperature': {
+                'global_shape': (8, 8),
+                'chunk_shape': (4, 4),
+                'chunk_position': (0, 0)
+            }}
+        comm_state = FakeComm.State(4)
+
+        bridges = [Bridge(comm=FakeCartComm(comm_state, rank, dims=(2, 2)),
+                          arrays_metadata=arrays_metadata,
+                          wait_for_go=False) for rank in range(4)]
+
+        deisa = Deisa()
+
+        @deisa.register(Window('temperature', size=2))
+        def cb(temperatures):
+            temperatures[-1].sum().compute()
+
+        async def _bridge_send(ts: int):
+            await asyncio.gather(*[asyncio.to_thread(bridge.send, 'temperature',
+                                                     np.ones(arrays_metadata['temperature']['chunk_shape']),
+                                                     timestep=ts)
+                                   for i, bridge in enumerate(bridges)])
+
+        for ts in range(5):
+            asyncio.run(_bridge_send(ts))
+
+        async def _bridge_close():
+            await asyncio.gather(*[asyncio.to_thread(bridge.close, 0) for i, bridge in enumerate(bridges)])
+
+        asyncio.run(_bridge_close())
+
+        deisa.execute_callbacks()
+        del deisa
+
+        assert len(cluster.scheduler.tasks) == 1  # 1 because of HandshakeActor

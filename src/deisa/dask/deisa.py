@@ -31,7 +31,9 @@ import asyncio
 import collections
 import logging
 import threading
-from typing import Callable, Union, Tuple, List, Final, Literal, Any, Dict, Set, Collection
+import time
+import weakref
+from typing import Callable, Union, Tuple, List, Literal, Any, Dict, Set, Collection
 
 import dask
 import dask.array as da
@@ -40,14 +42,10 @@ from deisa.core import CallbackArgs, Window
 from deisa.core.interface import IDeisa
 from distributed import Client, Future, Queue, Event
 
+from deisa.dask.constants import KEY_PREFIX, CALLBACK_PREFIX, CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, \
+    DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client, build_deisa_array
-
-LOCK_PREFIX: Final[str] = "deisa_lock_"
-FEEDBACK_QUEUE_PREFIX: Final[str] = "deisa_feedback_queue_"
-CALLBACK_PREFIX: Final[str] = "deisa_cb_"
-DEFAULT_SLIDING_WINDOW_SIZE: int = 1
-CLIENT_KEY: Final[str] = "deisa"
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +56,17 @@ class Deisa(IDeisa):
 
     def __init__(self, feedback_queue_size: int = 1024, *args, **kwargs) -> None:
         """
-        Initializes the distributed processing environment and configures workers using
-        a Dask scheduler. This class handles setting up a Dask client and ensures the
-        specified number of workers are available for distributed computation tasks.
+        Initializes a class instance, configuring the client and setting up the necessary
+        infrastructure for interactions. This includes setting up the necessary feedback
+        queue length, performing handshake operations with the client, and initializing
+        various metadata structures.
 
-        :param get_connection_info: A function that returns a connected Dask Client.
-        :type get_connection_info: Callable
+        :param feedback_queue_size: The maximum size of the feedback queue. Defaults to 1024.
+        :type feedback_queue_size: int
+        :param args: Additional positional arguments passed to the initializer.
+        :type args: tuple
+        :param kwargs: Additional keyword arguments passed to the initializer.
+        :type kwargs: dict
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
@@ -85,8 +88,16 @@ class Deisa(IDeisa):
         self._callbacks_by_array: Dict[str, Set[Deisa.Callback_id]] = {}
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
-        self._received_futures: Set[str] = set()
         self._tasks = set()
+
+    def __del__(self):
+        # delete Futures
+        for cb in self._callbacks.values():
+            for a in cb['state'].values():
+                a['window'].clear()
+
+        del self._callbacks
+        self.client.close()
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
@@ -96,9 +107,13 @@ class Deisa(IDeisa):
                  exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                  when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
-        Decorator that registers the decorated function as a sliding-window callback.
+        Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
 
-        Supports for callback_args:
+        This function acts as a decorator that allows you to register a callback with
+        parameters provided through ``callback_args``. It also handles exceptions using the
+        ``exception_handler`` and defines the execution rules with ``when`` parameter.
+
+        Supports:
         Default window size is 1.
         @deisa.register("arr1")                             # default window size
         @deisa.register("arr1", "arr2")                     # two arrays, default window size
@@ -106,6 +121,14 @@ class Deisa(IDeisa):
         @deisa.register(Window("arr1", 2))                  # window size 2
         @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
         @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+
+        :param callback_args: Variable-length arguments representing callback-specific parameters.
+        :param exception_handler: Optional exception handler to manage errors during callback execution.
+            Defaults to ``__default_exception_handler``.
+        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+            Defaults to 'AND'.
+        :return: A callable that wraps the provided callback with the configured parameters and logic.
+        :rtype: Callable
         """
 
         def decorator(callback: IDeisa.Callback) -> IDeisa.Callback:
@@ -119,9 +142,13 @@ class Deisa(IDeisa):
                           exception_handler: IDeisa.ExceptionHandler = __default_exception_handler,
                           when: Literal['AND', 'OR'] = 'AND') -> Callable:
         """
-        Decorator that registers the decorated function as a sliding-window callback.
+        Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
 
-        Supports for callback_args:
+        This function allows you to register a callback with parameters provided through
+        ``callback_args``. It also handles exceptions using the ``exception_handler``
+        and defines the execution rules with ``when`` parameter.
+
+        Supports:
         Default window size is 1.
         @deisa.register("arr1")                             # default window size
         @deisa.register("arr1", "arr2")                     # two arrays, default window size
@@ -129,6 +156,15 @@ class Deisa(IDeisa):
         @deisa.register(Window("arr1", 2))                  # window size 2
         @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
         @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+
+        :param callback: Callback function to register.
+        :param callback_args: Variable-length arguments representing callback-specific parameters.
+        :param exception_handler: Optional exception handler to manage errors during callback execution.
+            Defaults to ``__default_exception_handler``.
+        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+            Defaults to 'AND'.
+        :return: A callable that wraps the provided callback with the configured parameters and logic.
+        :rtype: Callable
         """
         logger.debug(f"register_callback: callback={callback}, callback_args={callback_args}")
         if not callback_args:
@@ -215,6 +251,18 @@ class Deisa(IDeisa):
                     del self._callbacks_by_array[array_name]
 
     def set(self, key: str, value: Any, timestep: int) -> None:
+        """
+        Sets a value in a queue for a given key, associating it with a specific timestep. This action is
+        intended to store feedback or other time-specific data for the provided key.
+
+        :param key: The identifier for which the value is to be set.
+        :type key: str
+        :param value: The value to be stored, associated with the key and timestep.
+        :type value: Any
+        :param timestep: The timestamp that corresponds to when the value is set.
+        :type timestep: int
+        :return: None
+        """
         logger.debug(f"set() key={key}, value={value}, timestep={timestep}")
 
         q = Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=self.feedback_queue_size)
@@ -233,8 +281,16 @@ class Deisa(IDeisa):
 
     def execute_callbacks(self) -> None:
         """
-        Blocking call to execute all registered callbacks.
-        This method unblocks the simulation and ends when the Bridges are closed.
+        Executes a series of callbacks and waits for necessary processes to finish.
+
+        This method handles the execution of callbacks related to bridges and their
+        completion while also ensuring the orchestration of subsequent tasks. It is
+        responsible for unblocking bridges and waiting for dependencies to signal
+        completion.
+
+        :param self: The instance of the class invoking this method.
+
+        :return: None
         """
         logger.info("execute_callbacks()")
 
@@ -243,10 +299,35 @@ class Deisa(IDeisa):
 
         logger.info("execute_callbacks() waiting for bridges")
         self.handshake.wait_for_bridges_to_finish()
+
+        # wait for analysis to be finish
+        def _check_deisa_tasks(dask_scheduler):
+            """
+            Analyzes the tasks on the Dask scheduler to determine the number
+            of tasks that are strings that do not start with the deisa task prefix.
+            """
+            tasks = [task for task in dask_scheduler.tasks.keys()
+                     if isinstance(task, str)
+                     # Note: This may be an issue if the Dask scheduler is used by multiple users
+                     if not task.startswith(KEY_PREFIX)]
+            return len(tasks)
+
+        while (nb_running_tasks := self.client.run_on_scheduler(_check_deisa_tasks)) > 0:
+            logger.info(f"execute_callbacks() waiting for {nb_running_tasks} tasks to finish")
+            time.sleep(1)
+
         logger.info("execute_callbacks() done")
 
     def _make_topic_handler(self, array_name):
+        # use a weak reference to avoid circular references.
+        weak_self = weakref.ref(self)
+
         async def topic_handler(event):
+            _weak_self = weak_self()
+            if _weak_self is None:
+                logger.error(f"topic_handler: weak_self is None, array_name={array_name}")
+                raise RuntimeError("weak_self is None")
+
             try:
                 _, payload = event
 
@@ -256,22 +337,22 @@ class Deisa(IDeisa):
                 futures = payload["futures"]
                 keys = [p["future"] for p in futures]
 
-                self.__update_futures_ownership(keys)
-                self._received_futures.update(keys)
+                _weak_self.__update_futures_ownership(keys)
 
                 parts = sorted(futures, key=lambda p: p['placement'])
 
                 darr_chunks = [
                     da.from_delayed(
-                        dask.delayed(Future(p["future"], client=self.client)),
+                        dask.delayed(Future(p["future"], client=_weak_self.client)),
                         shape=p["shape"], dtype=p["dtype"],
                     ) for p in parts]
 
-                darr = self.__tile_dask_blocks(darr_chunks, self.arrays_metadata[array_name]["global_shape"])
+                darr = _weak_self.__tile_dask_blocks(darr_chunks,
+                                                     _weak_self.arrays_metadata[array_name]["global_shape"])
 
                 # dispatch to interested callbacks
-                for callback_id in list(self._callbacks_by_array.get(array_name, [])):
-                    cb_data = self._callbacks.get(callback_id)
+                for callback_id in list(_weak_self._callbacks_by_array.get(array_name, [])):
+                    cb_data = _weak_self._callbacks.get(callback_id)
                     if cb_data is None:
                         continue
 
@@ -279,9 +360,9 @@ class Deisa(IDeisa):
                         continue
 
                     try:
-                        self._process_callback(callback_id, cb_data, array_name, darr, iteration)
+                        _weak_self._process_callback(callback_id, cb_data, array_name, darr, iteration)
                     except Exception as e:
-                        self._handle_callback_exception(callback_id, cb_data, e)
+                        _weak_self._handle_callback_exception(callback_id, cb_data, e)
 
             except Exception as e:
                 logger.error(f"topic_handler: topic handler error array_name={array_name}, e={e}")

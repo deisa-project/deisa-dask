@@ -37,12 +37,12 @@ from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Queue
+from distributed import Queue, Client
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
-from deisa.dask.deisa import FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
+from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
@@ -52,30 +52,26 @@ logger = logging.getLogger(__name__)
 class Bridge(IBridge):
     def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
         """
-        Initializes an object to manage communication between an MPI-based distributed
-        system and a Dask-based framework. The class ensures proper allocation of workers
-        among processes and instantiates the required communication objects like queues.
+        Initializes an instance of the class, setting up communication, metadata validation,
+        client connection (for id=0), workers initialization, and handshake configuration for the bridge.
 
-        :param id: Unique identifier in the computation. This may be the rank of this MPI process.
-        :type id: int
-
-        :param arrays_metadata: A dictionary containing metadata about the Dask arrays
-                eg: arrays_metadata = {
-                    'global_t': {
-                        'size': [20, 20]
-                        'subsize': [10, 10]
+        :param comm: An instance of ICommunicator facilitating communication between processes.
+        :param arrays_metadata: Dictionary containing metadata for arrays, validated during initialization.
+            eg: arrays_metadata = {
+                    'temperature': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'position': [0, 0]
                     }
-                    'global_p': {
-                        'size': [100, 100]
-                        'subsize': [50, 50]
+                    'pressure': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'position': [0, 0]
                     }
-        :type arrays_metadata: dict[str, dict]
-
-        :param args: Passed to Communicator
-        type: args: tuple
-
-        :param kwargs: Passed to Handshake and Communicator
-        :type kwargs: dict
+        :type arrays_metadata: Dict[str, Dict]
+        :param args: Additional positional arguments for the initialization.
+        :param kwargs: Additional keyword arguments for the initialization. Can include
+            configuration parameters like timeout used during client setup.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
@@ -85,12 +81,12 @@ class Bridge(IBridge):
         self._has_close_been_called = False
         self.workers = None
         self.handshake = None
-        self.client = None
+        self.client: Optional[Client] = None
 
         if self.id == 0:
             # only id 0 has a real dask client
             self.client = get_client(timeout=kwargs.get("timeout", 10), name="bridge")
-            assert self.client is not None, "client cannot be None for Bridge id 0."
+            assert self.client, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
 
@@ -107,47 +103,69 @@ class Bridge(IBridge):
                                              arrays_metadata=self.arrays_metadata, **kwargs)
 
     def __del__(self):
+        """
+        Cleans up resources used by the object before it gets destroyed.
+
+        This method is called when the object is about to be destroyed and ensures that
+        any required cleanup operations are performed. The `close` method is invoked
+        with a timestep set to the maximum possible value.
+
+        :param timestep: A value to specify the timestep for cleanup operations. This
+            is set to the maximum integer value available in Python.
+        :type timestep: int
+        """
         self.close(timestep=sys.maxsize)
 
     def close(self, timestep: int) -> None:
+        """
+        Attempts to close the bridge connection. This involves ensuring the bridge is properly cleaned up,
+        orchestrating communication with other bridges, and notifying the analytics of the closure.
+        The method ensures that it is only executed once during the lifecycle of the instance.
+
+        :param timestep: The current timestep associated with the closure action.
+        :type timestep: int
+        :return: None
+        """
         logger.info(f"[{self.id}] Bridge close()")
         try:
             if not self._has_close_been_called:
                 self._has_close_been_called = True
-                ids = self.comm.gather(self.id, root=0)  # TODO: replace with barrier
-                if ids:
-                    assert self.handshake
+                self.comm.barrier()
+                if self.id == 0:
+                    assert self.handshake, "handshake cannot be None for Bridge id 0."
+                    assert self.client, "client cannot be None for Bridge id 0."
                     self.handshake.set_bridges_done(timestep=timestep)
                     self.client.close()
         except Exception as e:
             logger.error(f"[{self.id}] Cloud not cleanly close bridge. exception={e}")
 
-    def send(self, array_name: str, data: np.ndarray, iteration: int, chunked: bool = True, *args, **kwargs):
+    def send(self, array_name: str, chunk: np.ndarray, timestep: int, *args, **kwargs):
         """
-        Publishes data to the distributed workers and communicates metadata and data future via a queue. This method is used
-        to send data to workers in a distributed computing setup and ensures that both the metadata about the data and the
-        data itself (in the form of a future) are made available to the relevant processes. Metadata includes information
-        such as iteration number, MPI rank, data shape, and data type.
+        Handles the distribution of the given data chunk to workers in the Dask cluster.
+        This method sends the data directly to the workers.
 
-        :param array_name: Name of the array associated with the data
-        :type array_name: str
-        :param data: The data to be distributed among the workers
-        :type data: numpy.ndarray
-        :param iteration: The iteration number associated with the data
-        :type iteration: int
-        :param chunked: Defines if the data is a chunk.
-        :type chunked: bool
-        :return: None
+        :param array_name: The name of the data array being sent as a string.
+            This should match what is defined in the Bridge arrays_metadata.
+        :param chunk: A numpy ndarray containing the data chunk to be sent to the workers.
+        :param timestep: The current timestep associated to the sent data chunk.
+        :param args: Additional positional arguments if required by the method implementation.
+        :param kwargs: Additional keyword arguments for optional configurations.
+            Supported keys include:
+            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+            - `filter_workers` (callable): A function that filters the available workers
+              and returns a list of worker names. Must return a non-empty list of strings.
+
+        :return: None. All operations are internal and side effects include sending data
+            to workers, logging the event, and synchronizing worker states.
         """
-        logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={data.shape}, iteration={iteration}")
+        logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
-        rank = self.comm.Get_rank()
         assert isinstance(self.workers, dict)
-        workers = dict(self.workers)
+        workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
         if kwargs.get('update_workers', False):
             # only update worker list if requested
-            if rank == 0:
+            if self.id == 0:
                 assert self.client is not None, "client cannot be None for Bridge id 0."
                 # rank 0 retrieve workers and bcast to other bridges
                 workers = self.client.scheduler_info(n_workers=-1)["workers"]
@@ -156,6 +174,7 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() pre-bcast workers={workers}")
             self.workers = self.comm.bcast(workers, root=0)
             logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
+            workers = dict(self.workers)
 
         if kwargs.get('filter_workers', False):
             workers = kwargs['filter_workers'](workers)
@@ -168,17 +187,22 @@ class Bridge(IBridge):
                 if not isinstance(w, str):
                     raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
         else:
-            assert isinstance(workers, dict), f"workers must be a dict, got {type(workers)}"
             workers = list(workers.keys())
 
+        workers = sorted(workers)
+        # per bridge id and iteration round-robin over the workers
+        index = (timestep + self.id) % len(workers)
+        workers = [workers[index]]
+
+        assert len(workers) == 1, "worker list should be of length 1."
+
         # Send data to worker
-        res = self._better_scatter(data, workers=workers, hash=False)  # send data to workers
+        res = self._better_scatter(chunk, workers=workers, hash=False)  # send data to workers
 
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            # 'placement': self.comm.Get_coords(rank) if hasattr(self.comm, 'Get_coords') else self.id
-            'placement': self.id  # TODO
+            'placement': self.comm.Get_coords(self.id) if hasattr(self.comm, 'Get_coords') else self.id
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
@@ -205,12 +229,12 @@ class Bridge(IBridge):
 
             to_send = {
                 'array_name': array_name,
-                'iteration': iteration,
+                'iteration': timestep,
 
                 'futures': [{
                     'future': d['future-info']['future'],
-                    'shape': data.shape,
-                    'dtype': str(data.dtype),
+                    'shape': chunk.shape,
+                    'dtype': str(chunk.dtype),
                     'placement': d['placement']
                 } for d in gathered_data]
             }
@@ -221,11 +245,18 @@ class Bridge(IBridge):
 
     def get(self, key: str, timestep: Optional[int] = None, default: Any = None) -> Optional[Union[Deque, Any]]:
         """
-        This method is non-blocking.
-        It returns :
-            - the value of the key if it exists and timestep is found, otherwise it returns default.
-            - if timestep is None, it returns the Queue or default.
-            - if the queue is returned, a copy of the queue is returned.
+        Retrieve an element associated with a specific key and optional timestep from a feedback queue.
+        If a queue for the key does not exist, it initializes the queue for the specified key.
+
+        :param key: The unique identifier for the feedback queue.
+        :type key: str
+        :param timestep: An optional specific timestep to look for. If None, returns the entire deque.
+        :type timestep: Optional[int]
+        :param default: The default value to return if the specified timestep is not found.
+        :type default: Any
+        :return: The element associated with the specified timestep if found, the entire deque if no
+            timestep is specified, or the default value if the timestep is not found.
+        :rtype: Optional[Union[Deque, Any]]
         """
         logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
         fb_state: Dict = self._feedback_queues[key]
@@ -291,9 +322,9 @@ class Bridge(IBridge):
             data = [data]
         if isinstance(data, (list, tuple)):
             if hash:
-                names = [type(x).__name__ + "-" + tokenize(x) for x in data]
+                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + tokenize(x) for x in data]
             else:
-                names = [type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
+                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
             data = dict(zip(names, data))
 
         assert isinstance(data, dict)
