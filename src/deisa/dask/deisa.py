@@ -89,6 +89,7 @@ class Deisa(IDeisa):
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
         self._tasks = set()
+        self._active_futures = []
 
     def __del__(self):
         # delete Futures
@@ -335,21 +336,20 @@ class Deisa(IDeisa):
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
-                keys = [p["future"] for p in futures]
+                futures = tuple({**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures)
 
-                _weak_self.__update_futures_ownership(keys)
+                _weak_self.__update_futures_ownership(futures)
 
                 parts = sorted(futures, key=lambda p: p['chunk_position'])
 
                 darr_chunks = [
                     da.from_delayed(
-                        dask.delayed(Future(p["future"], client=_weak_self.client)),
+                        dask.delayed(p["future"]),
                         shape=p["shape"], dtype=p["dtype"],
                     ) for p in parts]
 
                 darr = _weak_self.__tile_dask_blocks(darr_chunks,
                                                      _weak_self.arrays_metadata[array_name]["global_shape"])
-
                 # dispatch to interested callbacks
                 for callback_id in list(_weak_self._callbacks_by_array.get(array_name, [])):
                     cb_data = _weak_self._callbacks.get(callback_id)
@@ -390,9 +390,12 @@ class Deisa(IDeisa):
 
             def _free_window(_):
                 # The next call to append will remove the 1st element. Might as well remove it now to free memory earlier.
-                dq = d["window"]
-                if len(dq) == dq.maxlen:
-                    dq.popleft()
+                # Remove all
+                for s in cb_data["state"].values():
+                    dq = s["window"]
+                    if len(dq) == dq.maxlen:
+                        dq.popleft()
+                        # self._active_futures.remove() # TODO
 
             task = asyncio.create_task(_run())
             task.add_done_callback(self._tasks.discard)
@@ -420,10 +423,14 @@ class Deisa(IDeisa):
             self.unregister_callback(callback_id)
 
     def __update_futures_ownership(self, futures: Collection[Future]):
+        # Keep a refence to the future, because the task graph lazily builds the dask array from the futures
+        self._active_futures += [p["future"] for p in futures]
+
+        keys = [p["future"].key for p in futures]
         # tell scheduler that my client is using these futures
-        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": futures, "client": self.client.id})
+        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": self.client.id})
         # tell scheduler that deisa client no longer needs the futures
-        self.client._send_to_scheduler({"op": "client-releases-keys", "keys": futures, "client": CLIENT_KEY})
+        self.client._send_to_scheduler({"op": "client-releases-keys", "keys": keys, "client": CLIENT_KEY})
 
     def __next_callback_id(self):
         self._callback_seq += 1

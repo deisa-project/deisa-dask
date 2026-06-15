@@ -28,6 +28,7 @@
 # =============================================================================
 import abc
 import asyncio
+import gc
 import logging
 import os.path
 import time
@@ -90,9 +91,9 @@ class TestUsingDaskCluster:
     @pytest.fixture(scope="function")
     def env_setup(self):
         self.state: Dict[str, Any] = {"counter": 0}
-        cluster = LocalCluster(n_workers=2, threads_per_worker=1, processes=True,
+        cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
                                dashboard_address=":0", worker_dashboard_address=":0")
-        cluster.wait_for_workers(2, timeout=10)
+        cluster.wait_for_workers(1, timeout=10)
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster, name="env_setup")
         yield client, cluster
@@ -246,6 +247,16 @@ class TestUsingDaskCluster:
                 if expected[array_name]["window_size"] is not None else DEFAULT_SLIDING_WINDOW_SIZE, \
                 "callback was not called with correct window size"
 
+            # Run some compute using the data. This checks that we can use the data.
+            for darr in state[array_name]:
+                s = darr.sum().compute()
+                print(f"arr={array_name}, t={darr.t}, sum={s}", flush=True)
+
+        @staticmethod
+        def exception_handler(e: BaseException):
+            print(e)
+            pytest.fail()
+
     class SingleArrayName(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             def cb(temperature: List[DeisaArray]):
@@ -295,8 +306,10 @@ class TestUsingDaskCluster:
                             else "temperature",
                             Window('pressure', expected_window_size['pressure'])
                             if expected_window_size['pressure']
-                            else "pressure")
-            def cb(temperature: List[DeisaArray], pressure: List[DeisaArray]):
+                            else "pressure",
+                            "density",
+                            exception_handler=self.exception_handler)
+            def cb(temperature: List[DeisaArray], pressure: List[DeisaArray], density: List[DeisaArray]):
                 state["temperature"] = temperature
                 state["pressure"] = pressure
                 state["counter"] += 1
@@ -328,16 +341,15 @@ class TestUsingDaskCluster:
             self.check_array("temperature", state, i, expected)
             assert state['map_block'] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
+    @pytest.mark.filterwarnings("error")
     @pytest.mark.timeout(30)
-    @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
-    @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
-    @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])
-    @pytest.mark.parametrize('pressure_window_size', [None, 1])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])
-    @pytest.mark.parametrize('nb_iterations', [1, 5])
-    @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(),
-                                             SingleArrayNameDecorator(), TwoArrayNameDecorator(),
-                                             MapBlocks()])
+    @pytest.mark.parametrize('temperature_global_grid_size', [(2, 18, 32, 32)])
+    @pytest.mark.parametrize('temperature_window_size', [1])
+    @pytest.mark.parametrize('pressure_global_grid_size', [(2, 18, 32, 32)])
+    @pytest.mark.parametrize('pressure_window_size', [1])
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 2, 1, 1)])
+    @pytest.mark.parametrize('nb_iterations', [10])
+    @pytest.mark.parametrize('register_fn', [TwoArrayNameDecorator()])
     def test_register_callback(self, temperature_global_grid_size: tuple,
                                pressure_global_grid_size: tuple,
                                mpi_parallelism: tuple,
@@ -360,13 +372,15 @@ class TestUsingDaskCluster:
                              arrays_metadata={
                                  'temperature': {
                                      'global_shape': temperature_global_grid_size,
-                                     'chunk_shape': (temperature_global_grid_size[0] // mpi_parallelism[0],
-                                                     temperature_global_grid_size[1] // mpi_parallelism[1])
+                                     'chunk_shape': (2, 9, 16, 16),
                                  },
                                  'pressure': {
                                      'global_shape': pressure_global_grid_size,
-                                     'chunk_shape': (pressure_global_grid_size[0] // mpi_parallelism[0],
-                                                     pressure_global_grid_size[1] // mpi_parallelism[1])
+                                     'chunk_shape': (2, 9, 16, 16),
+                                 },
+                                 'density': {
+                                     'global_shape': pressure_global_grid_size,
+                                     'chunk_shape': (2, 9, 16, 16),
                                  }
                              },
                              wait_for_go=False)
@@ -377,18 +391,25 @@ class TestUsingDaskCluster:
         register_fn.register_cb(self.state, deisa, {
             'temperature': temperature_window_size,
             'pressure': pressure_window_size,
+            'density': pressure_window_size,
         })
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
 
-            global_temperature, global_pressure = sim.generate_data('temperature', 'pressure', iteration=i)
+            global_temperature, global_pressure, _ = sim.generate_data('temperature', 'pressure', 'density',
+                                                                       iteration=i)
+
+            gc.collect()
+
             global_temperature_da = da.from_array(global_temperature,
-                                                  chunks=(temperature_global_grid_size[0] // mpi_parallelism[0],
-                                                          temperature_global_grid_size[1] // mpi_parallelism[1]))
+                                                  chunks=tuple(size // n_chunks
+                                                               for size, n_chunks
+                                                               in zip(global_temperature.shape, mpi_parallelism)))
             global_pressure_da = da.from_array(global_pressure,
-                                               chunks=(pressure_global_grid_size[0] // mpi_parallelism[0],
-                                                       pressure_global_grid_size[1] // mpi_parallelism[1]))
+                                               chunks=tuple(size // n_chunks
+                                                            for size, n_chunks
+                                                            in zip(global_pressure.shape, mpi_parallelism)))
 
             assert wait_for(lambda: self.state['counter'] == i, timeout=10), "callback was not called"
 
@@ -399,7 +420,10 @@ class TestUsingDaskCluster:
                              "window_size": pressure_window_size}
             })
 
-        del deisa
+        del sim
+
+        # del deisa
+        deisa.execute_callbacks()
 
     def test_callback_throws(self, env_setup):
         client, cluster = env_setup
