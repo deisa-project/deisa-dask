@@ -361,14 +361,12 @@ class TestUsingDaskCluster:
                                  'temperature': {
                                      'global_shape': temperature_global_grid_size,
                                      'chunk_shape': (temperature_global_grid_size[0] // mpi_parallelism[0],
-                                                     temperature_global_grid_size[1] // mpi_parallelism[1]),
-                                     'chunk_position': (0, 0)  # TODO
+                                                     temperature_global_grid_size[1] // mpi_parallelism[1])
                                  },
                                  'pressure': {
                                      'global_shape': pressure_global_grid_size,
                                      'chunk_shape': (pressure_global_grid_size[0] // mpi_parallelism[0],
-                                                     pressure_global_grid_size[1] // mpi_parallelism[1]),
-                                     'chunk_position': (0, 0)  # TODO
+                                                     pressure_global_grid_size[1] // mpi_parallelism[1])
                                  }
                              },
                              wait_for_go=False)

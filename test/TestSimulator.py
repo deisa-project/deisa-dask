@@ -29,13 +29,13 @@
 import asyncio
 import logging
 import sys
-from typing import Tuple, List
+from typing import Tuple
 
 import numpy as np
 from distributed import Client
 
 from deisa.dask import Bridge
-from utils import FakeComm, async_close_bridges
+from utils import FakeComm, async_close_bridges, FakeCartComm
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,23 @@ class TestSimulation:
         self.mpi_parallelism = mpi_parallelism
         nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
         comm_state = FakeComm.State(nb_mpi_ranks)
-        self.bridges: List[Bridge] = [
-            Bridge(comm=FakeComm(state=comm_state, rank=rank),
-                   arrays_metadata=arrays_metadata,
-                   *args, **kwargs)
-            for rank in range(nb_mpi_ranks)]
+        self.bridges = []
+        for rank in range(nb_mpi_ranks):
+            comm = FakeCartComm(comm_state, rank, dims=mpi_parallelism)
+            self.bridges.append(
+                Bridge(
+                    *args,
+                    comm=comm,
+                    arrays_metadata={
+                        name: {
+                            **metadata,
+                            "chunk_position": comm.Get_coords(rank),
+                        }
+                        for name, metadata in arrays_metadata.items()
+                    },
+                    **kwargs,
+                )
+            )
 
     def __del__(self):
         try:
