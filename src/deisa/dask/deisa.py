@@ -35,7 +35,6 @@ import time
 import weakref
 from typing import Callable, Union, Tuple, List, Literal, Any, Dict, Set, Collection
 
-import dask
 import dask.array as da
 import numpy as np
 from deisa.core import CallbackArgs, Window
@@ -89,7 +88,6 @@ class Deisa(IDeisa):
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
         self._tasks = set()
-        self._active_futures = []
 
     def __del__(self):
         # delete Futures
@@ -341,15 +339,13 @@ class Deisa(IDeisa):
                 _weak_self.__update_futures_ownership(futures)
 
                 parts = sorted(futures, key=lambda p: p['chunk_position'])
-
-                darr_chunks = [
-                    da.from_delayed(
-                        dask.delayed(p["future"]),
-                        shape=p["shape"], dtype=p["dtype"],
-                    ) for p in parts]
-
+                darr_chunks = [da.from_delayed(p["future"], shape=p["shape"], dtype=p["dtype"]) for p in parts]
                 darr = _weak_self.__tile_dask_blocks(darr_chunks,
                                                      _weak_self.arrays_metadata[array_name]["global_shape"])
+
+                # tell the scheduler that the futures used by this dask array must not be collected by gc
+                _weak_self.client.persist(darr)
+
                 # dispatch to interested callbacks
                 for callback_id in list(_weak_self._callbacks_by_array.get(array_name, [])):
                     cb_data = _weak_self._callbacks.get(callback_id)
@@ -369,7 +365,7 @@ class Deisa(IDeisa):
 
         return topic_handler
 
-    def _process_callback(self, callback_id, cb_data, array_name, darr, iteration):
+    def _process_callback(self, callback_id, cb_data, array_name: str, darr: da.Array, iteration: int):
         state = cb_data["state"]
 
         # update sliding window
@@ -395,7 +391,6 @@ class Deisa(IDeisa):
                     dq = s["window"]
                     if len(dq) == dq.maxlen:
                         dq.popleft()
-                        # self._active_futures.remove() # TODO
 
             task = asyncio.create_task(_run())
             task.add_done_callback(self._tasks.discard)
@@ -422,10 +417,7 @@ class Deisa(IDeisa):
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
             self.unregister_callback(callback_id)
 
-    def __update_futures_ownership(self, futures: Collection[Future]):
-        # Keep a refence to the future, because the task graph lazily builds the dask array from the futures
-        self._active_futures += [p["future"] for p in futures]
-
+    def __update_futures_ownership(self, futures: Collection[Any]):
         keys = [p["future"].key for p in futures]
         # tell scheduler that my client is using these futures
         self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": self.client.id})

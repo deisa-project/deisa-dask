@@ -302,14 +302,12 @@ class TestUsingDaskCluster:
     class TwoArrayNameDecorator(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             @deisa.register(Window('temperature', expected_window_size['temperature'])
-                            if expected_window_size['temperature']
-                            else "temperature",
+                            if expected_window_size['temperature'] else "temperature",
                             Window('pressure', expected_window_size['pressure'])
-                            if expected_window_size['pressure']
-                            else "pressure",
+                            if expected_window_size['pressure'] else "pressure",
                             "density",
                             exception_handler=self.exception_handler)
-            def cb(temperature: List[DeisaArray], pressure: List[DeisaArray], density: List[DeisaArray]):
+            def cb(temperature: List[DeisaArray], pressure: List[DeisaArray], _: List[DeisaArray]):
                 state["temperature"] = temperature
                 state["pressure"] = pressure
                 state["counter"] += 1
@@ -372,15 +370,21 @@ class TestUsingDaskCluster:
                              arrays_metadata={
                                  'temperature': {
                                      'global_shape': temperature_global_grid_size,
-                                     'chunk_shape': (2, 9, 16, 16),
+                                     'chunk_shape': tuple(g // p
+                                                          for g, p
+                                                          in zip(temperature_global_grid_size, mpi_parallelism)),
                                  },
                                  'pressure': {
                                      'global_shape': pressure_global_grid_size,
-                                     'chunk_shape': (2, 9, 16, 16),
+                                     'chunk_shape': tuple(g // p
+                                                          for g, p
+                                                          in zip(pressure_global_grid_size, mpi_parallelism)),
                                  },
                                  'density': {
                                      'global_shape': pressure_global_grid_size,
-                                     'chunk_shape': (2, 9, 16, 16),
+                                     'chunk_shape': tuple(g // p
+                                                          for g, p
+                                                          in zip(pressure_global_grid_size, mpi_parallelism)),
                                  }
                              },
                              wait_for_go=False)
