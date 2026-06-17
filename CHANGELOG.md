@@ -16,8 +16,9 @@ Types of changes:
 
 ## [Unreleased]
 
-### Changed
+### Added 
 
+- codemeta.json
 - Replace the setup.py by a pyproject.toml
 
 ## [0.5.0]
