@@ -14,6 +14,12 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## [Unreleased]
+
+### Added
+
+- Ruff code format through pyproject.toml, and CI linting
+
 ## [0.5.0]
 
 ### Added
@@ -56,7 +62,6 @@ Types of changes:
 - `Deisa.execute_callbacks`: unblock bridges, execute callbacks and wait for bridges to close
 - `utils.build_deisa_array()` to build a DeisaArray from a Dask Array
 - Deisa decorator to register callbacks
-- Ruff code format through pyproject.toml
 
 ### Changed
 
