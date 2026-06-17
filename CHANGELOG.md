@@ -14,6 +14,12 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## [Unreleased]
+
+### Changed
+
+- Replace the setup.py by a pyproject.toml
+
 ## [0.5.0]
 
 ### Added
@@ -32,7 +38,6 @@ Types of changes:
 - use a `weakref` inside the topic handler to avoid circular references
 - move constants from `deisa.py` to `constants.py`
 - use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
-- Replace the setup.py by a pyproject.toml
 
 ## [0.4.1]
 
