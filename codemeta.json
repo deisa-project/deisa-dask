@@ -1,0 +1,38 @@
+{
+	"@context": [
+		"https://doi.org/10.5063/schema/codemeta-2.0",
+		{
+			"numpex-catalog": "https://numpex.github.io/sw-catalog/terms-1.0/index.jsonld#",
+			"Role": "https://schema.org/Role",
+			"roleName": "https://schema.org/roleName",
+			"url": "https://schema.org/url"
+		}
+	],
+	"@type": "SoftwareSourceCode",
+	"license": "https://spdx.org/licenses/MIT",
+	"name": "Deisa-Dask",
+	"description": "DEISA is a library that enables real-time, scalable data analysis of HPC simulations by coupling MPI-based simulations with Dask-based analytics.",
+	"codeRepository": "https://github.com/deisa-project/deisa-dask",
+	"dateCreated": "2021-12-01",
+	"datePublished": "2022-01-04",
+	"issueTracker": "https://github.com/deisa-project/deisa-dask/issues",
+	"applicationCategory": "HPC",
+	"developmentStatus": "Active",
+	"releaseNotes": "https://github.com/deisa-project/deisa-dask/blob/main/CHANGELOG.md",
+	"codemeta:isSourceCodeOf": { "id": "https://github.com/deisa-project/deisa-dask" },
+	"programmingLanguage": [ "Python" ],
+	"operatingSystem": [ "Linux" ,"MacOS" ],
+	"keywords": [ "HPC" ,"In-situ Analytics" ],
+	"numpex-catalog:annotatedLink": [
+		{
+			"@type": "Role",
+			"roleName": "numpex-catalog:spack_package",
+			"url": "https://packages.spack.io/package.html?name=py-deisa-dask"
+		},
+		{
+			"@type": "Role",
+			"roleName": "numpex-catalog:guix_package",
+			"url": "https://codeberg.org/guix-science/guix-science/src/branch/master/guix-science/packages/python-xyz.scm"
+		}
+	]
+}
