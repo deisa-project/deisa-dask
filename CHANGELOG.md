@@ -14,6 +14,12 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## [Unreleased]
+
+### Added
+
+- CI mpich test cases
+
 ## [0.5.0]
 
 ### Added
