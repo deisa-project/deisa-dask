@@ -365,9 +365,9 @@ class TestUsingDaskCluster:
     @pytest.mark.timeout(30)
     @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])  # TODO (2, 18, 32, 32)
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
-    @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)]) # TODO (2, 18, 32, 32)
+    @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])  # TODO (2, 18, 32, 32)
     @pytest.mark.parametrize('pressure_window_size', [None, 1])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])   # TODO (1, 2, 1, 1)
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])  # TODO (1, 2, 1, 1)
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(), SingleArrayNameDecorator(),
                                              TwoArrayNameDecorator(), ThreeArrayNameDecorator(), MapBlocks()])
@@ -384,7 +384,8 @@ class TestUsingDaskCluster:
               f"mpi_parallelism={mpi_parallelism}, "
               f"nb_iterations={nb_iterations}, "
               f"temperature_window_size={temperature_window_size}, "
-              f"pressure_window_size={pressure_window_size}")
+              f"pressure_window_size={pressure_window_size}, "
+              f"register_fn={register_fn}")
 
         client, cluster = env_setup
 
