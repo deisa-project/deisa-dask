@@ -88,12 +88,13 @@ class TestDeisaCtor:
 
 
 class TestUsingDaskCluster:
-    @pytest.fixture(scope="function")
-    def env_setup(self):
+    @pytest.fixture(scope="function", params=[1, 2])
+    def env_setup(self, request):
+        print(f"setup env_setup with {request.param} workers", flush=True)
         self.state: Dict[str, Any] = {"counter": 0}
-        cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
+        cluster = LocalCluster(n_workers=request.param, threads_per_worker=1, processes=True,
                                dashboard_address=":0", worker_dashboard_address=":0")
-        cluster.wait_for_workers(1, timeout=10)
+        cluster.wait_for_workers(request.param, timeout=10)
         os.environ['DEISA_DASK_SCHEDULER_ADDRESS'] = cluster.scheduler_address
         client = Client(cluster, name="env_setup")
         yield client, cluster
