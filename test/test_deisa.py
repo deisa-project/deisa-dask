@@ -266,7 +266,8 @@ class TestUsingDaskCluster:
 
             deisa.register_callback(cb,
                                     Window('temperature', size=expected_window_size['temperature'])
-                                    if expected_window_size['temperature'] else 'temperature')
+                                    if expected_window_size['temperature'] else 'temperature',
+                                    exception_handler=self.exception_handler)
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
@@ -282,7 +283,8 @@ class TestUsingDaskCluster:
                                     Window('temperature', size=expected_window_size['temperature'])
                                     if expected_window_size['temperature'] else 'temperature',
                                     Window('pressure', size=expected_window_size['pressure'])
-                                    if expected_window_size['pressure'] else 'pressure')
+                                    if expected_window_size['pressure'] else 'pressure',
+                                    exception_handler=self.exception_handler)
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
@@ -291,8 +293,8 @@ class TestUsingDaskCluster:
     class SingleArrayNameDecorator(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             @deisa.register(Window('temperature', size=expected_window_size['temperature'])
-                            if expected_window_size['temperature']
-                            else 'temperature')
+                            if expected_window_size['temperature'] else 'temperature',
+                            exception_handler=self.exception_handler)
             def cb(temperature: List[DeisaArray]):
                 state["temperature"] = temperature
                 state["counter"] += 1
@@ -342,7 +344,8 @@ class TestUsingDaskCluster:
                 return np.array([[1]])
 
             @deisa.register(Window('temperature', size=expected_window_size['temperature'])
-                            if expected_window_size['temperature'] else 'temperature')
+                            if expected_window_size['temperature'] else 'temperature',
+                            exception_handler=self.exception_handler)
             def cb(temperature: List[DeisaArray]):
                 meta = np.array([[0]])
                 res = temperature[-1].map_blocks(map_block_function, dtype=int, meta=meta).compute()
