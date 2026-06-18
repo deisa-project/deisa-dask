@@ -413,13 +413,13 @@ class TestUsingDaskCluster:
                              wait_for_go=False)
         deisa = Deisa()
 
-        time.sleep(.2)  # wait for bridges and deisa to be ready
-
         register_fn.register_cb(self.state, deisa, {
             'temperature': temperature_window_size,
             'pressure': pressure_window_size,
             'density': pressure_window_size,
         })
+
+        time.sleep(.2)  # wait for bridges and deisa to be ready
 
         for i in range(1, nb_iterations + 1):
             print(f"iteration {i}", flush=True)
