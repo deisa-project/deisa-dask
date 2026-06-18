@@ -16,11 +16,15 @@ Types of changes:
 
 ## [Unreleased]
 
-### Added 
+### Added
 
 - codemeta.json
 - Replace the setup.py by a pyproject.toml
 - Ruff code format through pyproject.toml, and CI linting
+
+### Changed
+
+- Comply to Ruff linter using the new rules defined in pyproject.toml
 
 ## [0.5.0]
 

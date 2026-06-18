@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 def is_mpi_comm(comm):
     try:
         from mpi4py import MPI
+
         return isinstance(comm, MPI.Comm)
     except ImportError:
         return False
@@ -50,8 +51,10 @@ def is_mpi_comm(comm):
 def is_running_on_mpi():
     try:
         import mpi4py
+
         mpi4py.rc.initialize = False
         from mpi4py import MPI
+
         return MPI.Is_initialized()  # and MPI.COMM_WORLD.Get_size() > 1
     except ImportError:
         return False
@@ -67,6 +70,7 @@ def resolve_comm(comm, cart_coord_dims=1, use_mpi_if_available=True, *args, **kw
         if use_mpi_if_available and is_running_on_mpi():
             try:
                 from mpi4py import MPI
+
                 mpi_comm = MPI.COMM_WORLD
                 dims = MPI.Compute_dims(mpi_comm.Get_size(), dims=cart_coord_dims)
                 cart_comm = mpi_comm.Create_cart(dims)
@@ -220,20 +224,23 @@ def setup_comm(dask_scheduler, size: int):
     logger.debug(f"setup_comm: size={size}")
     if "deisa_register" not in dask_scheduler.handlers:
         comm = CommState(dask_scheduler, size=size)
-        dask_scheduler.handlers.update({
-            "deisa_register": comm.register,
-            "deisa_get_size": comm.get_size,
-            "deisa_gather": comm.gather,
-            "deisa_bcast": comm.bcast
-        })
+        dask_scheduler.handlers.update(
+            {
+                "deisa_register": comm.register,
+                "deisa_get_size": comm.get_size,
+                "deisa_gather": comm.gather,
+                "deisa_bcast": comm.bcast,
+            }
+        )
     else:
-        logger.info(f"Deisa DaskComm in already registered. Ignoring.")
+        logger.info("Deisa DaskComm in already registered. Ignoring.")
 
 
 class CommClient:
     def __init__(self, comm_state_rpc, client: Optional[Client] = None, *args, **kwargs):
         logger.debug(
-            f"CommClient.__init__(): comm_state_rpc={comm_state_rpc}, client={client}, args={args}, kwargs={kwargs}")
+            f"CommClient.__init__(): comm_state_rpc={comm_state_rpc}, client={client}, args={args}, kwargs={kwargs}"
+        )
         self.comm_state_rpc = comm_state_rpc
         self.client = client
         self._rank = None

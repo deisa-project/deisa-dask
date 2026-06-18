@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
     plt.figure(figsize=(10, 6))
 
-    for (scatter_type, data_size) in sorted(by_line.keys()):
+    for scatter_type, data_size in sorted(by_line.keys()):
         clients_list = sorted(by_line[(scatter_type, data_size)].keys())
         if not clients_list:
             continue

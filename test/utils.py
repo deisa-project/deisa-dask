@@ -30,7 +30,7 @@ import asyncio
 import multiprocessing
 import threading
 import time
-from typing import Optional, Any, Literal, List, Sequence
+from typing import Any, List, Literal, Optional, Sequence
 
 import dask.array as da
 from deisa.core import ICommunicator
@@ -130,17 +130,12 @@ class FakeComm(ICommunicator):
             state.gather_data[self._rank] = data
 
             if len(state.gather_data) == state.size:
-                state.gather_result = [
-                    state.gather_data[r]
-                    for r in range(state.size)
-                ]
+                state.gather_result = [state.gather_data[r] for r in range(state.size)]
 
                 state.condition.notify_all()
 
             else:
-                state.condition.wait_for(
-                    lambda: state.gather_result is not None
-                )
+                state.condition.wait_for(lambda: state.gather_result is not None)
 
             result = state.gather_result
 
@@ -170,9 +165,7 @@ class FakeComm(ICommunicator):
 
             else:
                 # Wait for root
-                state.condition.wait_for(
-                    lambda: state.bcast_ready
-                )
+                state.condition.wait_for(lambda: state.bcast_ready)
 
             result = state.bcast_value
 

@@ -33,9 +33,9 @@ from typing import Tuple
 
 import numpy as np
 from distributed import Client
+from utils import FakeCartComm, FakeComm, async_close_bridges
 
 from deisa.dask import Bridge
-from utils import FakeComm, async_close_bridges, FakeCartComm
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +57,7 @@ class TestSimulation:
                     *args,
                     comm=comm,
                     arrays_metadata={
-                        name: {
-                            **metadata,
-                            "chunk_position": comm.Get_coords(rank),
-                        }
+                        name: {**metadata, "chunk_position": comm.Get_coords(rank)}
                         for name, metadata in arrays_metadata.items()
                     },
                     **kwargs,
@@ -75,14 +72,14 @@ class TestSimulation:
 
     def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
         # Create coordinate grid
-        shape = self.arrays_metadata[array_name]['global_shape']
+        shape = self.arrays_metadata[array_name]["global_shape"]
         x = np.linspace(-1, 1, shape[0])
         y = np.linspace(-1, 1, shape[1])
-        X, Y = np.meshgrid(x, y, indexing='ij')
+        X, Y = np.meshgrid(x, y, indexing="ij")
 
         # Generate 2D Gaussian (bell curve)
         sigma = 0.5
-        global_data_np = np.exp(-(X ** 2 + Y ** 2) / (2 * sigma ** 2))
+        global_data_np = np.exp(-(X**2 + Y**2) / (2 * sigma**2))
 
         # Add Gaussian noise if requested
         if noise_level > 0:
@@ -105,13 +102,14 @@ class TestSimulation:
         blocks = []
         for i in range(0, rows, block_rows):
             for j in range(0, cols, block_cols):
-                block = arr[i:i + block_rows, j:j + block_cols]
+                block = arr[i : i + block_rows, j : j + block_cols]
                 blocks.append(block)
 
         return blocks
 
-    def generate_data(self, *array_names: str, iteration: int, update_workers: bool = False) \
-            -> np.ndarray | Tuple[np.ndarray]:
+    def generate_data(
+        self, *array_names: str, iteration: int, update_workers: bool = False
+    ) -> np.ndarray | Tuple[np.ndarray]:
         global_datas = []
         for array_name in array_names:
             global_data = self.__gen_data(array_name, noise_level=iteration)
@@ -121,9 +119,12 @@ class TestSimulation:
             assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
 
             async def _bridge_send():
-                await asyncio.gather(*[asyncio.to_thread(bridge.send, array_name, chunks[i], iteration,
-                                                         update_workers=update_workers)
-                                       for i, bridge in enumerate(self.bridges)])
+                await asyncio.gather(
+                    *[
+                        asyncio.to_thread(bridge.send, array_name, chunks[i], iteration, update_workers=update_workers)
+                        for i, bridge in enumerate(self.bridges)
+                    ]
+                )
 
             asyncio.run(_bridge_send())
 

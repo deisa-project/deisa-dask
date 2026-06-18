@@ -30,19 +30,19 @@ import asyncio
 import logging
 import sys
 import uuid
-from collections import deque, defaultdict
+from collections import defaultdict, deque
 from numbers import Number
-from typing import Any, Iterator, List, Dict, Optional, Union, Deque
+from typing import Any, Deque, Dict, Iterator, List, Optional, Union
 
 import numpy as np
-from dask.tokenize import tokenize
-from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
-from distributed import Queue, Client
+from deisa.core import IBridge, ICommunicator, validate_arrays_metadata
+from distributed import Client, Queue
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
-from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
+from dask.tokenize import tokenize
+from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
@@ -99,8 +99,9 @@ class Bridge(IBridge):
             # all bridges are ready, tell handshake actor
             assert self.client is not None, "client cannot be None for Bridge id 0."
             self.handshake = Handshake(self.client)
-            self.handshake.all_bridges_ready(nb_bridge=self.comm.Get_size(),
-                                             arrays_metadata=self.arrays_metadata, **kwargs)
+            self.handshake.all_bridges_ready(
+                nb_bridge=self.comm.Get_size(), arrays_metadata=self.arrays_metadata, **kwargs
+            )
 
     def __del__(self):
         """
@@ -166,7 +167,7 @@ class Bridge(IBridge):
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
-        if kwargs.get('update_workers', False):
+        if kwargs.get("update_workers", False):
             # only update worker list if requested
             if self.id == 0:
                 assert self.client is not None, "client cannot be None for Bridge id 0."
@@ -179,8 +180,8 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
             workers = dict(self.workers)
 
-        if kwargs.get('filter_workers', False):
-            workers = kwargs['filter_workers'](workers)
+        if kwargs.get("filter_workers", False):
+            workers = kwargs["filter_workers"](workers)
             # check return type
             if not isinstance(workers, list):
                 raise TypeError(f"worker_filter must return a list, got {type(workers)}")
@@ -203,10 +204,7 @@ class Bridge(IBridge):
         res = self._better_scatter(chunk, workers=workers, hash=False)  # send data to workers
 
         # Barrier. Wait for all bridges.
-        to_send = {
-            'future-info': res,
-            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
-        }
+        to_send = {"future-info": res, "chunk_position": self.arrays_metadata[array_name]["chunk_position"]}
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
         logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
@@ -219,9 +217,9 @@ class Bridge(IBridge):
             nbytes = {}
             keys = []
             for d in gathered_data:
-                who_has = {**who_has, **d['future-info']['who_has']}
-                nbytes = {**nbytes, **d['future-info']['nbytes']}
-                keys.append(d['future-info']['future'])
+                who_has = {**who_has, **d["future-info"]["who_has"]}
+                nbytes = {**nbytes, **d["future-info"]["nbytes"]}
+                keys.append(d["future-info"]["future"])
 
             # only update the scheduler with who has what and register the future once
             self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
@@ -231,15 +229,17 @@ class Bridge(IBridge):
             self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
             to_send = {
-                'array_name': array_name,
-                'iteration': timestep,
-
-                'futures': [{
-                    'future': d['future-info']['future'],
-                    'shape': chunk.shape,
-                    'dtype': str(chunk.dtype),
-                    'chunk_position': d['chunk_position']
-                } for d in gathered_data]
+                "array_name": array_name,
+                "iteration": timestep,
+                "futures": [
+                    {
+                        "future": d["future-info"]["future"],
+                        "shape": chunk.shape,
+                        "dtype": str(chunk.dtype),
+                        "chunk_position": d["chunk_position"],
+                    }
+                    for d in gathered_data
+                ],
             }
             logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
             self.client.log_event(array_name, to_send)
@@ -268,19 +268,21 @@ class Bridge(IBridge):
             if len(fb_state) == 0:
                 feedback_queue_size = self.handshake.get_feedback_queue_size()
                 fb_state[key] = {
-                    'q': Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=feedback_queue_size),
-                    'deque': deque(maxlen=feedback_queue_size)}
+                    "q": Queue(f"{FEEDBACK_QUEUE_PREFIX}{key}", client=self.client, maxsize=feedback_queue_size),
+                    "deque": deque(maxlen=feedback_queue_size),
+                }
 
-            q: Queue = fb_state[key]['q']
-            d: deque = fb_state[key]['deque']
+            q: Queue = fb_state[key]["q"]
+            d: deque = fb_state[key]["deque"]
 
             if q.qsize() != 0:
                 # List[(int, Any), ...]
                 full_q = q.get(batch=True)  # get all elements. This pops elements from the Dask queue.
-                for v in full_q: d.append(v)  # add all elements to deque
+                for v in full_q:
+                    d.append(v)  # add all elements to deque
             logger.debug(f"[{self.id}] get() fb_state={fb_state}")
 
-        d = self.comm.bcast(fb_state[key]['deque'], root=0)
+        d = self.comm.bcast(fb_state[key]["deque"], root=0)
 
         if timestep is None:
             return d
@@ -299,11 +301,7 @@ class Bridge(IBridge):
             workers = self.workers
 
         if self.client:
-            return self.client.sync(
-                self.__scatter,
-                data,
-                workers=workers,
-                hash=hash)
+            return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
         else:
             return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
 
@@ -336,14 +334,7 @@ class Bridge(IBridge):
 
         _, who_has, nbytes = await scatter_to_workers(workers, data2)
 
-        out = {
-            k: {
-                'future': k,
-                'who_has': who_has,
-                'nbytes': nbytes
-            }
-            for k in data
-        }
+        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
