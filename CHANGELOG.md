@@ -16,11 +16,17 @@ Types of changes:
 
 ## Unreleased
 
+### Added
+
+- codemeta.json
+
+### Changed
+
+- replace the setup.py by a pyproject.toml
+- use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
+
 ### Fixed
 
-- use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
-- codemeta.json
-- Replace the setup.py by a pyproject.toml
 - UserWarning: Client desires key but key is unknown
 
 ## [0.5.0]
