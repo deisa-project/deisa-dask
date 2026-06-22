@@ -16,6 +16,8 @@ Types of changes:
 
 ## Unreleased
 
+## [0.5.1]
+
 ### Added
 
 - codemeta.json
