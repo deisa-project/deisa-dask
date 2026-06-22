@@ -363,11 +363,11 @@ class TestUsingDaskCluster:
 
     @pytest.mark.filterwarnings("error")
     @pytest.mark.timeout(30)
-    @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])  # TODO (2, 18, 32, 32)
+    @pytest.mark.parametrize('temperature_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
-    @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])  # TODO (2, 18, 32, 32)
+    @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('pressure_window_size', [None, 1])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])  # TODO (1, 2, 1, 1)
+    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(), SingleArrayNameDecorator(),
                                              TwoArrayNameDecorator(), ThreeArrayNameDecorator(), MapBlocks()])
