@@ -14,12 +14,22 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
-## [Unreleased]
+## Unreleased
 
-### Added 
+## [0.5.1]
+
+### Added
 
 - codemeta.json
-- Replace the setup.py by a pyproject.toml
+
+### Changed
+
+- replace the setup.py by a pyproject.toml
+- use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
+
+### Fixed
+
+- UserWarning: Client desires key but key is unknown
 
 ## [0.5.0]
 
@@ -38,7 +48,6 @@ Types of changes:
 - prefix Future keys with `KEY_PREFIX` to help identify associated tasks
 - use a `weakref` inside the topic handler to avoid circular references
 - move constants from `deisa.py` to `constants.py`
-- use chunk position from arrays_metadata instead of the chunk position from the bridge communicator
 
 ## [0.4.1]
 

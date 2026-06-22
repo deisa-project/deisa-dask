@@ -35,7 +35,6 @@ import time
 import weakref
 from typing import Callable, Union, Tuple, List, Literal, Any, Dict, Set, Collection
 
-import dask
 import dask.array as da
 import numpy as np
 from deisa.core import CallbackArgs, Window
@@ -335,20 +334,17 @@ class Deisa(IDeisa):
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
-                keys = [p["future"] for p in futures]
+                futures = tuple({**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures)
 
-                _weak_self.__update_futures_ownership(keys)
+                _weak_self.__update_futures_ownership(futures)
 
                 parts = sorted(futures, key=lambda p: p['chunk_position'])
-
-                darr_chunks = [
-                    da.from_delayed(
-                        dask.delayed(Future(p["future"], client=_weak_self.client)),
-                        shape=p["shape"], dtype=p["dtype"],
-                    ) for p in parts]
-
+                darr_chunks = [da.from_delayed(p["future"], shape=p["shape"], dtype=p["dtype"]) for p in parts]
                 darr = _weak_self.__tile_dask_blocks(darr_chunks,
                                                      _weak_self.arrays_metadata[array_name]["global_shape"])
+
+                # tell the scheduler that the futures used by this dask array must not be collected by gc
+                _weak_self.client.persist(darr)
 
                 # dispatch to interested callbacks
                 for callback_id in list(_weak_self._callbacks_by_array.get(array_name, [])):
@@ -369,7 +365,7 @@ class Deisa(IDeisa):
 
         return topic_handler
 
-    def _process_callback(self, callback_id, cb_data, array_name, darr, iteration):
+    def _process_callback(self, callback_id, cb_data, array_name: str, darr: da.Array, iteration: int):
         state = cb_data["state"]
 
         # update sliding window
@@ -390,9 +386,11 @@ class Deisa(IDeisa):
 
             def _free_window(_):
                 # The next call to append will remove the 1st element. Might as well remove it now to free memory earlier.
-                dq = d["window"]
-                if len(dq) == dq.maxlen:
-                    dq.popleft()
+                # Remove all
+                for s in cb_data["state"].values():
+                    dq = s["window"]
+                    if len(dq) == dq.maxlen:
+                        dq.popleft()
 
             task = asyncio.create_task(_run())
             task.add_done_callback(self._tasks.discard)
@@ -419,11 +417,12 @@ class Deisa(IDeisa):
             logger.info(f"Exception in exception handler. Unregistering callback_id={callback_id}")
             self.unregister_callback(callback_id)
 
-    def __update_futures_ownership(self, futures: Collection[Future]):
+    def __update_futures_ownership(self, futures: Collection[Any]):
+        keys = [p["future"].key for p in futures]
         # tell scheduler that my client is using these futures
-        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": futures, "client": self.client.id})
+        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": self.client.id})
         # tell scheduler that deisa client no longer needs the futures
-        self.client._send_to_scheduler({"op": "client-releases-keys", "keys": futures, "client": CLIENT_KEY})
+        self.client._send_to_scheduler({"op": "client-releases-keys", "keys": keys, "client": CLIENT_KEY})
 
     def __next_callback_id(self):
         self._callback_seq += 1

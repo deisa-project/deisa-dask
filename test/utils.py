@@ -87,6 +87,28 @@ def async_close_bridges(bridges: List[Bridge], timestep: int):
     asyncio.run(_close_bridges())
 
 
+def infer_parallelism_auto(global_size: Sequence[int], max_splits: int = 1) -> tuple[int, ...]:
+    ndim = len(global_size)
+
+    # start with 1 split per dimension
+    parallelism = [1] * ndim
+
+    # distribute splits as evenly as possible
+    base = max_splits // ndim
+    remainder = max_splits % ndim
+
+    for i in range(ndim):
+        parallelism[i] += base
+
+    # distribute leftover splits to largest dimensions first
+    dims = sorted(range(ndim), key=lambda i: global_size[i], reverse=True)
+
+    for i in range(remainder):
+        parallelism[dims[i]] += 1
+
+    return tuple(parallelism)
+
+
 class FakeComm(ICommunicator):
     class State:
         def __init__(self, size: int, mode: Literal["thread", "process"] = "thread"):
