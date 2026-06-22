@@ -27,12 +27,14 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import asyncio
+import itertools
 import logging
 import sys
-from typing import Tuple
+from typing import Tuple, Any
 
 import numpy as np
 from distributed import Client
+from numpy import dtype, float64, ndarray
 
 from deisa.dask import Bridge
 from utils import FakeComm, async_close_bridges, FakeCartComm
@@ -47,7 +49,7 @@ class TestSimulation:
         self.client = client
         self.arrays_metadata = arrays_metadata
         self.mpi_parallelism = mpi_parallelism
-        nb_mpi_ranks = mpi_parallelism[0] * mpi_parallelism[1]
+        nb_mpi_ranks = int(np.prod(mpi_parallelism))
         comm_state = FakeComm.State(nb_mpi_ranks)
         self.bridges = []
         for rank in range(nb_mpi_ranks):
@@ -73,40 +75,35 @@ class TestSimulation:
         except Exception as e:
             logger.error(f"Error while closing bridges: {e}")
 
-    def __gen_data(self, array_name: str, noise_level: int = 0) -> np.ndarray:
+    def __gen_data(self, array_name: str, noise_level: int = 0) -> float | ndarray[tuple[Any, ...], dtype[float64]]:
         # Create coordinate grid
         shape = self.arrays_metadata[array_name]['global_shape']
-        x = np.linspace(-1, 1, shape[0])
-        y = np.linspace(-1, 1, shape[1])
-        X, Y = np.meshgrid(x, y, indexing='ij')
-
-        # Generate 2D Gaussian (bell curve)
-        sigma = 0.5
-        global_data_np = np.exp(-(X ** 2 + Y ** 2) / (2 * sigma ** 2))
-
-        # Add Gaussian noise if requested
-        if noise_level > 0:
-            noise = np.random.normal(loc=0.0, scale=noise_level, size=global_data_np.shape)
-            global_data_np += noise
-
-        # global_data_da = da.from_array(global_data_np)
-        return global_data_np
+        return np.random.random(shape)
 
     def __split_array_equal_chunks(self, arr: np.ndarray) -> list[np.ndarray]:
-        if arr.ndim != 2:
-            raise ValueError("Input must be a 2D array")
+        if arr.ndim != len(self.mpi_parallelism):
+            raise ValueError(
+                f"Array has {arr.ndim} dimensions but mpi_parallelism has "
+                f"{len(self.mpi_parallelism)} entries"
+            )
 
-        rows, cols = arr.shape
-        block_rows, block_cols = rows // self.mpi_parallelism[0], cols // self.mpi_parallelism[1]
-
-        if rows % block_rows != 0 or cols % block_cols != 0:
-            raise ValueError(f"Array shape {arr.shape} not divisible by block size ({block_rows}, {block_cols})")
+        chunk_shape = []
+        for size, n_chunks in zip(arr.shape, self.mpi_parallelism):
+            if size % n_chunks != 0:
+                raise ValueError(
+                    f"Array shape {arr.shape} is not divisible by "
+                    f"mpi_parallelism {self.mpi_parallelism}"
+                )
+            chunk_shape.append(size // n_chunks)
 
         blocks = []
-        for i in range(0, rows, block_rows):
-            for j in range(0, cols, block_cols):
-                block = arr[i:i + block_rows, j:j + block_cols]
-                blocks.append(block)
+
+        for chunk_idx in itertools.product(*(range(n_chunks) for n_chunks in self.mpi_parallelism)):
+            slices = tuple(
+                slice(i * c, (i + 1) * c)
+                for i, c in zip(chunk_idx, chunk_shape)
+            )
+            blocks.append(arr[slices])
 
         return blocks
 
@@ -118,7 +115,8 @@ class TestSimulation:
             global_datas.append(global_data)
             chunks = self.__split_array_equal_chunks(global_data)
 
-            assert len(chunks) == len(self.bridges), "There should be as many chunks as bridges."
+            assert len(chunks) == len(self.bridges), \
+                f"There should be as many chunks as bridges ({len(chunks)} != {len(self.bridges)})."
 
             async def _bridge_send():
                 await asyncio.gather(*[asyncio.to_thread(bridge.send, array_name, chunks[i], iteration,
