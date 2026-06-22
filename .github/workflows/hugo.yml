@@ -82,6 +82,7 @@ jobs:
             hugo-
       - name: Build the site
         run: |
+          pydoc-markdown \
           cd site/ \
           hugo build \
             --gc \
