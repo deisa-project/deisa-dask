@@ -4,7 +4,7 @@ title: deisa-dask website
 
 module:
   imports:
-    - path: hextra
+    - path: github.com/imfing/hextra
 
 params:
   navbar:
@@ -49,7 +49,7 @@ menu:
 
     - name: GitHub
       weight: 5
-      url: "https://github.com/deisa-core/deisa-dask"
+      url: "https://github.com/deisa-project/deisa-dask"
       params:
         icon: github
 

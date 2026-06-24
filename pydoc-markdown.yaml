@@ -5,7 +5,7 @@ loaders:
 
 processors:
   - type: filter
-    documented_only: false
+    documented_only: true
 
 renderer:
   type: markdown
