@@ -1,0 +1,57 @@
+baseURL: https://deisa-project.github.io/deisa-dask
+languageCode: en-us
+title: deisa-dask
+
+theme: hextra
+
+params:
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      path: images/logo.png
+      dark: images/logo.png
+      link: /
+      width: 40
+      height: 20
+
+menu:
+  main:
+    - name: Documentation
+      pageRef: /docs
+      weight: 1
+
+    - name: Blog
+      pageRef: /blog
+      weight: 2
+
+    # - identifier: more
+    #   name: More
+    # - identifier: about
+    #   name: About
+    #   pageRef: /about
+    #   parent: more
+    # - identifier: archives
+    #   name: Archives
+    #   pageRef: /archives
+    #   parent: more
+    # - identifier: glossary
+    #   name: Glossary
+    #   pageRef: /glossary
+    #   parent: more
+    #
+    - name: Search
+      weight: 4
+      params:
+        type: search
+
+    - name: GitHub
+      weight: 5
+      url: "https://github.com/deisa-project/deisa-dask"
+      params:
+        icon: github
+
+    - name: Theme Toggle
+      params:
+        type: theme-toggle
+        label: true
