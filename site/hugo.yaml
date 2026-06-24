@@ -1,3 +1,7 @@
+baseURL: https://deisa-project.github.io/deisa-dask
+languageCode: en-us
+title: deisa-dask website
+
 module:
   imports:
     - path: hextra
