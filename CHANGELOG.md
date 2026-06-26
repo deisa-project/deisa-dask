@@ -19,13 +19,13 @@ Types of changes:
 ### Added
 
 - documentation website
+- CI mpich test cases
 
 ## [0.5.1]
 
 ### Added
 
 - codemeta.json
-- CI mpich test cases
 
 ### Changed
 
