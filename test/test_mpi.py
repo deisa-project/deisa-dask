@@ -183,6 +183,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         assert async_result.get(timeout=10) == 0
     finally:
         client.close()
+        client = None
         cluster.close()
         pool.terminate()
 
