@@ -1,0 +1,12 @@
+loaders:
+  - type: python
+    search_path:
+      - src/deisa
+
+processors:
+  - type: filter
+    documented_only: true
+
+renderer:
+  type: markdown
+  filename: site/content/docs/_index.md
