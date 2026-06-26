@@ -1,19 +1,48 @@
 baseURL: https://deisa-project.github.io/deisa-dask
-languageCode: en-us
 title: deisa-dask
 
 theme: hextra
 
-params:
-  navbar:
-    displayTitle: true
-    displayLogo: true
-    logo:
-      path: images/logo.png
-      dark: images/logo.png
-      link: /
-      width: 40
-      height: 20
+enableRobotsTXT: true
+# Parse Git commit
+enableGitInfo: true
+# enableEmoji: false
+hasCJKLanguage: true
+
+# services:
+#   googleAnalytics:
+#     ID: G-MEASUREMENT_ID
+
+outputs:
+  home: [html, llms]
+  page: [html, markdown]
+  section: [html, rss, markdown]
+
+defaultContentLanguage: en
+languages:
+  en:
+    label: English
+    weight: 1
+  # fr:
+  #   label: French
+  #   local: fr
+  #   weight: 2
+  #   title: deisa-dask
+
+markup:
+  highlight:
+    noClasses: false
+  goldmark:
+    renderer:
+      unsafe: true
+    extensions:
+      passthrough:
+        delimiters:
+          block: [['\[', '\]'], ['$$', '$$']]
+          inline: [['\(', '\)']]
+        enable: true
+
+enableInlineShortcodes: true
 
 menu:
   main:
@@ -55,3 +84,138 @@ menu:
       params:
         type: theme-toggle
         label: true
+
+  # sidebar:
+  #   - identifier: more
+  #     name: More
+  #     params:
+  #       type: separator
+  #     weight: 1
+  #   - identifier: about
+  #     name: "About"
+  #     pageRef: "/about"
+  #     weight: 2
+  #   - identifier: hugoDocs
+  #     name: "Hugo Docs ↗"
+  #     url: "https://gohugo.io/documentation/"
+  #     weight: 3
+
+params:
+  description: Modern, responsive, batteries-included Hugo theme for creating beautiful static websites.
+
+  externalLinkDecoration: true
+
+  banner:
+    key: 'announcement-v0.5.1'
+    message: |
+      deisa-dask **v0.5.1** is here! 🎉 Discover [what's new]({{% relref "blog/0.5.1" %}})
+
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      path: images/logo.png
+      dark: images/logo.png
+      # link: /
+      # width: 40
+      # height: 20
+    width: wide
+
+  theme:
+    # light | dark | system
+    default: system
+    displayToggle: true
+
+  footer:
+    enable: true
+    displayCopyright: false
+    displayPoweredBy: false
+    width: normal
+
+  # Display the last modification date
+  displayUpdatedDate: true
+  dateFormat: "January 2, 2006"
+
+  # Display the author name of the last modified date
+  displayUpdatedAuthor: false
+
+  # Search
+  # flexsearch is enabled by default
+  search:
+    enable: true
+    type: flexsearch
+
+    flexsearch:
+      # index page by: content | summary | heading | title
+      index: content
+      # full | forward | reverse | strict
+      # https://github.com/nextapps-de/flexsearch/#tokenizer-prefix-search
+      tokenize: forward
+
+  # editURL:
+  #   enable: true
+  #   base: "https://github.com/imfing/hextra/edit/main/docs/content"
+
+  blog:
+    list:
+      displayTags: true
+      # date | lastmod | publishDate | title | weight
+      sortBy: date
+      sortOrder: desc # or "asc"
+      # Pagination
+      pagerSize: 20
+
+    article:
+      displayPagination: true
+
+  # archives:
+  #   # Source section used for the archives page.
+  #   section: blog
+  #   # Date format for archive list items.
+  #   dateFormat: "Jan 02"
+
+  toc:
+    displayTags: true
+
+  highlight:
+    copy:
+      enable: true
+      # hover | always
+      display: hover
+
+  page:
+    # full (100%), wide (90rem), normal (80rem)
+    width: normal
+    # tabs:
+    #   sync: true
+    contextMenu:
+      enable: false
+      links:
+        - name: Open in ChatGPT
+          icon: chatgpt
+          url: "https://chatgpt.com/?hints=search&q=I%27m+looking+at+this+documentation%3A+{url}%0AHelp+me+understand+how+to+use+it."
+        - name: Open in Claude
+          icon: claude
+          url: "https://claude.ai/new?q=I%27m+looking+at+this+documentation%3A+{url}%0AHelp+me+understand+how+to+use+it."
+
+  imageZoom:
+    enable: true
+
+  # comments:
+  #   enable: false
+  #   type: giscus
+  #
+  #   # https://giscus.app/
+  #   giscus:
+  #     repo: imfing/hextra
+  #     repoId: R_kgDOJ9fJag
+  #     category: General
+  #     categoryId: DIC_kwDOJ9fJas4CY7gW
+  #     # mapping: pathname
+  #     # strict: 0
+  #     # reactionsEnabled: 1
+  #     # emitMetadata: 0
+  #     # inputPosition: top
+  #     # lang: en
+  #     # theme: noborder_dark
+

@@ -1,8 +1,11 @@
-+++
-# title = 'this is the blog index'
-date = 2026-06-24T07:07:07+01:00
-draft = true
-+++
+---
+title: "Blog"
+---
 
-# This is the blog index
+<div style="text-align: center; margin-top: 1em;">
+{{< hextra/hero-badge link="index.xml" >}}
+  <span>RSS Feed</span>
+  {{< icon name="rss" attributes="height=14" >}}
+{{< /hextra/hero-badge >}}
+</div>
 

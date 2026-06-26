@@ -9,4 +9,4 @@ processors:
 
 renderer:
   type: markdown
-  filename: site/content/docs/_index.md
+  filename: site/content/docs/public-api.md
