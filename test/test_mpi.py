@@ -76,12 +76,12 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
-def has_mpirun():
-    return shutil.which("mpirun") is not None
+def has_mpiexec():
+    return shutil.which("mpiexec") is not None
 
 
-def build_mpirun_cmd(n: int, *extra_args) -> list:
-    cmd = ["mpirun", "-n", str(n)]
+def build_mpiexec_cmd(n: int, *extra_args) -> list:
+    cmd = ["mpiexec", "-n", str(n)]
     mpi_impl = os.environ.get("MPI_IMPL", "openmpi")
     if mpi_impl == "openmpi":
         cmd.append("--oversubscribe")
@@ -95,10 +95,10 @@ def is_xdist():
 
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
-@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+@pytest.mark.skipif(not has_mpiexec(), reason="mpirun not available")
 @pytest.mark.parametrize('i', [1, 2, 4, 8])
 def test_mpi_gather(i):
-    cmd = build_mpirun_cmd(i, "--mpi-gather")
+    cmd = build_mpiexec_cmd(i, "--mpi-gather")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     print("STDOUT:\n", result.stdout, flush=True)
@@ -108,7 +108,7 @@ def test_mpi_gather(i):
 
 
 @pytest.mark.skipif(is_xdist(), reason="requires serial execution")
-@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+@pytest.mark.skipif(not has_mpiexec(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
 @pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world'])
@@ -162,7 +162,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
     parallelism = (parallelism,) * len(global_size)
 
-    cmd = build_mpirun_cmd(
+    cmd = build_mpiexec_cmd(
         np.prod(parallelism),
         "--mpi-bridge",
         "--scheduler-address", cluster.scheduler.address,
