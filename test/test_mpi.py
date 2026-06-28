@@ -122,6 +122,8 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     def work():
         logging.basicConfig(level=logging.DEBUG)
 
+        error = False
+
         deisa = Deisa(timeout=10)
 
         print(f"deisa={deisa}: deisa.arrays_metadata={deisa.arrays_metadata}", flush=True)
@@ -132,16 +134,17 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
             print(f"hello from cb. iteration={window[-1].t}", flush=True)
             darr = window[-1]
             assert isinstance(darr, DeisaArray)
-            assert darr.sum().compute() == np.prod(
-                global_size), f"temperature sum should be the product of {global_size}"
+            assert darr.sum().compute() == np.prod(global_size), \
+                f"temperature sum should be the product of {global_size}"
 
         def exception_handler(exception: BaseException):
-            print(f"exception_handler: exception={exception}", flush=True)
-            pytest.fail("exception thrown in callback")  # TODO: this should fail the test
+            print(f"====================== exception_handler: exception={exception}", flush=True, file=sys.stderr)
+            raise exception
 
         deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
-        return 0
+
+        return 0 if not error else 1
 
     pool = ThreadPool(processes=1)
 
@@ -170,6 +173,9 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     assert async_result.get(timeout=10) == 0
 
+    pool.terminate()
+    pool.join()
+    client.close()
     cluster.close()
 
 

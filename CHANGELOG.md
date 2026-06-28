@@ -22,6 +22,7 @@ Types of changes:
 - getting started example code
 - feature: per-array communicator.
   This feature also enables the handling of non-distributed arrays.
+- optimize: zero-copy Bridge.send() when local worker.
 
 ## [0.5.1]
 
