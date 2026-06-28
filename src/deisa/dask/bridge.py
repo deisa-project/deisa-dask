@@ -32,7 +32,6 @@ import sys
 import uuid
 from collections import deque, defaultdict
 from numbers import Number
-from itertools import cycle
 from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 
 import numpy as np
@@ -40,18 +39,15 @@ from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue, Client
 from distributed.worker import _global_workers
-from distributed.core import rpc
-from distributed.utils import All
 from distributed.protocol import to_serialize
-from tlz import drop, groupby, merge, valmap
+from distributed.utils_comm import scatter_to_workers
+from tlz import valmap
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
-
-_round_robin_counter = [0]
 
 
 class Bridge(IBridge):
@@ -119,9 +115,9 @@ class Bridge(IBridge):
         any required cleanup operations are performed. The `close` method is invoked
         with a timestep set to the maximum possible value.
 
-        ``:param timestep:`` A value to specify the timestep for cleanup operations. This
+        - ``:param timestep:`` A value to specify the timestep for cleanup operations. This
             is set to the maximum integer value available in Python.
-        ``:type timestep:`` int
+        - ``:type timestep:`` int
         """
         self.close(timestep=sys.maxsize)
 
@@ -169,6 +165,9 @@ class Bridge(IBridge):
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
+        if array_name not in self.arrays_metadata:
+            raise ValueError(f"array {array_name} is unknown.")
+
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
@@ -206,7 +205,7 @@ class Bridge(IBridge):
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            'placement': self.comm.Get_coords(self.id) if hasattr(self.comm, 'Get_coords') else self.id
+            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
@@ -239,7 +238,7 @@ class Bridge(IBridge):
                     'future': d['future-info']['future'],
                     'shape': chunk.shape,
                     'dtype': str(chunk.dtype),
-                    'placement': d['placement']
+                    'chunk_position': d['chunk_position']
                 } for d in gathered_data]
             }
             logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
@@ -343,7 +342,7 @@ class Bridge(IBridge):
             f"in_process={in_process}, remote={remote}"
         )
 
-        _, who_has, nbytes = await self.scatter_to_workers(
+        _, who_has, nbytes = await self._scatter_to_workers(
             workers,
             data,
             local_worker_map=local_worker_map,
@@ -362,35 +361,37 @@ class Bridge(IBridge):
         return out
 
 
-    async def scatter_to_workers(
+    async def _scatter_to_workers(
         self,
         workers,
         data,
-        rpc=rpc,
         local_worker_map: dict = None,
         scheduler=None,
         client_id: str = None,
     ):
+        """Scatter data to workers, using zero-copy for in-process workers.
+
+        In-process workers (those in the same process as the bridge) receive
+        data directly via ``worker.update_data()`` without serialization.
+        Remote workers receive data via the standard ``scatter_to_workers``.
+        """
         assert isinstance(data, dict)
         local_worker_map = local_worker_map or {}
 
         workers = sorted(workers)
         names = list(data.keys())
 
-        worker_iter = drop(_round_robin_counter[0] % len(workers), cycle(workers))
-        _round_robin_counter[0] += len(data)
-
-        L = list(zip(worker_iter, names, data.values()))
+        entries = list(zip([workers[i % len(workers)] for i in range(len(names))], names, data.values()))
 
         who_has: dict = {}
         nbytes: dict = {}
 
         # In-process, zero-copy
-        inproc_L = [(w, k, v) for w, k, v in L if w in local_worker_map]
-        if inproc_L:
+        in_process_entries = [(w, k, v) for w, k, v in entries if w in local_worker_map]
+        if in_process_entries:
             inproc_who_has = {}
             inproc_nbytes = {}
-            for addr, key, val in inproc_L:
+            for addr, key, val in in_process_entries:
                 worker = local_worker_map[addr]
                 worker.update_data({key: val})
                 assert id(worker.data[key]) == id(val), \
@@ -408,29 +409,13 @@ class Bridge(IBridge):
                     client=client_id,
                 )
 
-        # Remote, serialize and RPC
-        remote_L = [(w, k, v) for w, k, v in L if w not in local_worker_map]
-        if remote_L:
-            d = {
-                worker: {key: value for _, key, value in v}
-                for worker, v in groupby(0, remote_L).items()
-            }
-            d_serialized = {
-                worker: valmap(to_serialize, chunk)
-                for worker, chunk in d.items()
-            }
-            rpcs = {addr: rpc(addr) for addr in d_serialized}
-            try:
-                out = await All([
-                    rpcs[address].update_data(data=v)
-                    for address, v in d_serialized.items()
-                ])
-            finally:
-                for r in rpcs.values():
-                    await r.close_rpc()
-
-            nbytes.update(merge(o["nbytes"] for o in out))
-            for k, v in groupby(1, remote_L).items():
-                who_has[k] = [w for w, _, _ in v]
+        # Remote: delegate to distributed's scatter_to_workers
+        remote_entries = [(w, k, v) for w, k, v in entries if w not in local_worker_map]
+        if remote_entries:
+            remote_workers = sorted(set(w for w, _, _ in remote_entries))
+            remote_data = valmap(to_serialize, {k: v for _, k, v in remote_entries})
+            _, remote_who_has, remote_nbytes = await scatter_to_workers(remote_workers, remote_data)
+            who_has.update(remote_who_has)
+            nbytes.update(remote_nbytes)
 
         return (names, who_has, nbytes)
