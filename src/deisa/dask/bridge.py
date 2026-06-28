@@ -32,21 +32,26 @@ import sys
 import uuid
 from collections import deque, defaultdict
 from numbers import Number
+from itertools import cycle
 from typing import Any, Iterator, List, Dict, Optional, Union, Deque
 
 import numpy as np
 from dask.tokenize import tokenize
 from deisa.core import validate_arrays_metadata, IBridge, ICommunicator
 from distributed import Queue, Client
+from distributed.worker import _global_workers
+from distributed.core import rpc
+from distributed.utils import All
 from distributed.protocol import to_serialize
-from distributed.utils_comm import scatter_to_workers
-from tlz import valmap
+from tlz import drop, groupby, merge, valmap
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
+
+_round_robin_counter = [0]
 
 
 class Bridge(IBridge):
@@ -59,23 +64,23 @@ class Bridge(IBridge):
         - ``:param arrays_metadata:`` Dictionary containing metadata for arrays, validated during initialization.
             eg:
 
-            arrays_metadata = {  
-                    'temperature': {  
-                        'global_shape': [20, 20],  
-                        'chunk_shape': [10, 10],  
-                        'chunk_position': [0, 0]  
-                    }  
-                    'pressure': {  
-                        'global_shape': [20, 20],  
-                        'chunk_shape': [10, 10],  
-                        'chunk_position': [0, 0]  
-                    } 
+            arrays_metadata = {
+                    'temperature': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'chunk_position': [0, 0]
+                    }
+                    'pressure': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'chunk_position': [0, 0]
+                    }
             }
 
         - ``:type arrays_metadata: Dict[str, Dict]``
         - ``:param args:`` Additional positional arguments for the initialization.
         - ``:param kwargs:`` Additional keyword arguments for the initialization. Can include
-            configuration parameters like timeout used during client setup.  
+            configuration parameters like timeout used during client setup.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
@@ -115,8 +120,8 @@ class Bridge(IBridge):
         with a timestep set to the maximum possible value.
 
         ``:param timestep:`` A value to specify the timestep for cleanup operations. This
-            is set to the maximum integer value available in Python.  
-        ``:type timestep:`` int  
+            is set to the maximum integer value available in Python.
+        ``:type timestep:`` int
         """
         self.close(timestep=sys.maxsize)
 
@@ -154,18 +159,15 @@ class Bridge(IBridge):
         - ``:param timestep:`` The current timestep associated to the sent data chunk.
         - ``:param args:`` Additional positional arguments if required by the method implementation.
         - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported keys include:  
-            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.  
-            - `filter_workers` (callable): A function that filters the available workers  
-              and returns a list of worker names. Must return a non-empty list of strings.  
-  
+            Supported keys include:
+            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+            - `filter_workers` (callable): A function that filters the available workers
+              and returns a list of worker names. Must return a non-empty list of strings.
+
         - ``:return:`` None. All operations are internal and side effects include sending data
-            to workers, logging the event, and synchronizing worker states.  
+            to workers, logging the event, and synchronizing worker states.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
-
-        if array_name not in self.arrays_metadata:
-            raise ValueError(f"array {array_name} is unknown.")
 
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
@@ -193,23 +195,18 @@ class Bridge(IBridge):
             for w in workers:
                 if not isinstance(w, str):
                     raise TypeError(f"worker_filter must return a list of strings, got {type(w)}")
-        else:
+
+        # Ensure "workers" is a list before scatter
+        if isinstance(workers, dict):
             workers = list(workers.keys())
 
-        workers = sorted(workers)
-        # per bridge id and iteration round-robin over the workers
-        index = (timestep + self.id) % len(workers)
-        workers = [workers[index]]
-
-        assert len(workers) == 1, "worker list should be of length 1."
-
         # Send data to worker
-        res = self._better_scatter(chunk, workers=workers, hash=False)  # send data to workers
+        res = self._better_scatter(chunk, workers=workers, hash=False) # send data to workers
 
         # Barrier. Wait for all bridges.
         to_send = {
             'future-info': res,
-            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
+            'placement': self.comm.Get_coords(self.id) if hasattr(self.comm, 'Get_coords') else self.id
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
         gathered_data = self.comm.gather(to_send, root=0)
@@ -242,7 +239,7 @@ class Bridge(IBridge):
                     'future': d['future-info']['future'],
                     'shape': chunk.shape,
                     'dtype': str(chunk.dtype),
-                    'chunk_position': d['chunk_position']
+                    'placement': d['placement']
                 } for d in gathered_data]
             }
             logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
@@ -262,7 +259,7 @@ class Bridge(IBridge):
         - ``:param default:`` The default value to return if the specified timestep is not found.
         - ``:type default:`` Any
         - ``:return:`` The element associated with the specified timestep if found, the entire deque if no
-            timestep is specified, or the default value if the timestep is not found.  
+            timestep is specified, or the default value if the timestep is not found.
         - ``:rtype:`` Optional[Union[Deque, Any]]
         """
         logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
@@ -328,26 +325,33 @@ class Bridge(IBridge):
             unpack = True
             data = [data]
         if isinstance(data, (list, tuple)):
-            if hash:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + tokenize(x) for x in data]
-            else:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
+            names = [
+                KEY_PREFIX + "-" + type(x).__name__ + "-" +
+                (tokenize(x) if hash else uuid.uuid4().hex)
+                for x in data
+            ]
             data = dict(zip(names, data))
 
         assert isinstance(data, dict)
 
-        data2 = valmap(to_serialize, data)
+        local_worker_map = {w.address: w for w in _global_workers}
 
-        _, who_has, nbytes = await scatter_to_workers(workers, data2)
+        in_process = [w for w in workers if w in local_worker_map]
+        remote = [w for w in workers if w not in local_worker_map]
+        logger.debug(
+            f"[{self.id}] __scatter(): "
+            f"in_process={in_process}, remote={remote}"
+        )
 
-        out = {
-            k: {
-                'future': k,
-                'who_has': who_has,
-                'nbytes': nbytes
-            }
-            for k in data
-        }
+        _, who_has, nbytes = await self.scatter_to_workers(
+            workers,
+            data,
+            local_worker_map=local_worker_map,
+            scheduler=self.client.scheduler if self.client else None,
+            client_id=self.client.id if self.client else None,
+        )
+
+        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
@@ -356,3 +360,77 @@ class Bridge(IBridge):
             assert len(out) == 1
             out = list(out.values())[0]
         return out
+
+
+    async def scatter_to_workers(
+        self,
+        workers,
+        data,
+        rpc=rpc,
+        local_worker_map: dict = None,
+        scheduler=None,
+        client_id: str = None,
+    ):
+        assert isinstance(data, dict)
+        local_worker_map = local_worker_map or {}
+
+        workers = sorted(workers)
+        names = list(data.keys())
+
+        worker_iter = drop(_round_robin_counter[0] % len(workers), cycle(workers))
+        _round_robin_counter[0] += len(data)
+
+        L = list(zip(worker_iter, names, data.values()))
+
+        who_has: dict = {}
+        nbytes: dict = {}
+
+        # In-process, zero-copy
+        inproc_L = [(w, k, v) for w, k, v in L if w in local_worker_map]
+        if inproc_L:
+            inproc_who_has = {}
+            inproc_nbytes = {}
+            for addr, key, val in inproc_L:
+                worker = local_worker_map[addr]
+                worker.update_data({key: val})
+                assert id(worker.data[key]) == id(val), \
+                    f"In-process scatter copied data: id(orig)={id(val)}"
+                size = int(val.nbytes) if hasattr(val, "nbytes") else sys.getsizeof(val)
+                who_has[key] = [addr]
+                nbytes[key] = size
+                inproc_who_has[key] = [addr]
+                inproc_nbytes[key] = size
+
+            if scheduler is not None:
+                await scheduler.update_data(
+                    who_has=inproc_who_has,
+                    nbytes=inproc_nbytes,
+                    client=client_id,
+                )
+
+        # Remote, serialize and RPC
+        remote_L = [(w, k, v) for w, k, v in L if w not in local_worker_map]
+        if remote_L:
+            d = {
+                worker: {key: value for _, key, value in v}
+                for worker, v in groupby(0, remote_L).items()
+            }
+            d_serialized = {
+                worker: valmap(to_serialize, chunk)
+                for worker, chunk in d.items()
+            }
+            rpcs = {addr: rpc(addr) for addr in d_serialized}
+            try:
+                out = await All([
+                    rpcs[address].update_data(data=v)
+                    for address, v in d_serialized.items()
+                ])
+            finally:
+                for r in rpcs.values():
+                    await r.close_rpc()
+
+            nbytes.update(merge(o["nbytes"] for o in out))
+            for k, v in groupby(1, remote_L).items():
+                who_has[k] = [w for w, _, _ in v]
+
+        return (names, who_has, nbytes)
