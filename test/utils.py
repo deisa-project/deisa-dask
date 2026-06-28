@@ -221,6 +221,25 @@ class FakeComm(ICommunicator):
             else:
                 state.condition.wait_for(lambda: state.barrier_generation != generation)
 
+    def Split(self, color: int, key: int = 0) -> 'FakeComm':
+        """Mimic MPI.Comm.Split() — returns self for full-distribution tests."""
+        return self
+
+    def Free(self):
+        """No-op for FakeComm."""
+
+    def get_array_comm(self, array_id):
+        """Get a communicator dedicated to the given array.
+
+        For FakeComm (Dask RPC path), returns self — operations are
+        isolated per-call via sequence numbers.
+        """
+        return self
+
+    def cleanup_array_comms(self):
+        """No-op for FakeComm (no per-array MPI comms to free)."""
+        pass
+
 
 class FakeCartComm(FakeComm):
     def __init__(self, state: FakeComm.State, rank: int, dims: Sequence[int], periods: Optional[Sequence[bool]] = None):

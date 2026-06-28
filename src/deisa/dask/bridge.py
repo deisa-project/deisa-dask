@@ -48,6 +48,11 @@ from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
 
+# Sentinel values for MPI.Comm.Split() — used until ICommunicator is updated
+# to expose these constants. These mirror mpi4py's MPI.UNDEFINED and MPI.COMM_NULL.
+_UNDEFINED = -1
+_COMM_NULL = None
+
 
 class Bridge(IBridge):
     def __init__(self, comm: ICommunicator, arrays_metadata: Dict[str, Dict], *args, **kwargs):
@@ -55,27 +60,29 @@ class Bridge(IBridge):
         Initializes an instance of the class, setting up communication, metadata validation,
         client connection (for id=0), workers initialization, and handshake configuration for the bridge.
 
-        - ``:param comm:`` An instance of ICommunicator facilitating communication between processes.
-        - ``:param arrays_metadata:`` Dictionary containing metadata for arrays, validated during initialization.
+        :param comm: An ICommunicator facilitating communication between processes.
+            Must provide Get_rank(), Get_size(), gather(), bcast(), barrier(),
+            Split(color, key), and Free() — the same API as an MPI communicator.
+        :param arrays_metadata: Dictionary containing metadata for arrays.
             eg:
 
-            arrays_metadata = {  
-                    'temperature': {  
-                        'global_shape': [20, 20],  
-                        'chunk_shape': [10, 10],  
-                        'chunk_position': [0, 0]  
-                    }  
-                    'pressure': {  
-                        'global_shape': [20, 20],  
-                        'chunk_shape': [10, 10],  
-                        'chunk_position': [0, 0]  
-                    } 
+            arrays_metadata = {
+                    'temperature': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'chunk_position': [0, 0],
+                    }
+                    'pressure': {
+                        'global_shape': [20, 20],
+                        'chunk_shape': [10, 10],
+                        'chunk_position': [0, 0],
+                    }
             }
 
-        - ``:type arrays_metadata: Dict[str, Dict]``
-        - ``:param args:`` Additional positional arguments for the initialization.
-        - ``:param kwargs:`` Additional keyword arguments for the initialization. Can include
-            configuration parameters like timeout used during client setup.  
+        :type arrays_metadata: Dict[str, Dict]
+        :param args: Additional positional arguments for the initialization.
+        :param kwargs: Additional keyword arguments for the initialization. Can include
+            configuration parameters like timeout used during client setup.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
@@ -86,6 +93,7 @@ class Bridge(IBridge):
         self.workers = None
         self.handshake = None
         self.client: Optional[Client] = None
+        self._array_comms: Dict[str, Any] = {}  # array_name -> sub-comm (from comm.Split)
 
         if self.id == 0:
             # only id 0 has a real dask client
@@ -99,6 +107,9 @@ class Bridge(IBridge):
         self.workers = self.comm.bcast(self.workers, root=0)
         logger.debug(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
 
+        # Auto-discover array participation and create sub-communicators
+        self._setup_array_comms()
+
         if self.id == 0:
             # all bridges are ready, tell handshake actor
             assert self.client is not None, "client cannot be None for Bridge id 0."
@@ -106,35 +117,52 @@ class Bridge(IBridge):
             self.handshake.all_bridges_ready(nb_bridge=self.comm.Get_size(),
                                              arrays_metadata=self.arrays_metadata, **kwargs)
 
+    def _setup_array_comms(self):
+        """Auto-discover array participation and create per-array sub-communicators.
+
+        Uses comm.Split() to create a sub-communicator for each array.
+        The color is derived from a consistent hash of the array name so that
+        all participating ranks get the same color. Ranks that don't participate
+        in an array (chunk_position is None) use _UNDEFINED and get
+        _COMM_NULL.
+        """
+        for array_name, meta in self.arrays_metadata.items():
+            chunk_position = meta.get('chunk_position')
+            participates = chunk_position is not None
+
+            # All ranks must call Split() — even non-participants
+            if participates:
+                # Use a consistent hash so all participating ranks get the same color
+                color = hash(array_name) % (2**31)
+            else:
+                color = _UNDEFINED
+            key = self.id  # preserve ordering
+            sub_comm = self.comm.Split(color, key)
+            self._array_comms[array_name] = sub_comm
+            logger.debug(
+                f"[{self.id}] _setup_array_comms: array={array_name}, "
+                f"participates={participates}, sub_comm_size="
+                f"{sub_comm.Get_size() if sub_comm is not _COMM_NULL else 'NULL'}"
+            )
+
     def __del__(self):
-        """
-        Cleans up resources used by the object before it gets destroyed.
-
-        This method is called when the object is about to be destroyed and ensures that
-        any required cleanup operations are performed. The `close` method is invoked
-        with a timestep set to the maximum possible value.
-
-        ``:param timestep:`` A value to specify the timestep for cleanup operations. This
-            is set to the maximum integer value available in Python.  
-        ``:type timestep:`` int  
-        """
+        """Clean up resources before destruction."""
         self.close(timestep=sys.maxsize)
 
     def close(self, timestep: int) -> None:
-        """
-        Attempts to close the bridge connection. This involves ensuring the bridge is properly cleaned up,
-        orchestrating communication with other bridges, and notifying the analytics of the closure.
-        The method ensures that it is only executed once during the lifecycle of the instance.
-
-        - ``:param timestep:`` The current timestep associated with the closure action.
-        - ``:type timestep:`` int
-        - ``:return:`` None
-        """
+        """Close the bridge: synchronize bridges, free sub-comms, shut down client."""
         logger.info(f"[{self.id}] Bridge close()")
         try:
             if not self._has_close_been_called:
                 self._has_close_been_called = True
+                # Barrier on communicator — all bridges must synchronize
                 self.comm.barrier()
+                # Free sub-communicators created via Split()
+                for array_name, sub_comm in self._array_comms.items():
+                    if sub_comm is not None and sub_comm != _COMM_NULL:
+                        sub_comm.Free()
+                        logger.debug(f"[{self.id}] Freed sub-communicator for array '{array_name}'")
+                self._array_comms.clear()
                 if self.id == 0:
                     assert self.handshake, "handshake cannot be None for Bridge id 0."
                     assert self.client, "client cannot be None for Bridge id 0."
@@ -144,23 +172,17 @@ class Bridge(IBridge):
             logger.error(f"[{self.id}] Cloud not cleanly close bridge. exception={e}")
 
     def send(self, array_name: str, chunk: np.ndarray, timestep: int, *args, **kwargs):
-        """
-        Handles the distribution of the given data chunk to workers in the Dask cluster.
-        This method sends the data directly to the workers.
+        """Distribute a data chunk to a Dask worker via scatter + gather.
 
-        - ``:param array_name:`` The name of the data array being sent as a string.
-            This should match what is defined in the Bridge arrays_metadata.
-        - ``:param chunk:`` A numpy ndarray containing the data chunk to be sent to the workers.
-        - ``:param timestep:`` The current timestep associated to the sent data chunk.
-        - ``:param args:`` Additional positional arguments if required by the method implementation.
-        - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported keys include:  
-            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.  
-            - `filter_workers` (callable): A function that filters the available workers  
-              and returns a list of worker names. Must return a non-empty list of strings.  
-  
-        - ``:return:`` None. All operations are internal and side effects include sending data
-            to workers, logging the event, and synchronizing worker states.  
+        Scatters the chunk to the next worker (round-robin), then gathers all
+        chunks across bridges to rank 0, which updates the Dask scheduler.
+
+        For single-bridge arrays (sub_comm_size == 1), skips the gather entirely
+        and updates the scheduler directly.
+
+        Supported kwargs:
+            update_workers (bool): refresh the worker list from the scheduler.
+            filter_workers (callable): filter available workers before sending.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
@@ -206,25 +228,44 @@ class Bridge(IBridge):
         # Send data to worker
         res = self._better_scatter(chunk, workers=workers, hash=False)  # send data to workers
 
-        # Barrier. Wait for all bridges.
+        # Get per-array metadata
+        meta = self.arrays_metadata[array_name]
+
+        # === Determine communicator from cached sub-comms (from comm.Split()) ===
+        sub_comm = self._array_comms.get(array_name)
+
+        if sub_comm == _COMM_NULL:
+            # This rank doesn't participate in this array
+            logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
+            return
+
+        comm_to_use = sub_comm if sub_comm is not None else self.comm
+        sub_comm_size = comm_to_use.Get_size()
+
+        # === Single-bridge fast-path: no collective needed ===
+        if sub_comm_size == 1:
+            self._direct_send(array_name, res, chunk, timestep)
+            return
+
         to_send = {
             'future-info': res,
-            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
+            'chunk_position': meta['chunk_position']
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
-        gathered_data = self.comm.gather(to_send, root=0)
+
+        gathered_data = comm_to_use.gather(to_send, root=0)
+
         logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
 
         if gathered_data is not None:
             assert self.client is not None, "client cannot be None for Bridge id 0."
-            # rank 0 (root=0 in comm.gather)
-            # aggregate who has what
+            # rank 0 (root=0 in comm.gather): aggregate who_has from all chunks
             who_has = {}
             nbytes = {}
             keys = []
             for d in gathered_data:
-                who_has = {**who_has, **d['future-info']['who_has']}
-                nbytes = {**nbytes, **d['future-info']['nbytes']}
+                who_has.update(d['future-info']['who_has'])
+                nbytes.update(d['future-info']['nbytes'])
                 keys.append(d['future-info']['future'])
 
             # only update the scheduler with who has what and register the future once
@@ -237,7 +278,6 @@ class Bridge(IBridge):
             to_send = {
                 'array_name': array_name,
                 'iteration': timestep,
-
                 'futures': [{
                     'future': d['future-info']['future'],
                     'shape': chunk.shape,
@@ -245,10 +285,40 @@ class Bridge(IBridge):
                     'chunk_position': d['chunk_position']
                 } for d in gathered_data]
             }
-            logger.debug(f"[{self.id}] send() log_event: to_send={gathered_data}")
+            logger.debug(f"[{self.id}] send() log_event: array={array_name}, timestep={timestep}, n_futures={len(gathered_data)}")
             self.client.log_event(array_name, to_send)
 
         # TODO: what to do if error ?
+
+    def _direct_send(self, array_name: str, res: dict, chunk: np.ndarray, timestep: int):
+        """Handle single-bridge array send without collective.
+
+        For arrays that exist on only one bridge, we skip the gather() entirely
+        and directly update the Dask scheduler.
+        """
+        assert self.client is not None, "client cannot be None for single-bridge send."
+
+        future_key = res['future']
+        who_has = res['who_has']
+        nbytes = res['nbytes']
+
+        self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
+        self.client._send_to_scheduler({
+            "op": "client-desires-keys",
+            "keys": [future_key],
+            "client": CLIENT_KEY
+        })
+        to_send = {
+            'array_name': array_name,
+            'iteration': timestep,
+            'futures': [{
+                'future': future_key,
+                'shape': chunk.shape,
+                'dtype': str(chunk.dtype),
+                'chunk_position': self.arrays_metadata[array_name]['chunk_position']
+            }]
+        }
+        self.client.log_event(array_name, to_send)
 
     def get(self, key: str, timestep: Optional[int] = None, default: Any = None) -> Optional[Union[Deque, Any]]:
         """
