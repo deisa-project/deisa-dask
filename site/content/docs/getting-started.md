@@ -9,27 +9,27 @@ prev: /docs
 <!-- next: /docs/guide -->
 ---
 
-DEISA-Dask is a lightweight integration layer that connects MPI-based HPC applications with the Dask distributed runtime.
+deisa-dask is a lightweight integration layer that connects MPI-based HPC applications with the Dask distributed runtime.
 
-It is part of the DEISA ecosystem and is designed for in situ analysis workflows, where simulation codes directly offload computations to distributed Dask workers.
+It is part of the deisa ecosystem and is designed for in situ analysis workflows, where simulation codes directly offload computations to distributed Dask workers.
 
-Unlike standalone Dask usage, DEISA-Dask is intended to run inside MPI-parallel applications on HPC systems, bridging tightly coupled simulation and distributed analytics.
+Unlike standalone Dask usage, deisa-dask is intended to run inside MPI-parallel applications on HPC systems, bridging tightly coupled simulation and distributed analytics.
 
 
 ## Architecture Overview
 
-DEISA-Dask acts as a bridge between:
+deisa-dask acts as a bridge between:
 
 - MPI simulation codes (C/C++/Fortran/Python, see [PDI](https://pdi.dev) for more info)
-- DEISA core abstractions (data movement + orchestration layer)
+- deisa core abstractions (data movement + orchestration layer)
 - Dask distributed scheduler and workers
 
 ```
 MPI ranks (simulation)
         │
-        │  DEISA interface
+        │  deisa interface
         ▼
-DEISA-Dask layer
+deisa-dask layer
         │
         ▼
 Dask scheduler + workers
@@ -43,7 +43,7 @@ The key idea is that the simulation drives the execution, not the scheduler.
 
 ## Prerequisites
 
-DEISA-Dask is designed for HPC environments. You will typically need:
+deisa-dask is designed for HPC environments. You will typically need:
 
 - Python ≥ 3.10
 - MPI implementation (OpenMPI or MPICH)
@@ -56,7 +56,7 @@ DEISA-Dask is designed for HPC environments. You will typically need:
 
 ## Installation
 
-DEISA-Dask can be installed in several ways depending on your environment.
+deisa-dask can be installed in several ways depending on your environment.
 
 ### Pip (Python environments)
 
@@ -75,14 +75,14 @@ pip install -e .
 
 Use this if you are:
 
-- contributing to DEISA-Dask
+- contributing to deisa-dask
 - testing experimental MPI/Dask coupling features
-- integrating with DEISA development workflows
+- integrating with deisa development workflows
 
 
 ### Spack (HPC package manager)
 
-DEISA-Dask is available through Spack environments used in HPC deployments:
+deisa-dask is available through Spack environments used in HPC deployments:
 
 ```fish
 spack install py-deisa-dask
@@ -105,7 +105,7 @@ Spack ensures consistent builds of:
 
 ### Guix / guix-science
 
-DEISA-Dask is also available via the guix-science channel, enabling fully reproducible HPC environments:
+deisa-dask is also available via the guix-science channel, enabling fully reproducible HPC environments:
 ```fish
 guix install python-deisa-dask
 ```
@@ -130,7 +130,7 @@ This example demonstrates the basic execution model of **deisa-dask** using MPI.
 It launches a local Dask scheduler and worker, starts an MPI simulation, and runs an analysis process that receives distributed arrays as Dask arrays.
 
 The simulation generates a synthetic temperature field on four MPI ranks.
-At each timestep, every rank sends its local portion of the global array through the DEISA bridge. 
+At each timestep, every rank sends its local portion of the global array through the deisa bridge. 
 The analysis application reconstructs the distributed array as a Dask array, computes its global sum, and saves a visualization of the latest timestep.
 
 The complete example has the following structure:
@@ -222,7 +222,7 @@ bridge.close(timestep=5)
 
 The analysis process creates a `Deisa` instance and registers a callback for the `temperature` data.
 
-Whenever new timesteps become available, DEISA invokes the callback with a sequence of Dask arrays representing the received timesteps 
+Whenever new timesteps become available, deisa invokes the callback with a sequence of Dask arrays representing the received timesteps 
 (in this example, the `temperature` [sliding window](/docs/public-api/#callback_args) array is by default of size 1).
 
 In this example, the callback:
@@ -318,7 +318,7 @@ echo "launcher is done."
 Running the launcher script produces a sequence of images (heat-0.png to heat-4.png), one for each timestep received by the analysis application.
 
 The animation below shows the reconstructed global temperature field.
-Although the simulation sends only local subdomains from each MPI rank, DEISA automatically assembles them into a distributed Dask array.
+Although the simulation sends only local subdomains from each MPI rank, deisa automatically assembles them into a distributed Dask array.
 The analysis callback then computes on the global array and generates the visualization without requiring any explicit gather operation.
 
 In this example, the Gaussian temperature field becomes progressively wider over time, demonstrating how timesteps are streamed from the simulation to the analysis process as they are produced.

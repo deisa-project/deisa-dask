@@ -6,14 +6,14 @@ title: Introduction
 👋 Hello! Welcome to the deisa-dask documentation!
 
 
-## What is DEISA-Dask?
-DEISA-Dask is a Python library that enables **in situ analytics** for MPI-based high-performance computing (HPC) applications.
+## What is deisa-dask?
+deisa-dask is a Python library that enables **in situ analytics** for MPI-based high-performance computing (HPC) applications.
 It connects distributed simulations to the Dask ecosystem, allowing analytics, visualization, and machine learning workflows to process simulation data directly in memory as it is produced.
 
-DEISA-Dask exposes distributed simulation data as native Dask arrays.
+deisa-dask exposes distributed simulation data as native Dask arrays.
 Existing Dask workflows can therefore be reused with minimal modifications, eliminating the need to write and reload large intermediate datasets from storage.
 
-By combining the scalability of MPI simulations with Dask's flexible task-based programming model, DEISA-Dask reduces I/O bottlenecks and enables scientists to perform real-time analysis, monitoring, and data reduction on large-scale simulations.
+By combining the scalability of MPI simulations with Dask's flexible task-based programming model, deisa-dask reduces I/O bottlenecks and enables scientists to perform real-time analysis, monitoring, and data reduction on large-scale simulations.
 
 
 ## Features

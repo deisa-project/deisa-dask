@@ -55,8 +55,8 @@ class Bridge(IBridge):
         Initializes an instance of the class, setting up communication, metadata validation,
         client connection (for id=0), workers initialization, and handshake configuration for the bridge.
 
-        ``:param comm:`` An instance of ICommunicator facilitating communication between processes.
-        ``:param arrays_metadata:`` Dictionary containing metadata for arrays, validated during initialization.
+        - ``:param comm:`` An instance of ICommunicator facilitating communication between processes.
+        - ``:param arrays_metadata:`` Dictionary containing metadata for arrays, validated during initialization.
             eg:
 
             arrays_metadata = {  
@@ -72,9 +72,9 @@ class Bridge(IBridge):
                     } 
             }
 
-        ``:type arrays_metadata: Dict[str, Dict]``  
-        ``:param args:`` Additional positional arguments for the initialization.  
-        ``:param kwargs:`` Additional keyword arguments for the initialization. Can include  
+        - ``:type arrays_metadata: Dict[str, Dict]``
+        - ``:param args:`` Additional positional arguments for the initialization.
+        - ``:param kwargs:`` Additional keyword arguments for the initialization. Can include
             configuration parameters like timeout used during client setup.  
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
@@ -126,9 +126,9 @@ class Bridge(IBridge):
         orchestrating communication with other bridges, and notifying the analytics of the closure.
         The method ensures that it is only executed once during the lifecycle of the instance.
 
-        ``:param timestep:`` The current timestep associated with the closure action.  
-        ``:type timestep:`` int  
-        ``:return:`` None  
+        - ``:param timestep:`` The current timestep associated with the closure action.
+        - ``:type timestep:`` int
+        - ``:return:`` None
         """
         logger.info(f"[{self.id}] Bridge close()")
         try:
@@ -148,18 +148,18 @@ class Bridge(IBridge):
         Handles the distribution of the given data chunk to workers in the Dask cluster.
         This method sends the data directly to the workers.
 
-        ``:param array_name:`` The name of the data array being sent as a string.  
+        - ``:param array_name:`` The name of the data array being sent as a string.
             This should match what is defined in the Bridge arrays_metadata.
-        ``:param chunk:`` A numpy ndarray containing the data chunk to be sent to the workers.  
-        ``:param timestep:`` The current timestep associated to the sent data chunk.  
-        ``:param args:`` Additional positional arguments if required by the method implementation.  
-        ``:param kwargs:`` Additional keyword arguments for optional configurations.  
+        - ``:param chunk:`` A numpy ndarray containing the data chunk to be sent to the workers.
+        - ``:param timestep:`` The current timestep associated to the sent data chunk.
+        - ``:param args:`` Additional positional arguments if required by the method implementation.
+        - ``:param kwargs:`` Additional keyword arguments for optional configurations.
             Supported keys include:  
             - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.  
             - `filter_workers` (callable): A function that filters the available workers  
               and returns a list of worker names. Must return a non-empty list of strings.  
   
-        ``:return:`` None. All operations are internal and side effects include sending data  
+        - ``:return:`` None. All operations are internal and side effects include sending data
             to workers, logging the event, and synchronizing worker states.  
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
@@ -255,15 +255,15 @@ class Bridge(IBridge):
         Retrieve an element associated with a specific key and optional timestep from a feedback queue.
         If a queue for the key does not exist, it initializes the queue for the specified key.
 
-        ``:param key:`` The unique identifier for the feedback queue.  
-        ``:type key:`` str  
-        ``:param timestep:`` An optional specific timestep to look for. If None, returns the entire deque.  
-        ``:type timestep:`` Optional[int]  
-        ``:param default:`` The default value to return if the specified timestep is not found.  
-        ``:type default:`` Any  
-        ``:return:`` The element associated with the specified timestep if found, the entire deque if no  
+        - ``:param key:`` The unique identifier for the feedback queue.
+        - ``:type key:`` str
+        - ``:param timestep:`` An optional specific timestep to look for. If None, returns the entire deque.
+        - ``:type timestep:`` Optional[int]
+        - ``:param default:`` The default value to return if the specified timestep is not found.
+        - ``:type default:`` Any
+        - ``:return:`` The element associated with the specified timestep if found, the entire deque if no
             timestep is specified, or the default value if the timestep is not found.  
-        ``:rtype:`` Optional[Union[Deque, Any]]  
+        - ``:rtype:`` Optional[Union[Deque, Any]]
         """
         logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
         fb_state: Dict = self._feedback_queues[key]
