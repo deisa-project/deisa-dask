@@ -96,7 +96,12 @@ class Deisa(IDeisa):
                 a['window'].clear()
 
         del self._callbacks
-        self.client.close()
+
+    def close(self):
+        try:
+            self.client.close()
+        except Exception:
+            pass
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):

@@ -729,6 +729,7 @@ class TestUsingDaskCluster:
         asyncio.run(_bridge_close())
 
         deisa.execute_callbacks()
+        deisa.close()
         del deisa
 
         assert len(cluster.scheduler.tasks) == 1  # 1 because of HandshakeActor

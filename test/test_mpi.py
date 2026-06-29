@@ -151,6 +151,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
         deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
+        deisa.close()
         return 0
 
     pool = ThreadPool(processes=1)
