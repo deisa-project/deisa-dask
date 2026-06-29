@@ -125,11 +125,12 @@ class FakeComm(ICommunicator):
             self.gather_data: dict[int, Any] = {}
             self.gather_result: Optional[list[Any]] = None
             self.gather_count = 0
+            self.gather_phase = 0
 
             # bcast state
             self.bcast_value: Any = None
-            self.bcast_ready = False
             self.bcast_count = 0
+            self.bcast_phase = 0
 
             # barrier state
             self.barrier_count = 0
@@ -146,65 +147,81 @@ class FakeComm(ICommunicator):
         return self._state.size
 
     def gather(self, data: Any, root: int = 0) -> Optional[list[Any]]:
-        state = self._state
+            state = self._state
 
-        with state.condition:
-            state.gather_data[self._rank] = data
+            with state.condition:
+                # Phase 0 → 1: pre-barrier (synchronize entry)
+                state.gather_count += 1
+                if state.gather_count == state.size:
+                    state.gather_phase = 1
+                    state.gather_count = 0
+                    state.condition.notify_all()
+                else:
+                    state.condition.wait_for(lambda: state.gather_phase == 1)
 
-            if len(state.gather_data) == state.size:
-                state.gather_result = [
-                    state.gather_data[r]
-                    for r in range(state.size)
-                ]
+                # Phase 1 → 2: contribute data, build result
+                state.gather_data[self._rank] = data
+                if len(state.gather_data) == state.size:
+                    state.gather_result = [
+                        state.gather_data[r]
+                        for r in range(state.size)
+                    ]
+                    state.gather_phase = 2
+                    state.condition.notify_all()
+                else:
+                    state.condition.wait_for(lambda: state.gather_result is not None)
 
-                state.condition.notify_all()
+                result = state.gather_result
 
-            else:
-                state.condition.wait_for(
-                    lambda: state.gather_result is not None
-                )
+                # Phase 2 → 0: post-barrier (synchronize exit / reset)
+                state.gather_count += 1
+                if state.gather_count == state.size:
+                    state.gather_data = {}
+                    state.gather_result = None
+                    state.gather_phase = 0
+                    state.gather_count = 0
+                    state.condition.notify_all()
+                else:
+                    state.condition.wait_for(lambda: state.gather_phase == 0)
 
-            result = state.gather_result
+            if self._rank == root:
+                return result
 
-            state.gather_count += 1
-
-            # Last rank resets collective state
-            if state.gather_count == state.size:
-                state.gather_data = {}
-                state.gather_result = None
-                state.gather_count = 0
-
-        if self._rank == root:
-            return result
-
-        return None
+            return None
 
     def bcast(self, obj: Any, root: int = 0) -> Any:
         state = self._state
 
         with state.condition:
-            # Root publishes value
+            # Phase 0 → 1: pre-barrier to synchronize entry
+            state.bcast_count += 1
+            if state.bcast_count == state.size:
+                state.bcast_phase = 1
+                state.bcast_count = 0
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.bcast_phase >= 1)
+
+            # Phase 1 → 2: root publishes, non-roots wait then read.
             if self._rank == root:
                 state.bcast_value = obj
-                state.bcast_ready = True
-
+                state.bcast_phase = 2
                 state.condition.notify_all()
-
             else:
-                # Wait for root
-                state.condition.wait_for(
-                    lambda: state.bcast_ready
-                )
+                state.condition.wait_for(lambda: state.bcast_phase >= 2)
 
             result = state.bcast_value
 
+            # Phase 2 → 0: post-barrier to synchronize exit / reset
             state.bcast_count += 1
-
-            # Last rank resets collective state
             if state.bcast_count == state.size:
                 state.bcast_value = None
-                state.bcast_ready = False
+                state.bcast_phase = 0
                 state.bcast_count = 0
+                state.condition.notify_all()
+            else:
+                gen = state.bcast_count  # capture; wait for phase reset
+                state.condition.wait_for(lambda: state.bcast_phase == 0)
 
             return result
 
@@ -303,9 +320,10 @@ class _SubCommState:
         self.gather_data = {}
         self.gather_result = None
         self.gather_count = 0
+        self.gather_phase = 0
         self.bcast_value = None
-        self.bcast_ready = False
         self.bcast_count = 0
+        self.bcast_phase = 0
         self.barrier_count = 0
         self.barrier_generation = 0
 
@@ -357,18 +375,37 @@ class _SubComm(ICommunicator):
     def gather(self, data: Any, root: int = 0) -> Optional[list[Any]]:
         state = self._state
         with state.condition:
+            # Phase 0 → 1: pre-barrier (synchronize entry)
+            state.gather_count += 1
+            if state.gather_count == self._sub_size:
+                state.gather_phase = 1
+                state.gather_count = 0
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.gather_phase >= 1)
+
+            # Phase 1 → 2: contribute data, build result
             state.gather_data[self._sub_rank] = data
             if len(state.gather_data) == self._sub_size:
                 state.gather_result = [state.gather_data[r] for r in range(self._sub_size)]
+                state.gather_phase = 2
                 state.condition.notify_all()
             else:
                 state.condition.wait_for(lambda: state.gather_result is not None)
+
             result = state.gather_result
+
+            # Phase 2 → 0: post-barrier (synchronize exit / reset)
             state.gather_count += 1
             if state.gather_count == self._sub_size:
                 state.gather_data = {}
                 state.gather_result = None
+                state.gather_phase = 0
                 state.gather_count = 0
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.gather_phase == 0)
+
         if self._sub_rank == root:
             return result
         return None
@@ -376,18 +413,35 @@ class _SubComm(ICommunicator):
     def bcast(self, obj: Any, root: int = 0) -> Any:
         state = self._state
         with state.condition:
-            if self._sub_rank == root:
-                state.bcast_value = obj
-                state.bcast_ready = True
+            # Phase 0 → 1: pre-barrier
+            state.bcast_count += 1
+            if state.bcast_count == self._sub_size:
+                state.bcast_phase = 1
+                state.bcast_count = 0
                 state.condition.notify_all()
             else:
-                state.condition.wait_for(lambda: state.bcast_ready)
+                state.condition.wait_for(lambda: state.bcast_phase == 1)
+
+            # Phase 1 → 2: root publishes, non-roots read
+            if self._sub_rank == root:
+                state.bcast_value = obj
+                state.bcast_phase = 2
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.bcast_phase == 2)
+
             result = state.bcast_value
+
+            # Phase 2 → 0: post-barrier
             state.bcast_count += 1
             if state.bcast_count == self._sub_size:
                 state.bcast_value = None
-                state.bcast_ready = False
+                state.bcast_phase = 0
                 state.bcast_count = 0
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.bcast_phase == 0)
+
         return result
 
     def barrier(self) -> None:

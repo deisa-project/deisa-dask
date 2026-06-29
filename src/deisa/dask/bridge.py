@@ -140,10 +140,16 @@ class Bridge(IBridge):
         names is stored in self._global_array_names.
 
         Rank 0 also produces a merged metadata dict for the handshake actor
-        (so the Deisa analytics side has the full picture). For arrays that
-        exist on multiple bridges with different chunk_positions, we store a
-        list of per-bridge metadata under a special key.
+        (so the Deisa analytics side has the full picture).
+
+        When the communicator size is 1 (single-bridge, no MPI peers), this
+        is a no-op: the bridge's own metadata is already the full picture.
         """
+        if self.comm.Get_size() == 1:
+            # Single-bridge case: nothing to collectivate with
+            self._global_array_names = set(self._my_arrays)
+            return
+
         all_metadata = self.comm.gather(self.arrays_metadata, root=0)
 
         if self.id == 0:
@@ -152,10 +158,9 @@ class Bridge(IBridge):
             for partial in all_metadata:
                 global_names.update(partial.keys())
             # Build merged metadata for handshake/Deisa:
-            # For each array, collect metadata from all bridges that own it
+            # For each array, take the metadata from the first bridge that declared it
             merged = {}
             for array_name in global_names:
-                # Find first bridge that declared this array → use its base metadata
                 for partial in all_metadata:
                     if array_name in partial:
                         merged[array_name] = partial[array_name]
