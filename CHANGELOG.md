@@ -26,6 +26,7 @@ Types of changes:
 ### Added
 
 - codemeta.json
+- Ruff code format through pyproject.toml, and CI linting
 
 ### Changed
 
