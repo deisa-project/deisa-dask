@@ -731,4 +731,6 @@ class TestUsingDaskCluster:
         deisa.execute_callbacks()
         del deisa
 
-        assert len(cluster.scheduler.tasks) == 1  # 1 because of HandshakeActor
+        # 1 because of HandshakeActor
+        assert len(cluster.scheduler.tasks) == 1, \
+            f"Only 1 task should be left, but there are {len(cluster.scheduler.tasks)}"
