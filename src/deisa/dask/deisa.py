@@ -96,7 +96,10 @@ class Deisa(IDeisa):
                 a['window'].clear()
 
         del self._callbacks
-        self.client.close()
+        result = self.client.close()
+        # discard coroutine, to suppress RuntimeWarning
+        if asyncio.iscoroutine(result):
+            result.close()
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
