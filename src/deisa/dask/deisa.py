@@ -103,7 +103,12 @@ class Deisa(IDeisa):
                 result = self.client.close()
                 # discard coroutine, to suppress RuntimeWarning
                 if asyncio.iscoroutine(result):
-                    result.close()
+                    try:
+                        loop = asyncio.get_running_loop()
+                        asyncio.ensure_future(result, loop=loop)
+                    # no running loop
+                    except RuntimeError:
+                        result.close()
             # scheduler already shut down
             except TimeoutError:
                 pass
