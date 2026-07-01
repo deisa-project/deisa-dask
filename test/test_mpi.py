@@ -1,5 +1,4 @@
 import argparse
-import gc
 import logging
 import os
 import shutil
@@ -151,7 +150,6 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
         deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
-        deisa.close()
         return 0
 
     pool = ThreadPool(processes=1)
@@ -183,10 +181,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         assert async_result.get(timeout=10) == 0
     finally:
-        client.close()
-        client = None
         cluster.close()
-        pool.terminate()
 
 
 # ENTRY POINT SWITCH
@@ -228,5 +223,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)
             sys.exit(1)
-        gc.collect()
         sys.exit(0)
