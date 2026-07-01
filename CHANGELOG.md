@@ -14,12 +14,13 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
-## Unreleased
+## [Unreleased]
 
 ### Added
 
 - documentation website
 - getting started example code
+- CI mpich test cases
 
 ## [0.5.1]
 

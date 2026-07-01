@@ -49,6 +49,7 @@ class TestBridge:
         client = Client(cluster)
         client.wait_for_workers(1, timeout=10)
         yield client, cluster
+        client.close()
         cluster.close()
 
     def get_new_bridge(self):
