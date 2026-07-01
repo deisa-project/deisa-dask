@@ -19,6 +19,7 @@ Types of changes:
 ### Added
 
 - documentation website
+- getting started example code
 - CI mpich test cases
 
 ## [0.5.1]
