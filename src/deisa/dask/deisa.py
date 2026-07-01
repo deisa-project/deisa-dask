@@ -90,20 +90,23 @@ class Deisa(IDeisa):
         self._tasks = set()
 
     def __del__(self):
-        # delete Futures
-        for cb in self._callbacks.values():
-            for a in cb['state'].values():
-                a['window'].clear()
+        if hasattr(self, '_callbacks'):
+            # delete Futures
+            for cb in self._callbacks.values():
+                for a in cb['state'].values():
+                    a['window'].clear()
 
-        del self._callbacks
-        try:
-            result = self.client.close()
-            # discard coroutine, to suppress RuntimeWarning
-            if asyncio.iscoroutine(result):
-                result.close()
-        # scheduler already shut down
-        except TimeoutError:
-            pass
+            del self._callbacks
+
+        if hasattr(self, 'client'):
+            try:
+                result = self.client.close()
+                # discard coroutine, to suppress RuntimeWarning
+                if asyncio.iscoroutine(result):
+                    result.close()
+            # scheduler already shut down
+            except TimeoutError:
+                pass
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):

@@ -181,6 +181,9 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         assert async_result.get(timeout=10) == 0
     finally:
+        pool.terminate()
+        pool.join()
+        client.close()
         cluster.close()
 
 
