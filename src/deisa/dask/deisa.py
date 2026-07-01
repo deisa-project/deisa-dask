@@ -96,10 +96,14 @@ class Deisa(IDeisa):
                 a['window'].clear()
 
         del self._callbacks
-        result = self.client.close()
-        # discard coroutine, to suppress RuntimeWarning
-        if asyncio.iscoroutine(result):
-            result.close()
+        try:
+            result = self.client.close()
+            # discard coroutine, to suppress RuntimeWarning
+            if asyncio.iscoroutine(result):
+                result.close()
+        # scheduler already shut down
+        except TimeoutError:
+            pass
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
