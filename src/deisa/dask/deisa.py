@@ -60,12 +60,12 @@ class Deisa(IDeisa):
         queue length, performing handshake operations with the client, and initializing
         various metadata structures.
 
-        :param feedback_queue_size: The maximum size of the feedback queue. Defaults to 1024.
-        :type feedback_queue_size: int
-        :param args: Additional positional arguments passed to the initializer.
-        :type args: tuple
-        :param kwargs: Additional keyword arguments passed to the initializer.
-        :type kwargs: dict
+        - ``:param feedback_queue_size:`` The maximum size of the feedback queue. Defaults to 1024.
+        - ``:type feedback_queue_size:`` int
+        - ``:param args:`` Additional positional arguments passed to the initializer.
+        - ``:type args:`` tuple
+        - ``:param kwargs:`` Additional keyword arguments passed to the initializer.
+        - ``:type kwargs:`` dict
         """
         # dask.config.set({"distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97, "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
@@ -114,20 +114,20 @@ class Deisa(IDeisa):
 
         Supports:
         Default window size is 1.
-        @deisa.register("arr1")                             # default window size
-        @deisa.register("arr1", "arr2")                     # two arrays, default window size
-        @deisa.register(Window("arr1"))                     # default window size
-        @deisa.register(Window("arr1", 2))                  # window size 2
-        @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
-        @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+        ``@deisa.register("arr1")``                             # default window size
+        ``@deisa.register("arr1", "arr2")``                     # two arrays, default window size
+        ``@deisa.register(Window("arr1"))``                     # default window size
+        ``@deisa.register(Window("arr1", 2))``                  # window size 2
+        ``@deisa.register(Window("arr1", 2), Window("arr2", 5))``   # window size 2 for arr1 and 5 for arr2
+        ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")``  # window size 2 for arr1 and 5 for arr2, default window size for arr3
 
-        :param callback_args: Variable-length arguments representing callback-specific parameters.
-        :param exception_handler: Optional exception handler to manage errors during callback execution.
-            Defaults to ``__default_exception_handler``.
-        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
-            Defaults to 'AND'.
-        :return: A callable that wraps the provided callback with the configured parameters and logic.
-        :rtype: Callable
+        - ``:param callback_args:`` Variable-length arguments representing callback-specific parameters.
+        - ``:param exception_handler:`` Optional exception handler to manage errors during callback execution.
+             Defaults to ``__default_exception_handler``.
+        - ``:param when:`` Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+             Defaults to 'AND'.
+        - ``:return:`` A callable that wraps the provided callback with the configured parameters and logic.
+        - ``:rtype:`` Callable
         """
 
         def decorator(callback: IDeisa.Callback) -> IDeisa.Callback:
@@ -149,21 +149,20 @@ class Deisa(IDeisa):
 
         Supports:
         Default window size is 1.
-        @deisa.register("arr1")                             # default window size
-        @deisa.register("arr1", "arr2")                     # two arrays, default window size
-        @deisa.register(Window("arr1"))                     # default window size
-        @deisa.register(Window("arr1", 2))                  # window size 2
-        @deisa.register(Window("arr1", 2), Window("arr2", 5))   # window size 2 for arr1 and 5 for arr2
-        @deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3") # window size 2 for arr1 and 5 for arr2, default window size for arr3
+        ``@deisa.register("arr1")``                             # default window size
+        ``@deisa.register("arr1", "arr2")``                     # two arrays, default window size
+        ``@deisa.register(Window("arr1")) ``                    # default window size
+        ``@deisa.register(Window("arr1", 2))``                  # window size 2
+        ``@deisa.register(Window("arr1", 2), Window("arr2", 5))``   # window size 2 for arr1 and 5 for arr2
+        ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")`` # window size 2 for arr1 and 5 for arr2, default window size for arr3
 
-        :param callback: Callback function to register.
-        :param callback_args: Variable-length arguments representing callback-specific parameters.
-        :param exception_handler: Optional exception handler to manage errors during callback execution.
-            Defaults to ``__default_exception_handler``.
-        :param when: Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
+        - ``:param callback:``  Callback function to register.
+        - ``:param callback_args:``  Variable-length arguments representing callback-specific parameters.
+        - ``:param exception_handler:``  Optional exception handler to manage errors during callback execution.
+             Defaults to ``__default_exception_handler``.
+        - ``:param when:``  Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
             Defaults to 'AND'.
-        :return: A callable that wraps the provided callback with the configured parameters and logic.
-        :rtype: Callable
+        - ``:return:``  A callable that wraps the provided callback with the configured parameters and logic.
         """
         logger.debug(f"register_callback: callback={callback}, callback_args={callback_args}")
         if not callback_args:
@@ -254,13 +253,13 @@ class Deisa(IDeisa):
         Sets a value in a queue for a given key, associating it with a specific timestep. This action is
         intended to store feedback or other time-specific data for the provided key.
 
-        :param key: The identifier for which the value is to be set.
-        :type key: str
-        :param value: The value to be stored, associated with the key and timestep.
-        :type value: Any
-        :param timestep: The timestamp that corresponds to when the value is set.
-        :type timestep: int
-        :return: None
+        - ``:param key:`` The identifier for which the value is to be set.
+        - ``:type key:`` str
+        - ``:param value:`` The value to be stored, associated with the key and timestep.
+        - ``:type value:`` Any
+        - ``:param timestep:`` The timestamp that corresponds to when the value is set.
+        - ``:type timestep:`` int
+        - ``:return:`` None
         """
         logger.debug(f"set() key={key}, value={value}, timestep={timestep}")
 
@@ -287,9 +286,8 @@ class Deisa(IDeisa):
         responsible for unblocking bridges and waiting for dependencies to signal
         completion.
 
-        :param self: The instance of the class invoking this method.
-
-        :return: None
+        - ``:param self:`` The instance of the class invoking this method.
+        - ``:return:`` None
         """
         logger.info("execute_callbacks()")
 

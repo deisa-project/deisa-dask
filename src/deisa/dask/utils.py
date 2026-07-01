@@ -52,12 +52,13 @@ def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
     grid are determined dynamically based on the size of the Cartesian coordinate dimensions
     requested by the user and the size of the MPI communicator.
 
-    :param cart_coord_dims: Number of Cartesian coordinate dimensions used to compute the
-        grid layout for the Cartesian communicator. Default is 1.
-    :type cart_coord_dims: int
-    :return: A new Cartesian communicator created from the MPI world communicator based
-        on the computed dimensions.
-    :rtype: mpi4py.MPI.Cartcomm
+
+    ``:param cart_coord_dims:`` Number of Cartesian coordinate dimensions used to compute the
+        grid layout for the Cartesian communicator. Default is 1.  
+    ``:type cart_coord_dims:`` int    
+    ``:return:`` A new Cartesian communicator created from the MPI world communicator based
+        on the computed dimensions.  
+    ``:rtype:`` mpi4py.MPI.Cartcomm  
     """
     from mpi4py import MPI
     mpi_comm = MPI.COMM_WORLD
