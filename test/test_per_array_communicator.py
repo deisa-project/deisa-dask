@@ -66,14 +66,14 @@ def _meta(array_name, chunk_pos, global_shape=(8,), chunk_shape=(4,)):
 
 def _close_all(bridges):
     """Close all bridges in parallel."""
+
     async def _do():
         await asyncio.gather(*[
             asyncio.to_thread(b.close, 0) for b in bridges
         ])
+
     asyncio.run(_do())
 
-
-# ---- Single-bridge (comm_size == 1) -----------------------------------------
 
 class TestSingleBridge:
     """All tests use FakeComm.State(1) — one bridge, no collectives needed."""
@@ -171,8 +171,6 @@ class TestSingleBridge:
         assert len(bridge._array_comms) == 0
 
 
-# ---- Multi-bridge (comm_size > 1) -------------------------------------------
-
 class TestMultiBridge:
     """Multi-bridge scenarios with parallel bridge creation."""
 
@@ -260,6 +258,11 @@ class TestMultiBridge:
                 "chunk_shape": (4,),
                 "chunk_position": (1,),
             },
+            "density": {
+                "global_shape": (8,),
+                "chunk_shape": (4,),
+                "chunk_position": (0,),
+            },
         }
         comm_state = FakeComm.State(2)
 
@@ -287,6 +290,9 @@ class TestMultiBridge:
         # Only bridge 0 sends pressure (fast-path)
         bridge0.send("pressure", np.ones(4) * 10, timestep=0)
 
+        # Only bridge 1 sends density (fast-path)
+        bridge1.send("density", np.ones(4) * 10, timestep=0)
+
         # Verify temperature: 2 futures
         event_temp = client.get_events("temperature")
         assert len(event_temp) == 1
@@ -298,6 +304,14 @@ class TestMultiBridge:
 
         # Verify pressure: 1 future (only bridge 0)
         event_press = client.get_events("pressure")
+        assert len(event_press) == 1
+        _, info_press = event_press[0]
+        assert info_press["iteration"] == 0
+        assert len(info_press["futures"]) == 1
+        assert info_press["futures"][0]["chunk_position"] == (0,)
+
+        # Verify density: 1 future (only bridge 1)
+        event_press = client.get_events("density")
         assert len(event_press) == 1
         _, info_press = event_press[0]
         assert info_press["iteration"] == 0

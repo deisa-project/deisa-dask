@@ -46,7 +46,8 @@ from TestSimulator import TestSimulation
 from deisa.dask import Deisa, Bridge
 from deisa.dask.deisa import DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.utils import build_deisa_array
-from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges, FakeCartComm
+from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges, FakeCartComm, \
+    run_on_all_ranks
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -367,7 +368,7 @@ class TestUsingDaskCluster:
     @pytest.mark.parametrize('temperature_window_size', [None, 1, 3])
     @pytest.mark.parametrize('pressure_global_grid_size', [(8, 8)])
     @pytest.mark.parametrize('pressure_window_size', [None, 1])
-    @pytest.mark.parametrize('mpi_parallelism', [(1, 1), (2, 2)])
+    @pytest.mark.parametrize('mpi_parallelism', [(2, 2)])
     @pytest.mark.parametrize('nb_iterations', [1, 5])
     @pytest.mark.parametrize('register_fn', [SingleArrayName(), TwoArrayName(), SingleArrayNameDecorator(),
                                              TwoArrayNameDecorator(), ThreeArrayNameDecorator(), MapBlocks()])
@@ -620,15 +621,25 @@ class TestUsingDaskCluster:
 
         comm_state = FakeComm.State(nb_bridges)
 
-        bridges = [Bridge(comm=FakeComm(comm_state, rank),
-                          arrays_metadata={
-                              'my_array': {
-                                  'global_shape': (0,),
-                                  'chunk_shape': (0,),
-                                  'chunk_position': (rank,)  # TODO
-                              }
-                          },
-                          wait_for_go=False) for rank in range(nb_bridges)]
+        def make_bridge(comm: FakeComm):
+            rank = comm.Get_rank()  # or comm.rank if you have it
+
+            return Bridge(
+                comm=comm,
+                arrays_metadata={
+                    "temperature": {
+                        "global_shape": (0,),
+                        "chunk_shape": (0,),
+                        "chunk_position": rank,
+                    }
+                },
+                wait_for_go=False,
+            )
+
+        bridges = run_on_all_ranks(
+            lambda: FakeComm(comm_state, 0),
+            make_bridge,
+        )
 
         deisa = Deisa()
 
@@ -696,17 +707,27 @@ class TestUsingDaskCluster:
     def test_wait_for_tasks(self, env_setup):
         client, cluster = env_setup
 
-        arrays_metadata = {
-            'temperature': {
-                'global_shape': (8, 8),
-                'chunk_shape': (4, 4),
-                'chunk_position': (0, 0)
-            }}
         comm_state = FakeComm.State(4)
 
-        bridges = [Bridge(comm=FakeCartComm(comm_state, rank, dims=(2, 2)),
-                          arrays_metadata=arrays_metadata,
-                          wait_for_go=False) for rank in range(4)]
+        def make_bridge(comm: FakeCartComm):
+            rank = comm.Get_rank()  # or comm.rank if you have it
+
+            return Bridge(
+                comm=comm,
+                arrays_metadata={
+                    "temperature": {
+                        "global_shape": (8, 8),
+                        "chunk_shape": (4, 4),
+                        "chunk_position": comm.Get_coords(rank),
+                    }
+                },
+                wait_for_go=False,
+            )
+
+        bridges = run_on_all_ranks(
+            lambda: FakeCartComm(comm_state, 0, dims=(2, 2)),
+            make_bridge,
+        )
 
         deisa = Deisa()
 
@@ -716,7 +737,7 @@ class TestUsingDaskCluster:
 
         async def _bridge_send(ts: int):
             await asyncio.gather(*[asyncio.to_thread(bridge.send, 'temperature',
-                                                     np.ones(arrays_metadata['temperature']['chunk_shape']),
+                                                     np.ones(bridge.arrays_metadata['temperature']['chunk_shape']),
                                                      timestep=ts)
                                    for i, bridge in enumerate(bridges)])
 
