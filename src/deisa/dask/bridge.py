@@ -41,7 +41,7 @@ from deisa.core import IBridge, ICommunicator
 from distributed import Queue, Client
 from distributed.protocol import to_serialize
 from distributed.utils_comm import scatter_to_workers
-from tlz import valmap
+from distributed.worker import _global_workers
 
 from deisa.dask.constants import KEY_PREFIX, FEEDBACK_QUEUE_PREFIX, CLIENT_KEY
 from deisa.dask.handshake import Handshake
@@ -250,8 +250,12 @@ class Bridge(IBridge):
         - ``:param timestep:`` The current timestep associated to the sent data chunk.
         - ``:param args:`` Additional positional arguments if required by the method implementation.
         - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported kwargs: update_workers (bool), filter_workers (callable).
-        - ``:return:`` None
+            Supported keys include:
+            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+            - `filter_workers` (callable): A function that filters the available workers
+              and returns a list of worker names. Must return a non-empty list of strings.
+
+        - ``:return:`` None.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
@@ -402,7 +406,7 @@ class Bridge(IBridge):
         - ``:param default:`` The default value to return if the specified timestep is not found.
         - ``:type default:`` Any
         - ``:return:`` The element associated with the specified timestep if found, the entire deque if no
-            timestep is specified, or the default value if the timestep is not found.  
+            timestep is specified, or the default value if the timestep is not found.
         - ``:rtype:`` Optional[Union[Deque, Any]]
         """
         logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
@@ -439,15 +443,8 @@ class Bridge(IBridge):
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
         logger.debug(f"[{self.id}] scatter to {workers}")
 
-        if workers is None:
-            workers = self.workers
-
         if self.client:
-            return self.client.sync(
-                self.__scatter,
-                data,
-                workers=workers,
-                hash=hash)
+            return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
         else:
             return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
 
@@ -476,18 +473,14 @@ class Bridge(IBridge):
 
         assert isinstance(data, dict)
 
-        data2 = valmap(to_serialize, data)
+        _, who_has, nbytes = await self._better_scatter_to_workers(
+            workers,
+            data,
+            scheduler=self.client.scheduler if self.client else None,
+            client_id=self.client.id if self.client else None,
+        )
 
-        _, who_has, nbytes = await scatter_to_workers(workers, data2)
-
-        out = {
-            k: {
-                'future': k,
-                'who_has': who_has,
-                'nbytes': nbytes
-            }
-            for k in data
-        }
+        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
@@ -496,3 +489,74 @@ class Bridge(IBridge):
             assert len(out) == 1
             out = list(out.values())[0]
         return out
+
+    async def _better_scatter_to_workers(self, workers, data, scheduler=None, client_id: str = None):
+        assert isinstance(data, dict)
+
+        local_worker_map = {w.address: w for w in _global_workers}
+
+        # deterministic ordering
+        workers = sorted(workers)
+        names = list(data.keys())
+        values = list(data.values())
+
+        # assign workers round-robin
+        entries = [
+            (workers[i % len(workers)], names[i], values[i])
+            for i in range(len(names))
+        ]
+
+        who_has = {}
+        nbytes = {}
+
+        local_entries = []
+        remote_entries = []
+
+        for w, k, v in entries:
+            (local_entries if w in local_worker_map else remote_entries).append((w, k, v))
+
+        # -----------------------
+        # Local (zero-copy path)
+        # -----------------------
+        if local_entries:
+            scheduler_who_has = {}
+            scheduler_nbytes = {}
+
+            for addr, key, val in local_entries:
+                worker = local_worker_map[addr]
+                worker.update_data({key: val})
+
+                assert id(worker.data[key]) == id(val), f"In-process scatter copied data: id(orig)={id(val)}"
+
+                size = val.nbytes if hasattr(val, "nbytes") else sys.getsizeof(val)
+
+                who_has[key] = [addr]
+                nbytes[key] = size
+
+                scheduler_who_has[key] = [addr]
+                scheduler_nbytes[key] = size
+
+            if scheduler is not None:
+                await scheduler.update_data(
+                    who_has=scheduler_who_has,
+                    nbytes=scheduler_nbytes,
+                    client=client_id,
+                )
+
+        # -----------------------
+        # Remote (distributed path)
+        # -----------------------
+        if remote_entries:
+            remote_workers = sorted({w for w, _, _ in remote_entries})
+
+            remote_data = {
+                k: to_serialize(v)
+                for _, k, v in remote_entries
+            }
+
+            _, remote_who_has, remote_nbytes = await scatter_to_workers(remote_workers, remote_data)
+
+            who_has.update(remote_who_has)
+            nbytes.update(remote_nbytes)
+
+        return names, who_has, nbytes

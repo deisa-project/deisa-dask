@@ -91,11 +91,12 @@ class Deisa(IDeisa):
 
     def __del__(self):
         # delete Futures
-        for cb in self._callbacks.values():
-            for a in cb['state'].values():
-                a['window'].clear()
+        if self._callbacks:
+            for cb in self._callbacks.values():
+                for a in cb['state'].values():
+                    a['window'].clear()
 
-        del self._callbacks
+            del self._callbacks
         self.client.close()
 
     @staticmethod
