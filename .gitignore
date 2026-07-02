@@ -1,4 +1,6 @@
 __pycache__/
 .csv
 .png
-res/site/content/docs/public-api.md
+res/
+*.egg-info/
+uv.lock

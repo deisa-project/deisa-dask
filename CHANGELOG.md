@@ -20,6 +20,8 @@ Types of changes:
 
 - documentation website
 - getting started example code
+- feature: per-array communicator.
+  This feature also enables the handling of non-distributed arrays.
 
 ## [0.5.1]
 

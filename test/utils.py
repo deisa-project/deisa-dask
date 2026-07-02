@@ -28,7 +28,6 @@
 # =============================================================================
 import asyncio
 import multiprocessing
-import threading
 import time
 from typing import Optional, Any, Literal, List, Sequence
 
@@ -109,6 +108,47 @@ def infer_parallelism_auto(global_size: Sequence[int], max_splits: int = 1) -> t
     return tuple(parallelism)
 
 
+import threading
+import queue
+
+
+def run_on_all_ranks(comm_builder, fn):
+    """
+    MPI-style:
+        - build one communicator per rank
+        - run fn(comm) in parallel
+    """
+
+    base = comm_builder()
+    size = base.Get_size()
+
+    results = [None] * size
+    errors = queue.Queue()
+
+    def worker(rank: int):
+        try:
+            comm = comm_builder().clone(rank)
+            results[rank] = fn(comm)
+        except BaseException as e:
+            errors.put((rank, e))
+
+    threads = [
+        threading.Thread(target=worker, args=(r,))
+        for r in range(size)
+    ]
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    if not errors.empty():
+        rank, exc = errors.get()
+        raise AssertionError(f"Rank {rank} failed") from exc
+
+    return results
+
+
 class FakeComm(ICommunicator):
     class State:
         def __init__(self, size: int, mode: Literal["thread", "process"] = "thread"):
@@ -125,30 +165,52 @@ class FakeComm(ICommunicator):
             self.gather_data: dict[int, Any] = {}
             self.gather_result: Optional[list[Any]] = None
             self.gather_count = 0
+            self.gather_generation = 0
 
             # bcast state
             self.bcast_value: Any = None
             self.bcast_ready = False
             self.bcast_count = 0
+            self.bcast_generation = 0
+
+            # split state
+            self.split_data: dict[int, tuple[Any, int]] = {}
+            self.split_comms: Optional[dict[int, Optional["FakeComm"]]] = None
+            self.split_count = 0
+            self.split_generation = 0
 
             # barrier state
             self.barrier_count = 0
             self.barrier_generation = 0
 
+            # free state
+            self.free_generation = 0
+            self.free_count = 0
+            self.freed = False
+            self.free_phase_done = False
+
     def __init__(self, state: State, rank: int):
         self._state = state
         self._rank = rank
 
+    def clone(self, rank: int) -> "FakeComm":
+        return FakeComm(self._state, rank)
+
     def Get_rank(self) -> int:
+        self._check_valid()
         return self._rank
 
     def Get_size(self) -> int:
+        self._check_valid()
         return self._state.size
 
     def gather(self, data: Any, root: int = 0) -> Optional[list[Any]]:
+        self._check_valid()
         state = self._state
 
         with state.condition:
+            generation = state.gather_generation
+
             state.gather_data[self._rank] = data
 
             if len(state.gather_data) == state.size:
@@ -156,70 +218,153 @@ class FakeComm(ICommunicator):
                     state.gather_data[r]
                     for r in range(state.size)
                 ]
-
                 state.condition.notify_all()
-
             else:
-                state.condition.wait_for(
-                    lambda: state.gather_result is not None
-                )
+                state.condition.wait_for(lambda: state.gather_result is not None)
 
             result = state.gather_result
 
             state.gather_count += 1
 
-            # Last rank resets collective state
             if state.gather_count == state.size:
                 state.gather_data = {}
                 state.gather_result = None
                 state.gather_count = 0
+                state.gather_generation += 1
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.gather_generation != generation)
 
-        if self._rank == root:
-            return result
-
-        return None
+        return result if self._rank == root else None
 
     def bcast(self, obj: Any, root: int = 0) -> Any:
+        self._check_valid()
         state = self._state
 
         with state.condition:
-            # Root publishes value
+            generation = state.bcast_generation
+
             if self._rank == root:
                 state.bcast_value = obj
                 state.bcast_ready = True
-
                 state.condition.notify_all()
-
             else:
-                # Wait for root
-                state.condition.wait_for(
-                    lambda: state.bcast_ready
-                )
+                state.condition.wait_for(lambda: state.bcast_ready)
 
             result = state.bcast_value
 
             state.bcast_count += 1
 
-            # Last rank resets collective state
             if state.bcast_count == state.size:
                 state.bcast_value = None
                 state.bcast_ready = False
                 state.bcast_count = 0
+                state.bcast_generation += 1
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.bcast_generation != generation)
 
             return result
 
     def barrier(self) -> None:
+        self._check_valid()
         state = self._state
+
         with state.condition:
             generation = state.barrier_generation
             state.barrier_count += 1
-            # Last participant releases everybody
+
             if state.barrier_count == state.size:
                 state.barrier_count = 0
                 state.barrier_generation += 1
                 state.condition.notify_all()
             else:
                 state.condition.wait_for(lambda: state.barrier_generation != generation)
+
+    def Split(self, color: Any, key: int = 0) -> Optional["FakeComm"]:
+        self._check_valid()
+        state = self._state
+
+        with state.condition:
+            generation = state.split_generation
+
+            state.split_data[self._rank] = (color, key)
+
+            if len(state.split_data) == state.size:
+                groups: dict[Any, list[tuple[int, int]]] = {}
+
+                for rank, (c, k) in state.split_data.items():
+                    if c is None:  # MPI_UNDEFINED
+                        continue
+                    groups.setdefault(c, []).append((rank, k))
+
+                split_comms: dict[int, Optional["FakeComm"]] = {}
+
+                for members in groups.values():
+                    members.sort(key=lambda x: (x[1], x[0]))
+
+                    new_state = FakeComm.State(len(members))
+
+                    for new_rank, (old_rank, _) in enumerate(members):
+                        split_comms[old_rank] = FakeComm(new_state, new_rank)
+
+                for rank in range(state.size):
+                    split_comms.setdefault(rank, None)
+
+                state.split_comms = split_comms
+                state.condition.notify_all()
+
+            else:
+                state.condition.wait_for(lambda: state.split_comms is not None)
+
+            result = state.split_comms[self._rank]
+
+            state.split_count += 1
+
+            if state.split_count == state.size:
+                state.split_data = {}
+                state.split_comms = None
+                state.split_count = 0
+                state.split_generation += 1
+                state.condition.notify_all()
+            else:
+                state.condition.wait_for(lambda: state.split_generation != generation)
+
+            return result
+
+    def Free(self) -> None:
+        state = self._state
+
+        with state.condition:
+            if state.freed:
+                return  # idempotent
+
+            generation = state.free_generation
+            state.free_count += 1
+
+            # LAST rank arrives
+            if state.free_count == state.size:
+                state.free_count = 0
+                state.free_generation += 1
+
+                # release phase first (important!)
+                state.condition.notify_all()
+
+            else:
+                state.condition.wait_for(
+                    lambda: state.free_generation != generation
+                )
+
+            # ONLY AFTER ALL RANKS PASSED BARRIER:
+            state.freed = True
+            state.condition.notify_all()
+
+    def _check_valid(self):
+        if self._state is None:
+            raise RuntimeError("Communicator has been freed")
+
+        if getattr(self._state, "freed", False):
+            raise RuntimeError("Communicator has been freed")
 
 
 class FakeCartComm(FakeComm):
@@ -235,6 +380,14 @@ class FakeCartComm(FakeComm):
 
         if size != state.size:
             raise ValueError(f"Cartesian dimensions {self._dims} do not match communicator size {state.size}")
+
+    def clone(self, rank: int) -> "FakeCartComm":
+        return FakeCartComm(
+            state=self._state,
+            rank=rank,
+            dims=self._dims,
+            periods=self._periods,
+        )
 
     @property
     def dims(self) -> tuple[int, ...]:
