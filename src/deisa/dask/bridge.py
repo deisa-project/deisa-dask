@@ -33,7 +33,7 @@ import uuid
 import zlib
 from collections import deque, defaultdict
 from numbers import Number
-from typing import Any, Iterator, List, Dict, Optional, Union, Deque
+from typing import Any, Iterator, List, Dict, Optional, Union, Deque, Final
 
 import numpy as np
 from dask.tokenize import tokenize
@@ -49,10 +49,13 @@ from deisa.dask.utils import get_client
 
 logger = logging.getLogger(__name__)
 
-# Sentinel values for MPI.Comm.Split() — used until ICommunicator is updated
-# to expose these constants. These mirror mpi4py's MPI.UNDEFINED and MPI.COMM_NULL.
-_UNDEFINED = -1
-_COMM_NULL = None
+_COMM_NULL: Final[None] = None
+try:
+    from mpi4py import MPI
+
+    _UNDEFINED = MPI.UNDEFINED
+except ImportError:
+    _UNDEFINED = 2147483647
 
 
 class Bridge(IBridge):
@@ -180,14 +183,21 @@ class Bridge(IBridge):
         """
         for array_name in self._global_array_names:
             participates = array_name in self._my_arrays
-            # force into a positive 31-bit integer
-            color = (zlib.crc32(array_name.encode()) & 0x7fffffff) if participates else _UNDEFINED
+            # Force into a positive 31-bit integer
+            # Reserve 0x7FFFFFFF as _UNDEFINED value.
+            color = (zlib.crc32(array_name.encode()) & 0x7ffffffe) if participates else _UNDEFINED
 
+            # sub_comm is either an instance of: mpi4py.MPI.Comm, mpi4py.MPI.CommNull or None (FakeComm)
+            # Split is a collective. All ranks of parent comm must call this.
             sub_comm = self.comm.Split(color, self.id)
+
+            # convert mpi4py.MPI.CommNull to _COMM_NULL
+            sub_comm = _COMM_NULL if not participates else sub_comm
+
             self._array_comms[array_name] = sub_comm
 
-            # create a new client for sub_comm id==0
-            if sub_comm.Get_rank() == 0:
+            # create a new client for sub_comm id==0 if needed
+            if not self.client and sub_comm is not _COMM_NULL and sub_comm.Get_rank() == 0:
                 self.client = get_client(timeout=10, name=f"bridge-{self.comm.Get_rank()}")
 
             logger.debug(
@@ -261,14 +271,16 @@ class Bridge(IBridge):
 
         if kwargs.get('update_workers', False):
             # only update worker list if requested
-            if self.id == 0:
-                assert self.client is not None, "client cannot be None for Bridge id 0."
+            sub_comm = self._array_comms[array_name]
+
+            if sub_comm.Get_rank() == 0:
+                assert self.client is not None, "client cannot be None for Bridge comm id 0."
                 # rank 0 retrieve workers and bcast to other bridges
                 workers = self.client.scheduler_info(n_workers=-1)["workers"]
 
             # bcast
             logger.debug(f"[{self.id}] send() pre-bcast workers={workers}")
-            self.workers = self.comm.bcast(workers, root=0)
+            self.workers = sub_comm.bcast(workers, root=0)
             logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
             workers = dict(self.workers)
 

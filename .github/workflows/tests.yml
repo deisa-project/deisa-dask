@@ -45,14 +45,17 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install MPI
-        run: sudo apt-get update && sudo apt-get install -y openmpi-bin openmpi-common libopenmpi-dev
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install mpi4py openmpi
           python -m pip install dask==${{ matrix.dask-version }} distributed==${{ matrix.dask-version }}
           python -m pip install .
-          python -m pip install .[test,mpi]
+          python -m pip install .[test]
+      - name: Check MPI
+        run: |
+          mpirun --version
+          python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
       - name: MPI test with pytest
         run: |
           pytest test/test_mpi.py

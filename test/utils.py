@@ -28,8 +28,10 @@
 # =============================================================================
 import asyncio
 import multiprocessing
+import queue
+import threading
 import time
-from typing import Optional, Any, Literal, List, Sequence
+from typing import List, Sequence, Literal, Optional, Any
 
 import dask.array as da
 from deisa.core import ICommunicator
@@ -106,10 +108,6 @@ def infer_parallelism_auto(global_size: Sequence[int], max_splits: int = 1) -> t
         parallelism[dims[i]] += 1
 
     return tuple(parallelism)
-
-
-import threading
-import queue
 
 
 def run_on_all_ranks(comm_builder, fn):

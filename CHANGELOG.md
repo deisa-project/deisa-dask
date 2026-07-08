@@ -16,6 +16,17 @@ Types of changes:
 
 ## Unreleased
 
+### Changed
+
+- move `pytest.ini` to the repo root.
+- add non-distributed array in mpi test.
+
+### Fixed
+
+- Non-distributed arrays are now handled correctly.
+- Bridge.send `update_workers` now uses the sub-communicator.
+- CI: install `mpi4py` and `openmpi` together using pip.
+
 ## [0.6.0]
 
 ### Added

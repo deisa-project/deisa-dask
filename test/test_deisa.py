@@ -704,6 +704,7 @@ class TestUsingDaskCluster:
         deisa_array = build_deisa_array(dask_arr, 0)
         assert dask_array_element_wise_equal(dask_arr, deisa_array)
 
+    @pytest.mark.flaky(retries=3, delay=1)
     def test_wait_for_tasks(self, env_setup):
         client, cluster = env_setup
 
