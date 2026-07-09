@@ -14,6 +14,13 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## Unreleased
+
+### Fixed
+
+- Bridge `_gather_global_metadata` now return a sorted list of _global_array_names.
+  This fixes `_setup_array_comms` not seeing the same list order.
+
 ## [0.6.1]
 
 ### Changed

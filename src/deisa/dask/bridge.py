@@ -168,7 +168,7 @@ class Bridge(IBridge):
 
         # Broadcast the global set of array names to all bridges
         global_names = self.comm.bcast(global_names, root=0)
-        self._global_array_names = global_names
+        self._global_array_names = sorted(global_names)
 
     def _setup_array_comms(self):
         """
