@@ -40,7 +40,7 @@ layout: hextra-home
   {{< hextra/feature-card
     title="Latest release"
     subtitle="Learn more about the latest features in deisa dask."
-    link="blog/0.5.1"
+    link="blog/0.6.2"
     icon="gift"
     class="hx:aspect-auto hx:md:aspect-[1.1/1] hx:max-lg:min-h-[340px]"
     image="images/deisa-release-light.png"

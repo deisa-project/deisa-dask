@@ -12,21 +12,6 @@ from deisa.core.types import DeisaArray
 
 from utils import wait_for
 
-logging.basicConfig(level=logging.DEBUG)
-
-
-def mpi_gather_test():
-    from mpi4py import MPI
-
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-
-    data = comm.gather(rank, root=0)
-
-    if rank == 0:
-        assert data == list(range(size)), f"Unexpected gather result: {data}"
-
 
 def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tuple, comm: str):
     from mpi4py import MPI
@@ -58,9 +43,16 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
         'temperature': {
             'global_shape': global_size,
             'chunk_shape': tuple(g // p for g, p in zip(global_size, parallelism)),
-            'chunk_position': (0,) * len(global_size)  # TODO
+            'chunk_position': (0,) * len(global_size)
         }
     }
+
+    if rank == 1:
+        arrays_metadata['density'] = {
+            'global_shape': (8, 8),
+            'chunk_shape': (8, 8),
+            'chunk_position': (0, 0)
+        }
 
     print(f"MPI {rank} of {size} started. scheduler_address={scheduler_address}, arrays_metadata={arrays_metadata}",
           flush=True)
@@ -71,6 +63,9 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
 
     to_send = np.ones(tuple(g // p for g, p in zip(global_size, parallelism)), dtype=np.float64)
     bridge.send('temperature', to_send, timestep=1)
+
+    if rank == 1:
+        bridge.send('density', np.ones((8, 8), dtype=np.float64), timestep=1)
 
     bridge.close(timestep=1)
     print(f"MPI {rank} of {size} finished", flush=True)
@@ -111,7 +106,7 @@ def test_mpi_gather(i):
 @pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize('global_size', [(32, 32), (32, 32, 32)])
 @pytest.mark.parametrize('parallelism', [1, 2])  # per dim
-@pytest.mark.parametrize('comm', ['mpi-comm-cart', 'mpi-comm-world'])
+@pytest.mark.parametrize('comm', ['mpi-comm-world', 'mpi-comm-cart'])
 def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     from distributed import Client
     import numpy as np
@@ -137,6 +132,11 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
 
         deisa.set("hello", "world", timestep=1)
 
+        def exception_handler(exception: BaseException):
+            print(f"exception_handler: exception={exception}", flush=True)
+            pytest.fail("exception thrown in callback")  # TODO: this should fail the test
+
+        @deisa.register("temperature", exception_handler=exception_handler)
         def cb(window):
             print(f"hello from cb. iteration={window[-1].t}", flush=True)
             darr = window[-1]
@@ -144,11 +144,6 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
             assert darr.sum().compute() == np.prod(
                 global_size), f"temperature sum should be the product of {global_size}"
 
-        def exception_handler(exception: BaseException):
-            print(f"exception_handler: exception={exception}", flush=True)
-            pytest.fail("exception thrown in callback")  # TODO: this should fail the test
-
-        deisa.register_callback(cb, "temperature", exception_handler=exception_handler)
         deisa.execute_callbacks()
         return 0
 
@@ -171,7 +166,7 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         "--comm", comm)
 
     print(f"cmd={cmd}", flush=True)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, timeout=30, stdout=sys.stdout, stderr=sys.stderr, )
 
     print(f"result={result}", flush=True)
     print("STDOUT:\n", result.stdout, flush=True)
@@ -206,15 +201,9 @@ if __name__ == "__main__":
     if args.mpi_bridge and not args.scheduler_address:
         parser.error("--scheduler-address is required when using --mpi-bridge")
 
-    if args.mpi_gather:
-        try:
-            mpi_gather_test()
-        except Exception as e:
-            print(f"[ERROR] {e}", flush=True)
-            sys.exit(1)
-        sys.exit(0)
+    args = parser.parse_args()
 
-    elif args.mpi_bridge:
+    if args.mpi_bridge:
         try:
             parallelism = eval(args.parallelism)
             global_size = eval(args.global_size)

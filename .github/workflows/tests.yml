@@ -65,10 +65,7 @@ jobs:
         run: |
           mpicc --version
           mpiexec --version
-          python - <<'PY'
-          from mpi4py import MPI
-          print(MPI.Get_library_version())
-          PY
+          python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
       - name: MPI test with pytest
         env:
           MPI_IMPL: ${{ matrix.mpi-impl }}

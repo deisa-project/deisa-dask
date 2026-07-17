@@ -18,9 +18,36 @@ Types of changes:
 
 ### Added
 
+- CI mpich test cases
+
+## [0.6.2]
+
+### Fixed
+
+- Bridge `_gather_global_metadata` now return a sorted list of _global_array_names.
+  This fixes `_setup_array_comms` not seeing the same list order.
+
+## [0.6.1]
+
+### Changed
+
+- move `pytest.ini` to the repo root.
+- add non-distributed array in mpi test.
+
+### Fixed
+
+- Non-distributed arrays are now handled correctly.
+- Bridge.send `update_workers` now uses the sub-communicator.
+- CI: install `mpi4py` and `openmpi` together using pip.
+
+## [0.6.0]
+
+### Added
+
 - documentation website
 - getting started example code
-- CI mpich test cases
+- feature: per-array communicator.
+  This feature also enables the handling of non-distributed arrays.
 
 ## [0.5.1]
 

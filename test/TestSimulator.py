@@ -37,7 +37,7 @@ from distributed import Client
 from numpy import dtype, float64, ndarray
 
 from deisa.dask import Bridge
-from utils import FakeComm, async_close_bridges, FakeCartComm
+from utils import FakeComm, async_map, async_close_bridges, FakeCartComm
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +51,23 @@ class TestSimulation:
         self.mpi_parallelism = mpi_parallelism
         nb_mpi_ranks = int(np.prod(mpi_parallelism))
         comm_state = FakeComm.State(nb_mpi_ranks)
-        self.bridges = []
-        for rank in range(nb_mpi_ranks):
+
+        def _make_bridge(rank):
             comm = FakeCartComm(comm_state, rank, dims=mpi_parallelism)
-            self.bridges.append(
-                Bridge(
-                    *args,
-                    comm=comm,
-                    arrays_metadata={
-                        name: {
-                            **metadata,
-                            "chunk_position": comm.Get_coords(rank),
-                        }
-                        for name, metadata in arrays_metadata.items()
-                    },
-                    **kwargs,
-                )
+            return Bridge(
+                *args,
+                comm=comm,
+                arrays_metadata={
+                    name: {
+                        **metadata,
+                        "chunk_position": comm.Get_coords(rank),
+                    }
+                    for name, metadata in arrays_metadata.items()
+                },
+                **kwargs,
             )
+
+        self.bridges = async_map(range(nb_mpi_ranks), _make_bridge)
 
     def __del__(self):
         try:
