@@ -33,7 +33,7 @@ mpi = [
 ]
 benchmark = [
   "pytest",
-  "pytest-benchmark>=5.2.3",
+  "pytest-benchmark",
 ]
 
 [project.urls]
