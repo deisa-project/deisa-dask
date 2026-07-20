@@ -18,7 +18,7 @@ Types of changes:
 
 ### Added
 
-- CI mpich test cases
+- CI: run mpi tests against openmpi and mpich
 
 ## [0.6.2]
 

@@ -459,6 +459,7 @@ class TestUsingDaskCluster:
 
         del sim
 
+        # del deisa
         deisa.execute_callbacks()
 
     def test_callback_throws(self, env_setup):

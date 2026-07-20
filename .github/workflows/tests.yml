@@ -60,12 +60,24 @@ jobs:
           python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
           python -m pip install dask==${{ matrix.dask-version }} distributed==${{ matrix.dask-version }}
           python -m pip install .
-          python -m pip install .[test,mpi]
-      - name: Check MPI
+          python -m pip install .[test]
+      - name: Check MPI and check versions
         run: |
           mpicc --version
           mpiexec --version
-          python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
+          python -c "
+          import subprocess
+          import re
+          from mpi4py import MPI
+          lib = MPI.Get_library_version()
+          lib_version = re.search(r'\d+\.\d+(?:\.\d+)?', lib).group()
+          cli = subprocess.check_output(['mpiexec', '--version'], text=True)
+          cli_version = re.search(r'\d+\.\d+(?:\.\d+)?', cli).group()
+          print(f'mpi4py library version : {lib_version}')
+          print(f'mpiexec CLI version :    {cli_version}')
+          assert lib_version == cli_version, f'MPI version mismatch, CLI is {cli_version} but Python is bound to {lib_version}'
+          print('MPI versions match')
+          "
       - name: MPI test with pytest
         env:
           MPI_IMPL: ${{ matrix.mpi-impl }}
