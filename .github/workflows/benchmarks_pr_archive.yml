@@ -1,0 +1,19 @@
+name: Archive closed PR branch
+
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  archive_pr_branch:
+    permissions:
+      checks: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bencherdev/bencher@main
+      - name: Archive closed PR branch with Bencher
+        run: |
+          bencher archive \
+          --project deisa-dask-bencher \
+          --key '${{ secrets.BENCHER_API_KEY }}' \
+          --branch '${{ github.head_ref }}'
