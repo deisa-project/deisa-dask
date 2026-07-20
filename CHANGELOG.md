@@ -14,6 +14,12 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## [Unreleased]
+
+### Fixed
+
+- fix Deisa `execute_callbacks` block until all callbacks complete
+
 ## [0.6.2]
 
 ### Fixed
