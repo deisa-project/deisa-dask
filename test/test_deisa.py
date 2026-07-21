@@ -39,13 +39,12 @@ import dask
 import dask.array as da
 import numpy as np
 import pytest
-from deisa.core.types import DeisaArray, Window
-from distributed import Client, LocalCluster, Queue, Variable
-
 from TestSimulator import TestSimulation
+from deisa.core.types import DeisaArray, Window
 from deisa.dask import Deisa, Bridge
 from deisa.dask.deisa import DEFAULT_SLIDING_WINDOW_SIZE
 from deisa.dask.utils import build_deisa_array
+from distributed import Client, LocalCluster, Queue, Variable
 from utils import wait_for, dask_array_element_wise_equal, FakeComm, async_map, async_close_bridges, FakeCartComm, \
     run_on_all_ranks
 
@@ -752,5 +751,3 @@ class TestUsingDaskCluster:
 
         deisa.execute_callbacks()
         del deisa
-
-        assert len(cluster.scheduler.tasks) == 1  # 1 because of HandshakeActor

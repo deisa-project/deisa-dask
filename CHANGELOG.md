@@ -20,6 +20,10 @@ Types of changes:
 
 - CI: run mpi tests against openmpi and mpich
 
+### Fixed
+
+- fix Deisa `execute_callbacks` block until all callbacks complete
+
 ## [0.6.2]
 
 ### Fixed
