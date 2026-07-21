@@ -44,7 +44,7 @@ jobs:
       - name: Track PR benchmarks with Bencher
         run: |
           bencher run \
-          --project deisa-dask-bencher \
+          --project deisa-dask-bencher-test \
           --key '${{ secrets.BENCHER_API_KEY }}' \
           --branch "$PR_HEAD" \
           --hash "$PR_HEAD_SHA" \
