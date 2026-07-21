@@ -57,21 +57,26 @@ jobs:
           python -m pip install dask==${{ matrix.dask-version }} distributed==${{ matrix.dask-version }}
           python -m pip install .
           python -m pip install .[test]
-      - name: Check MPI versions match
+      - name: Check MPI implementation versions match
         run: |
           mpiexec --version
           python -c "
           import subprocess
           import re
+          import mpi4py
           from mpi4py import MPI
-          lib = MPI.Get_library_version()
-          lib_version = re.search(r'\d+\.\d+\.\d+', lib).group()
-          cli = subprocess.check_output(['mpiexec', '--version'], text=True)
-          cli_version = re.search(r'\d+\.\d+\.\d+', cli).group()
-          print(f'mpi4py library version : {lib_version}')
-          print(f'mpiexec CLI version :    {cli_version}')
-          assert lib_version == cli_version, f'MPI version mismatch, CLI is {cli_version} but Python is bound to {lib_version}'
-          print('MPI versions match')
+          mpi_impl_via_python = MPI.Get_library_version()
+          mpi_impl_via_python_version = re.search(r'\d+\.\d+\.\d+', mpi_impl_via_python).group()
+          mpi_impl_via_cli = subprocess.check_output(['mpiexec', '--version'], text=True)
+          mpi_impl_via_cli_version = re.search(r'\d+\.\d+\.\d+', mpi_impl_via_cli).group()
+          print(f'mpi4py package version :                  {mpi4py.__version__}')
+          print(f'MPI implementation linked by mpi4py :     {mpi_impl_via_python_version}')
+          print(f'MPI implementation used by mpiexec CLI :  {mpi_impl_via_cli_version}')
+          assert mpi_impl_via_python_version == mpi_impl_via_cli_version, (
+              f'MPI implementation mismatch: mpiexec is {mpi_impl_via_cli_version} '
+              f'but mpi4py is linked against {mpi_impl_via_python_version}'
+          )
+          print('MPI implementation versions match')
           "
       - name: MPI test with pytest
         env:
