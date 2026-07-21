@@ -7,7 +7,7 @@ on:
 
 jobs:
   benchmark_fork_pr_branch:
-    name: Run Fork PR Benchmarks
+    name: Run fork PR benchmarks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -22,7 +22,7 @@ jobs:
           python -m pip install .[test]
           python -m pip install pytest-benchmark
 
-      - name: Run PR benchmarks
+      - name: Run pytest benchmarks
         run: |
           pytest benchmark/ --benchmark-json=benchmark_results.json
 

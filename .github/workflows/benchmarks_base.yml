@@ -23,7 +23,7 @@ jobs:
           python -m pip install pytest-benchmark
 
       - uses: bencherdev/bencher@main
-      - name: Run and track base branch benchmarks with Bencher
+      - name: Run and track base branch pytest benchmarks with Bencher
         run: |
           bencher run \
           --project deisa-dask-bencher-test \
