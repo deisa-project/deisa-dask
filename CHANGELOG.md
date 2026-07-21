@@ -18,7 +18,12 @@ Types of changes:
 
 ### Added
 
-CI: add benchmark regression tests through Bencher.
+- CI: add benchmark regression tests through Bencher.
+- benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
+
+### Fixed
+
+- fix Deisa `execute_callbacks` block until all callbacks complete
 
 ## [0.6.2]
 
