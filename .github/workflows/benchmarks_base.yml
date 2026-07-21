@@ -26,7 +26,7 @@ jobs:
       - name: Run and track base branch benchmarks with Bencher
         run: |
           bencher run \
-          --project deisa-dask-bencher \
+          --project deisa-dask-bencher-test \
           --key '${{ secrets.BENCHER_API_KEY }}' \
           --branch main \
           --testbed ubuntu-latest \
