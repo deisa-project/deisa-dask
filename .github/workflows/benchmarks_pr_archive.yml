@@ -16,4 +16,4 @@ jobs:
           bencher archive \
           --project deisa-dask-bencher-test \
           --key "${{ secrets.BENCHER_API_KEY }}" \
-          --branch '${{ github.head_ref }}'
+          --branch "${{ github.head_ref }}"

@@ -56,6 +56,6 @@ jobs:
           --testbed ubuntu-latest \
           --error-on-alert \
           --adapter python_pytest \
-          --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+          --github-actions "${{ secrets.GITHUB_TOKEN }}" \
           --ci-number "$PR_NUMBER" \
           --file "$BENCHMARK_RESULTS"

@@ -3,6 +3,7 @@ name: Run and track benchmarks for base
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   benchmark_base_branch:
@@ -28,7 +29,7 @@ jobs:
           bencher run \
           --project deisa-dask-bencher-test \
           --key "${{ secrets.BENCHER_API_KEY }}" \
-          --branch main \
+          --branch "${{ github.ref_name }}" \
           --testbed ubuntu-latest \
           --threshold-measure latency \
           --threshold-test t_test \
@@ -38,5 +39,5 @@ jobs:
           --error-on-alert \
           --adapter python_pytest \
           --file benchmark_results.json \
-          --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+          --github-actions "${{ secrets.GITHUB_TOKEN }}" \
           "pytest benchmark/ --benchmark-json=benchmark_results.json"
