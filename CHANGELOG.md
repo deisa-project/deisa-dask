@@ -16,6 +16,10 @@ Types of changes:
 
 ## [Unreleased]
 
+### Added
+
+- benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
+
 ### Fixed
 
 - fix Deisa `execute_callbacks` block until all callbacks complete
