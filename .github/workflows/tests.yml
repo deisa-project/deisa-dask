@@ -50,29 +50,24 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Setup MPI
-        uses: mpi4py/setup-mpi@v1
-        with:
-          mpi: ${{ matrix.mpi-impl }}
-      - name: Install dependencies
+      - name: Install MPI + mpi4py (matched, self-contained wheels)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-binary=mpi4py --no-cache-dir mpi4py
+          python -m pip install --no-cache-dir mpi4py ${{ matrix.mpi-impl }}
           python -m pip install dask==${{ matrix.dask-version }} distributed==${{ matrix.dask-version }}
           python -m pip install .
           python -m pip install .[test]
-      - name: Check MPI and check versions
+      - name: Check MPI versions match
         run: |
-          mpicc --version
           mpiexec --version
           python -c "
           import subprocess
           import re
           from mpi4py import MPI
           lib = MPI.Get_library_version()
-          lib_version = re.search(r'\d+\.\d+(?:\.\d+)?', lib).group()
+          lib_version = re.search(r'\d+\.\d+\.\d+', lib).group()
           cli = subprocess.check_output(['mpiexec', '--version'], text=True)
-          cli_version = re.search(r'\d+\.\d+(?:\.\d+)?', cli).group()
+          cli_version = re.search(r'\d+\.\d+\.\d+', cli).group()
           print(f'mpi4py library version : {lib_version}')
           print(f'mpiexec CLI version :    {cli_version}')
           assert lib_version == cli_version, f'MPI version mismatch, CLI is {cli_version} but Python is bound to {lib_version}'
