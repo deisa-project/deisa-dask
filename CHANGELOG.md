@@ -14,6 +14,12 @@ Types of changes:
 - `Fixed` for any bug fixes.
 - `Security` in case of vulnerabilities.
 
+## [Unreleased]
+
+### Added
+
+CI: add benchmark regression tests through Bencher.
+
 ## [0.6.2]
 
 ### Fixed
