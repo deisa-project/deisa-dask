@@ -313,6 +313,19 @@ class Deisa(IDeisa):
             logger.info(f"execute_callbacks() waiting for {nb_running_tasks} tasks to finish")
             time.sleep(1)
 
+        # Wait for every callback to finish.
+        # The double sleep(0) recheck flushes any topic messages that are still queued on the client loop
+        # into handlers -> tasks before confirming the set is stably empty.
+        async def _drain_callback_tasks():
+            while True:
+                await asyncio.sleep(0)
+                if not self._tasks:
+                    await asyncio.sleep(0)
+                    if not self._tasks:
+                        break
+
+        self.client.sync(_drain_callback_tasks)
+
         logger.info("execute_callbacks() done")
 
     def _make_topic_handler(self, array_name):
@@ -324,7 +337,6 @@ class Deisa(IDeisa):
             if _weak_self is None:
                 logger.error(f"topic_handler: weak_self is None, array_name={array_name}")
                 raise RuntimeError("weak_self is None")
-
             try:
                 _, payload = event
 
