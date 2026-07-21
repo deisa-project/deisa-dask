@@ -42,11 +42,16 @@ jobs:
             core.exportVariable("PR_NUMBER", prEvent.number);
 
       - uses: bencherdev/bencher@main
+      - name: Debug
+        run: |
+          echo "Length: ${#BENCHER_API_KEY}"
+        env:
+          BENCHER_API_KEY: "${{ secrets.BENCHER_API_KEY }}"
       - name: Track PR benchmarks with Bencher
         run: |
           bencher run \
           --project deisa-dask-bencher-test \
-          --key '${{ secrets.BENCHER_API_KEY }}' \
+          --key "${{ secrets.BENCHER_API_KEY }}" \
           --branch "$PR_HEAD" \
           --hash "$PR_HEAD_SHA" \
           --start-point "$PR_BASE" \
