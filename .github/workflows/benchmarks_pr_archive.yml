@@ -2,7 +2,7 @@ name: Archive closed PR branch
 
 on:
   pull_request_target:
-    types: [closed]
+    types: [closed, reopened]
 
 jobs:
   archive_pr_branch:
