@@ -20,6 +20,7 @@ Types of changes:
 
 - CI: run mpi tests against openmpi and mpich
 - benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
+- Ruff code format through pyproject.toml, and CI linting
 
 ### Fixed
 
