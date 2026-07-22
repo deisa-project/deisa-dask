@@ -31,6 +31,10 @@ test = [
 mpi = [
   "mpi4py"
 ]
+benchmark = [
+  "pytest",
+  "pytest-benchmark",
+]
 
 [project.urls]
 Homepage = "https://github.com/deisa-project/deisa-dask"
