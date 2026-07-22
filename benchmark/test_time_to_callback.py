@@ -110,8 +110,11 @@ def _mpi_bridge_main(timestep: int, array_name: str, n_sends: int):
 def _spawn_mpi(scheduler_address: str, nb_bridges: int,
                timestep: int, array_name: str, n_sends: int):
     """Launch the MPI bridge processes (a fresh process group each call)."""
-    cmd = [
-        "mpirun", "-n", str(nb_bridges), "--oversubscribe",
+    cmd = ["mpirun", "-n", str(nb_bridges)]
+    mpi_impl = os.environ.get("MPI_IMPL", "openmpi")
+    if mpi_impl == "openmpi":
+        cmd.append("--oversubscribe")
+    cmd += [
         sys.executable, "-u", __file__,
         "--mpi-bridge",
         "--scheduler-address", scheduler_address,
@@ -120,7 +123,7 @@ def _spawn_mpi(scheduler_address: str, nb_bridges: int,
         "--array-name", array_name,
         "--n-sends", str(n_sends),
     ]
-    return subprocess.run(cmd, timeout=120)
+    return subprocess.run(cmd, timeout=120, capture_output=True, text=True)
 
 @pytest.mark.benchmark
 @pytest.mark.skipif(_is_xdist(), reason="requires serial execution")
@@ -174,7 +177,13 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
             array_name=array_name,
             n_sends=N_SENDS,
         )
-        assert result.returncode == 0, f"MPI bridge failed with returncode {result.returncode}"
+        if result.returncode != 0:
+            print("STDOUT:\n", result.stdout, flush=True)
+            print("STDERR:\n", result.stderr, flush=True)
+        assert result.returncode == 0, (
+            f"MPI bridge failed with returncode {result.returncode}\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
 
         thread.join(timeout=10)
         return results

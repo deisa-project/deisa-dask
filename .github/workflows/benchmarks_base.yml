@@ -10,6 +10,9 @@ jobs:
     permissions:
       checks: write
     runs-on: ubuntu-latest
+    env:
+      UCX_TLS: tcp,self
+      FI_PROVIDER: tcp
     strategy:
       matrix:
         mpi-impl: [openmpi, mpich]
