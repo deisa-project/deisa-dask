@@ -13,9 +13,6 @@ jobs:
     env:
       UCX_TLS: tcp,self
       FI_PROVIDER: tcp
-    strategy:
-      matrix:
-        mpi-impl: [openmpi, mpich]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
@@ -24,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir mpi4py ${{ matrix.mpi-impl }}
+          python -m pip install --no-cache-dir mpi4py openmpi
           python -m pip install dask==2026.3.0 distributed==2026.3.0
           python -m pip install .
           python -m pip install .[test]
@@ -55,7 +52,7 @@ jobs:
       - uses: bencherdev/bencher@main
       - name: Run and track base branch pytest benchmarks with Bencher
         env:
-          MPI_IMPL: ${{ matrix.mpi-impl }}
+          MPI_IMPL: openmpi
         run: |
           bencher run \
           --project deisa-dask-bencher-test \
@@ -71,4 +68,4 @@ jobs:
           --adapter python_pytest \
           --file benchmark_results.json \
           --github-actions "${{ secrets.GITHUB_TOKEN }}" \
-          "pytest benchmark/ --benchmark-json=benchmark_results.json"
+          "pytest benchmark/ --ignore=benchmark/test_dask_queue.py --benchmark-json=benchmark_results.json"

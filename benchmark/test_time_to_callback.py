@@ -110,11 +110,8 @@ def _mpi_bridge_main(timestep: int, array_name: str, n_sends: int):
 def _spawn_mpi(scheduler_address: str, nb_bridges: int,
                timestep: int, array_name: str, n_sends: int):
     """Launch the MPI bridge processes (a fresh process group each call)."""
-    cmd = ["mpirun", "-n", str(nb_bridges)]
-    mpi_impl = os.environ.get("MPI_IMPL", "openmpi")
-    if mpi_impl == "openmpi":
-        cmd.append("--oversubscribe")
-    cmd += [
+    cmd = [
+        "mpirun", "-n", str(nb_bridges), "--oversubscribe",
         sys.executable, "-u", __file__,
         "--mpi-bridge",
         "--scheduler-address", scheduler_address,
@@ -201,7 +198,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     cluster.wait_for_workers(1, timeout=10)
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
 
-    results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
+    results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=10, iterations=1)
 
     print(f"len(results)={len(results)}")
 
