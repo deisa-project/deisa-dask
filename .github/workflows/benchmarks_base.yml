@@ -10,6 +10,9 @@ jobs:
     permissions:
       checks: write
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mpi-impl: [openmpi, mpich]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
@@ -18,13 +21,38 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir mpi4py ${{ matrix.mpi-impl }}
           python -m pip install dask==2026.3.0 distributed==2026.3.0
           python -m pip install .
           python -m pip install .[test]
           python -m pip install pytest-benchmark
 
+      - name: Check MPI implementation versions match
+        run: |
+          mpiexec --version
+          python -c "
+          import subprocess
+          import re
+          import mpi4py
+          from mpi4py import MPI
+          mpi_impl_via_python = MPI.Get_library_version()
+          mpi_impl_via_python_version = re.search(r'\d+\.\d+\.\d+', mpi_impl_via_python).group()
+          mpi_impl_via_cli = subprocess.check_output(['mpiexec', '--version'], text=True)
+          mpi_impl_via_cli_version = re.search(r'\d+\.\d+\.\d+', mpi_impl_via_cli).group()
+          print(f'mpi4py package version :                  {mpi4py.__version__}')
+          print(f'MPI implementation linked by mpi4py :     {mpi_impl_via_python_version}')
+          print(f'MPI implementation used by mpiexec CLI :  {mpi_impl_via_cli_version}')
+          assert mpi_impl_via_python_version == mpi_impl_via_cli_version, (
+              f'MPI implementation mismatch: mpiexec is {mpi_impl_via_cli_version} '
+              f'but mpi4py is linked against {mpi_impl_via_python_version}'
+          )
+          print('MPI implementation versions match')
+          "
+
       - uses: bencherdev/bencher@main
       - name: Run and track base branch pytest benchmarks with Bencher
+        env:
+          MPI_IMPL: ${{ matrix.mpi-impl }}
         run: |
           bencher run \
           --project deisa-dask-bencher-test \
