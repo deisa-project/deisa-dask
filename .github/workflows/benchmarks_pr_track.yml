@@ -1,3 +1,4 @@
+# This workflow uploads the pytest benchmark results of the benchmarks_pr.yml workflow to Bencher.
 name: Track pull requests benchmarks
 
 on:

@@ -1,3 +1,4 @@
+# This workflow removes the benchmark results in Bencher for a PR when it is closed, or restores those benchmark results when the PR is reopened.
 name: Archive closed PR branch
 
 on:

@@ -1,3 +1,4 @@
+# This workflow runs a pytest benchmark of a PR branch which is targeting the main branch of the base repository, on any edition of this PR.
 name: Run benchmarks for pull requests
 
 on:
@@ -24,8 +25,7 @@ jobs:
           python -m pip install --no-cache-dir mpi4py openmpi
           python -m pip install dask==2026.3.0 distributed==2026.3.0
           python -m pip install .
-          python -m pip install .[test]
-          python -m pip install pytest-benchmark
+          python -m pip install .[benchmark]
 
       - name: Check MPI implementation versions match
         run: |

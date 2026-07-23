@@ -1,3 +1,4 @@
+# This workflow runs and uploads (to Bencher) a pytest benchmark of the main branch of the base repository, on a push over it (or when triggered manually).
 name: Run and track benchmarks for base
 
 on:
@@ -24,8 +25,7 @@ jobs:
           python -m pip install --no-cache-dir mpi4py openmpi
           python -m pip install dask==2026.3.0 distributed==2026.3.0
           python -m pip install .
-          python -m pip install .[test]
-          python -m pip install pytest-benchmark
+          python -m pip install .[benchmark]
 
       - name: Check MPI implementation versions match
         run: |
