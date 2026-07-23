@@ -1,4 +1,5 @@
-# This workflow runs a pytest benchmark of a PR branch which is targeting the main branch of the base repository, on any edition of this PR.
+# This workflow runs a pytest benchmark of a PR's head branch whenever the PR targets this repository's main branch, 
+# on any modification to it. Works for PRs from forks. Outputs artifacts for benchmarks_pr_track.yml.
 name: Run benchmarks for pull requests
 
 on:

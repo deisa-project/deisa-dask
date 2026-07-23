@@ -1,9 +1,9 @@
-# This workflow removes the benchmark results in Bencher for a PR when it is closed, or restores those benchmark results when the PR is reopened.
+# This workflow removes the benchmark results in Bencher for a PR when it is closed.
 name: Archive closed PR branch
 
 on:
   pull_request_target:
-    types: [closed, reopened]
+    types: [closed]
 
 jobs:
   archive_pr_branch:

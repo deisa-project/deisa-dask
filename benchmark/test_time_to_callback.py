@@ -189,11 +189,9 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=1,
-        processes=True,
-        host='127.0.0.1',
-        scheduler_port=0,
-        dashboard_address=":0",
-        worker_dashboard_address=":0"
+        processes=False,
+        protocol="inproc",
+        dashboard_address=":0"
     )
     cluster.wait_for_workers(1, timeout=10)
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
