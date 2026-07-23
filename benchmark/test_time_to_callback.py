@@ -120,7 +120,7 @@ def _spawn_mpi(scheduler_address: str, nb_bridges: int,
         "--array-name", array_name,
         "--n-sends", str(n_sends),
     ]
-    return subprocess.run(cmd, timeout=120)
+    return subprocess.run(cmd, timeout=120, capture_output=True, text=True)
 
 @pytest.mark.benchmark
 @pytest.mark.skipif(_is_xdist(), reason="requires serial execution")
@@ -174,7 +174,13 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
             array_name=array_name,
             n_sends=N_SENDS,
         )
-        assert result.returncode == 0, f"MPI bridge failed with returncode {result.returncode}"
+        if result.returncode != 0:
+            print("STDOUT:\n", result.stdout, flush=True)
+            print("STDERR:\n", result.stderr, flush=True)
+        assert result.returncode == 0, (
+            f"MPI bridge failed with returncode {result.returncode}\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
 
         thread.join(timeout=10)
         return results
@@ -192,7 +198,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     cluster.wait_for_workers(1, timeout=10)
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
 
-    results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
+    results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=10, iterations=1)
 
     print(f"len(results)={len(results)}")
 
