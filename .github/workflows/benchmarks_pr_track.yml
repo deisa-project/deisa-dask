@@ -55,10 +55,9 @@ jobs:
           --start-point-hash "$PR_BASE_SHA" \
           --start-point-clone-thresholds \
           --start-point-reset \
-          --testbed bare-metal \
+          --testbed ubuntu-latest \
           --error-on-alert \
           --adapter python_pytest \
-          --image deisa-dask-bencher-test:latest \
           --github-actions "${{ secrets.GITHUB_TOKEN }}" \
           --ci-number "$PR_NUMBER" \
           --file "$BENCHMARK_RESULTS"

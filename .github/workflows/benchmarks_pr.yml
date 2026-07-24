@@ -1,4 +1,4 @@
-# This workflow runs a pytest benchmark of a PR's head branch whenever the PR targets this repository's main branch, 
+# This workflow runs a pytest benchmark of a PR's head branch whenever the PR targets this repository's main branch,
 # on any modification to it. Works for PRs from forks. Outputs artifacts for benchmarks_pr_track.yml.
 name: Run benchmarks for pull requests
 
@@ -51,8 +51,8 @@ jobs:
           "
 
       - name: Run pytest benchmarks
-        # env:
-        #   MPI_IMPL: openmpi
+        env:
+          MPI_IMPL: openmpi
         run: |
           pytest benchmark/ --ignore=benchmark/test_dask_queue.py --benchmark-json=benchmark_results.json
 
