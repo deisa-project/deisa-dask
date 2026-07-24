@@ -54,13 +54,14 @@ def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
 
 
     ``:param cart_coord_dims:`` Number of Cartesian coordinate dimensions used to compute the
-        grid layout for the Cartesian communicator. Default is 1.  
-    ``:type cart_coord_dims:`` int    
+        grid layout for the Cartesian communicator. Default is 1.
+    ``:type cart_coord_dims:`` int
     ``:return:`` A new Cartesian communicator created from the MPI world communicator based
-        on the computed dimensions.  
-    ``:rtype:`` mpi4py.MPI.Cartcomm  
+        on the computed dimensions.
+    ``:rtype:`` mpi4py.MPI.Cartcomm
     """
     from mpi4py import MPI
+
     mpi_comm = MPI.COMM_WORLD
     dims = MPI.Compute_dims(mpi_comm.Get_size(), dims=cart_coord_dims)
     return mpi_comm.Create_cart(dims)
@@ -80,11 +81,13 @@ def get_connection_info(dask_scheduler_address: str | Client, *args, **kwargs) -
             else:
                 raise ValueError(
                     "dask_scheduler_address must be a string containing the address of the scheduler, "
-                    "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+                    "or a string containing a file name to a dask scheduler file, or a Dask Client object."
+                )
     else:
         raise ValueError(
             "dask_scheduler_address must be a string containing the address of the scheduler, "
-            "or a string containing a file name to a dask scheduler file, or a Dask Client object.")
+            "or a string containing a file name to a dask scheduler file, or a Dask Client object."
+        )
 
     return client
 
@@ -108,10 +111,12 @@ def _get_actor(client: Client, clazz, **kwargs):
 
 
 def build_deisa_array(darr: da.Array, timestep: int) -> DeisaArray:
-    return DeisaArray(t=timestep,
-                      dask=darr.dask,
-                      name=darr.name,
-                      chunks=darr.chunks,
-                      dtype=darr.dtype,
-                      meta=darr._meta,
-                      shape=darr.shape)
+    return DeisaArray(
+        t=timestep,
+        dask=darr.dask,
+        name=darr.name,
+        chunks=darr.chunks,
+        dtype=darr.dtype,
+        meta=darr._meta,
+        shape=darr.shape,
+    )

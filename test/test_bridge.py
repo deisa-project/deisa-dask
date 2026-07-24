@@ -43,8 +43,9 @@ logging.basicConfig(level=logging.DEBUG)
 class TestBridge:
     @pytest.fixture(scope="function")
     def env_setup(self):
-        cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
-                               dashboard_address=":0", worker_dashboard_address=":0")
+        cluster = LocalCluster(
+            n_workers=1, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0"
+        )
         os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler_address
         client = Client(cluster)
         client.wait_for_workers(1, timeout=10)
@@ -53,18 +54,9 @@ class TestBridge:
         cluster.close()
 
     def get_new_bridge(self):
-        arrays_metadata = {
-            'temperature': {
-                'global_shape': (1,),
-                'chunk_shape': (1,),
-                'chunk_position': (0,)
-            }}
+        arrays_metadata = {"temperature": {"global_shape": (1,), "chunk_shape": (1,), "chunk_position": (0,)}}
         comm_state = FakeComm.State(1)
-        bridge = Bridge(
-            comm=FakeComm(comm_state, 0),
-            arrays_metadata=arrays_metadata,
-            wait_for_go=False
-        )
+        bridge = Bridge(comm=FakeComm(comm_state, 0), arrays_metadata=arrays_metadata, wait_for_go=False)
         return bridge, arrays_metadata
 
     def test_ctor(self, env_setup):
@@ -107,7 +99,7 @@ class TestBridge:
         cluster.scale(2)
         cluster.wait_for_workers(2)
 
-        bridge.send('temperature', np.ones(1), timestep=0, update_workers=True)
+        bridge.send("temperature", np.ones(1), timestep=0, update_workers=True)
 
         assert bridge.workers is not None
         assert sorted(list(bridge.workers.keys())) == sorted([w.worker_address for w in cluster.workers.values()])
@@ -121,7 +113,7 @@ class TestBridge:
             return []
 
         with pytest.raises(TypeError) as e:
-            bridge.send('temperature', np.ones(1), timestep=0, filter_workers=filter)
+            bridge.send("temperature", np.ones(1), timestep=0, filter_workers=filter)
 
     def test_send_filter_workers_without_update_workers_valid(self, env_setup):
         client, cluster = env_setup
@@ -134,7 +126,7 @@ class TestBridge:
                 assert addr in [w.worker_address for w in cluster.workers.values()]
             return list(workers.keys())
 
-        bridge.send('temperature', np.ones(1), timestep=0, update_workers=False, filter_workers=filter)
+        bridge.send("temperature", np.ones(1), timestep=0, update_workers=False, filter_workers=filter)
 
     def test_send_filter_workers_with_update_workers_valid(self, env_setup):
         client, cluster = env_setup
@@ -144,43 +136,42 @@ class TestBridge:
             assert isinstance(workers, dict)
             return list(workers.keys())
 
-        bridge.send('temperature', np.ones(1), timestep=0, update_workers=True, filter_workers=filter)
+        bridge.send("temperature", np.ones(1), timestep=0, update_workers=True, filter_workers=filter)
 
     def test_cart_comm(self, env_setup):
         client, cluster = env_setup
 
-        arrays_metadata = {
-            'temperature': {
-                'global_shape': (8, 8),
-                'chunk_shape': (4, 4),
-                'chunk_position': (0, 0)
-            }}
+        arrays_metadata = {"temperature": {"global_shape": (8, 8), "chunk_shape": (4, 4), "chunk_position": (0, 0)}}
         comm_state = FakeComm.State(4)
 
         def make_bridge(rank):
-            return Bridge(comm=FakeCartComm(comm_state, rank, dims=(2, 2)),
-                          arrays_metadata=arrays_metadata,
-                          wait_for_go=False)
+            return Bridge(
+                comm=FakeCartComm(comm_state, rank, dims=(2, 2)), arrays_metadata=arrays_metadata, wait_for_go=False
+            )
 
         # Create bridges in parallel (Split is a collective op)
         bridges = async_map(range(4), make_bridge)
 
         async def _bridge_send():
-            await asyncio.gather(*[asyncio.to_thread(bridge.send, 'temperature',
-                                                     np.ones(arrays_metadata['temperature']['chunk_shape']),
-                                                     timestep=0)
-                                   for i, bridge in enumerate(bridges)])
+            await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        bridge.send, "temperature", np.ones(arrays_metadata["temperature"]["chunk_shape"]), timestep=0
+                    )
+                    for i, bridge in enumerate(bridges)
+                ]
+            )
 
         asyncio.run(_bridge_send())
 
-        event = client.get_events('temperature')
+        event = client.get_events("temperature")
         assert len(event) == 1
         _, info = event[0]
-        assert info['array_name'] == 'temperature'
-        assert info['iteration'] == 0
-        assert len(info['futures']) == 4
-        for f in info['futures']:
-            assert f['chunk_position'] in [(0, 0), (0, 1), (1, 0), (1, 1)]
+        assert info["array_name"] == "temperature"
+        assert info["iteration"] == 0
+        assert len(info["futures"]) == 4
+        for f in info["futures"]:
+            assert f["chunk_position"] in [(0, 0), (0, 1), (1, 0), (1, 1)]
 
         async def _bridge_close():
             await asyncio.gather(*[asyncio.to_thread(bridge.close, 0) for i, bridge in enumerate(bridges)])

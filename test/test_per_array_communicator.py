@@ -43,8 +43,9 @@ from utils import FakeComm, FakeCartComm, async_map
 
 @pytest.fixture(scope="function")
 def env_setup():
-    cluster = LocalCluster(n_workers=1, threads_per_worker=1, processes=True,
-                           dashboard_address=":0", worker_dashboard_address=":0")
+    cluster = LocalCluster(
+        n_workers=1, threads_per_worker=1, processes=True, dashboard_address=":0", worker_dashboard_address=":0"
+    )
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler_address
     client = Client(cluster)
     client.wait_for_workers(1, timeout=10)
@@ -55,20 +56,14 @@ def env_setup():
 
 def _meta(array_name, chunk_pos, global_shape=(8,), chunk_shape=(4,)):
     """Helper: build arrays_metadata entry for a single array."""
-    return {array_name: {
-        "global_shape": global_shape,
-        "chunk_shape": chunk_shape,
-        "chunk_position": chunk_pos,
-    }}
+    return {array_name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": chunk_pos}}
 
 
 def _close_all(bridges):
     """Close all bridges in parallel."""
 
     async def _do():
-        await asyncio.gather(*[
-            asyncio.to_thread(b.close, 0) for b in bridges
-        ])
+        await asyncio.gather(*[asyncio.to_thread(b.close, 0) for b in bridges])
 
     asyncio.run(_do())
 
@@ -82,18 +77,10 @@ class TestSingleBridge:
         env_setup  # use fixture
 
         arrays_metadata = {
-            "arr_{}".format(i): {
-                "global_shape": (8,),
-                "chunk_shape": (8,),
-                "chunk_position": (0,),
-            }
+            "arr_{}".format(i): {"global_shape": (8,), "chunk_shape": (8,), "chunk_position": (0,)}
             for i in range(narrays)
         }
-        bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=arrays_metadata,
-            wait_for_go=False,
-        )
+        bridge = Bridge(comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=arrays_metadata, wait_for_go=False)
 
         assert len(bridge._array_comms) == narrays
         for i in range(narrays):
@@ -106,11 +93,7 @@ class TestSingleBridge:
         client, cluster = env_setup
 
         arrays_metadata = _meta("temperature", (0,), (1,), (1,))
-        bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=arrays_metadata,
-            wait_for_go=False,
-        )
+        bridge = Bridge(comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=arrays_metadata, wait_for_go=False)
 
         bridge.send("temperature", np.ones(1), timestep=0)
 
@@ -127,9 +110,7 @@ class TestSingleBridge:
         env_setup  # use fixture
 
         bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=_meta("temperature", (0,)),
-            wait_for_go=False,
+            comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=_meta("temperature", (0,)), wait_for_go=False
         )
 
         with pytest.raises(ValueError, match="unknown"):
@@ -140,9 +121,7 @@ class TestSingleBridge:
         env_setup  # use fixture
 
         bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=_meta("temperature", (0,)),
-            wait_for_go=False,
+            comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=_meta("temperature", (0,)), wait_for_go=False
         )
 
         assert "temperature" in bridge._array_comms
@@ -158,9 +137,7 @@ class TestSingleBridge:
         env_setup  # use fixture
 
         bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=_meta("temperature", (0,)),
-            wait_for_go=False,
+            comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=_meta("temperature", (0,)), wait_for_go=False
         )
 
         assert len(bridge._array_comms) > 0
@@ -197,22 +174,20 @@ class TestMultiBridge:
 
         def make_bridge(rank):
             return Bridge(
-                comm=FakeCartComm(comm_state, rank, dims=dims),
-                arrays_metadata=arrays_metadata,
-                wait_for_go=False,
+                comm=FakeCartComm(comm_state, rank, dims=dims), arrays_metadata=arrays_metadata, wait_for_go=False
             )
 
         bridges = async_map(range(comm_size), make_bridge)
 
         async def _send():
-            await asyncio.gather(*[
-                asyncio.to_thread(
-                    bridge.send, "temperature",
-                    np.ones(arrays_metadata["temperature"]["chunk_shape"]),
-                    timestep=0,
-                )
-                for bridge in bridges
-            ])
+            await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        bridge.send, "temperature", np.ones(arrays_metadata["temperature"]["chunk_shape"]), timestep=0
+                    )
+                    for bridge in bridges
+                ]
+            )
 
         asyncio.run(_send())
 
@@ -238,43 +213,20 @@ class TestMultiBridge:
         client, cluster = env_setup
 
         arrays_metadata_0 = {
-            "temperature": {
-                "global_shape": (8,),
-                "chunk_shape": (4,),
-                "chunk_position": (0,),
-            },
-            "pressure": {
-                "global_shape": (8,),
-                "chunk_shape": (4,),
-                "chunk_position": (0,),
-            },
+            "temperature": {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (0,)},
+            "pressure": {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (0,)},
         }
         # Bridge 1: only temperature (pressure absent)
         arrays_metadata_1 = {
-            "temperature": {
-                "global_shape": (8,),
-                "chunk_shape": (4,),
-                "chunk_position": (1,),
-            },
-            "density": {
-                "global_shape": (8,),
-                "chunk_shape": (4,),
-                "chunk_position": (0,),
-            },
+            "temperature": {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (1,)},
+            "density": {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (0,)},
         }
         comm_state = FakeComm.State(2)
 
         def make_bridge(rank, meta):
-            return Bridge(
-                comm=FakeComm(comm_state, rank),
-                arrays_metadata=meta,
-                wait_for_go=False,
-            )
+            return Bridge(comm=FakeComm(comm_state, rank), arrays_metadata=meta, wait_for_go=False)
 
-        bridge0, bridge1 = async_map(
-            [(0, arrays_metadata_0), (1, arrays_metadata_1)],
-            lambda args: make_bridge(*args),
-        )
+        bridge0, bridge1 = async_map([(0, arrays_metadata_0), (1, arrays_metadata_1)], lambda args: make_bridge(*args))
 
         # Both bridges send temperature (gather, sub-comm size 2)
         async def _send_temp():
@@ -330,16 +282,8 @@ class TestMultiBridge:
 
         # Bridge 0 owns both 'solo' and 'shared'
         arrays_metadata_0 = {
-            "solo": {
-                "global_shape": (8,),
-                "chunk_shape": (8,),
-                "chunk_position": (0,),
-            },
-            "shared": {
-                "global_shape": (8 * comm_size,),
-                "chunk_shape": (8,),
-                "chunk_position": (0,),
-            },
+            "solo": {"global_shape": (8,), "chunk_shape": (8,), "chunk_position": (0,)},
+            "shared": {"global_shape": (8 * comm_size,), "chunk_shape": (8,), "chunk_position": (0,)},
         }
 
         # Shared state must be created ONCE and shared across all bridge threads
@@ -349,18 +293,8 @@ class TestMultiBridge:
             if rank == 0:
                 meta = arrays_metadata_0
             else:
-                meta = {
-                    "shared": {
-                        "global_shape": (8 * comm_size,),
-                        "chunk_shape": (8,),
-                        "chunk_position": (rank,),
-                    },
-                }
-            return Bridge(
-                comm=FakeComm(comm_state, rank),
-                arrays_metadata=meta,
-                wait_for_go=False,
-            )
+                meta = {"shared": {"global_shape": (8 * comm_size,), "chunk_shape": (8,), "chunk_position": (rank,)}}
+            return Bridge(comm=FakeComm(comm_state, rank), arrays_metadata=meta, wait_for_go=False)
 
         bridges = async_map(range(comm_size), make_bridge)
 
@@ -369,12 +303,9 @@ class TestMultiBridge:
 
         # All bridges send 'shared'
         async def _send_shared():
-            await asyncio.gather(*[
-                asyncio.to_thread(
-                    b.send, "shared", np.ones(8) * (i + 1), timestep=0
-                )
-                for i, b in enumerate(bridges)
-            ])
+            await asyncio.gather(
+                *[asyncio.to_thread(b.send, "shared", np.ones(8) * (i + 1), timestep=0) for i, b in enumerate(bridges)]
+            )
 
         asyncio.run(_send_shared())
 
@@ -402,22 +333,10 @@ class TestMultiBridge:
         env_setup  # use fixture
 
         arrays_metadata = {
-            "temperature": {
-                "global_shape": (8,),
-                "chunk_shape": (8,),
-                "chunk_position": (0,),
-            },
-            "pressure": {
-                "global_shape": (8,),
-                "chunk_shape": (8,),
-                "chunk_position": (0,),
-            },
+            "temperature": {"global_shape": (8,), "chunk_shape": (8,), "chunk_position": (0,)},
+            "pressure": {"global_shape": (8,), "chunk_shape": (8,), "chunk_position": (0,)},
         }
-        bridge = Bridge(
-            comm=FakeComm(FakeComm.State(1), 0),
-            arrays_metadata=arrays_metadata,
-            wait_for_go=False,
-        )
+        bridge = Bridge(comm=FakeComm(FakeComm.State(1), 0), arrays_metadata=arrays_metadata, wait_for_go=False)
 
         assert "temperature" in bridge._array_comms
         assert "pressure" in bridge._array_comms

@@ -24,23 +24,27 @@ def connect_bridges(scheduler_file: str, id: int, max: int, size: tuple) -> List
     print(f"Connecting bridge {id} to scheduler.", flush=True)
     b = []
     start = time.time_ns()
-    b.append(Bridge(id=id,
-                    arrays_metadata={
-                        'my_array': {
-                            'size': size,
-                            'subsize': (0, 0, 0)  # not used but currently needed
-                        }
-                    },
-                    system_metadata={'connection': get_connection_info(scheduler_file),
-                                     'nb_bridges': max},
-                    wait_for_go=False))
+    b.append(
+        Bridge(
+            id=id,
+            arrays_metadata={
+                "my_array": {
+                    "size": size,
+                    "subsize": (0, 0, 0),  # not used but currently needed
+                }
+            },
+            system_metadata={"connection": get_connection_info(scheduler_file), "nb_bridges": max},
+            wait_for_go=False,
+        )
+    )
     stop = time.time_ns()
     print(f"Connected bridge {id} in {stop - start} ns.", flush=True)
     return b
 
 
 def disconnect_clients(clients: List[Client]):
-    for c in clients: c.close()
+    for c in clients:
+        c.close()
 
 
 def disconnect_bridges(bridges: List[Bridge]):
@@ -58,7 +62,8 @@ def do_scatter(clients, workers) -> List[float]:
         stop = time.time_ns()
         times.append(stop - start)
 
-        if len(times) > 2: print(f"delta to previous={times[-2] - times[-1]}", flush=True)
+        if len(times) > 2:
+            print(f"delta to previous={times[-2] - times[-1]}", flush=True)
         if i % 10 == 0:
             print(f">>> [{unique_id}] times={times}", flush=True)
 
@@ -81,7 +86,7 @@ def do_scatter_bridge(bridges: List[Bridge]) -> List[float]:
     return times
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     scheduler_file = sys.argv[1]
     nb_clients = int(sys.argv[2])
     data_size = int(sys.argv[3])
@@ -114,9 +119,9 @@ if __name__ == '__main__':
 
     # write times to csv file
     print(f"[{unique_id}] Writing times to CSV file.", flush=True)
-    np.savetxt(f"res/scatter_times_{nb_clients}_{data_size}_{run_id}_{unique_id}_{scatter_type}.csv",
-               times,
-               delimiter=",")
+    np.savetxt(
+        f"res/scatter_times_{nb_clients}_{data_size}_{run_id}_{unique_id}_{scatter_type}.csv", times, delimiter=","
+    )
 
     print(f"[{unique_id}] Done.", flush=True)
     sys.exit(0)

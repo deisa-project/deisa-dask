@@ -74,15 +74,7 @@ if __name__ == "__main__":
         x = np.arange(len(data_sizes), dtype=float)
 
         plt.figure(figsize=(10, 6))
-        plt.bar(
-            x,
-            means,
-            yerr=stds,
-            capsize=5,
-            alpha=0.9,
-            edgecolor="black",
-            linewidth=0.6,
-        )
+        plt.bar(x, means, yerr=stds, capsize=5, alpha=0.9, edgecolor="black", linewidth=0.6)
 
         plt.xticks(x, [str(ds) for ds in data_sizes])
         plt.xlabel("Data size")

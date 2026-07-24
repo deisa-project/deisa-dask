@@ -42,6 +42,7 @@ import pytest
 # latency is averaged over many hops (better statistics than one-per-round).
 N_SENDS = 2000
 
+
 def _has_mpirun():
     return shutil.which("mpirun") is not None
 
@@ -74,9 +75,9 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
 
     arrays_metadata = {
         array_name: {
-            'global_shape': global_shape,
-            'chunk_shape': chunk_shape,
-            'chunk_position': bridge_comm.Get_coords(rank)
+            "global_shape": global_shape,
+            "chunk_shape": chunk_shape,
+            "chunk_position": bridge_comm.Get_coords(rank),
         }
     }
 
@@ -91,8 +92,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         data = np.zeros(chunk_shape, dtype=np.int64)
         data[0, 0] = np.int64(time.time_ns())
 
-        bridge.send(array_name, data, timestep=i,
-                    update_workers=False, filter_workers=lambda w: list(w.keys()))
+        bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
     bridge.close(timestep=n_sends)
 
@@ -100,13 +100,22 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
 def _spawn_mpi(scheduler_address: str, nb_bridges: int, array_name: str, n_sends: int):
     """Launch the MPI bridge processes (a fresh process group each call)."""
     cmd = [
-        "mpirun", "-n", str(nb_bridges), "--oversubscribe",
-        sys.executable, "-u", __file__,
+        "mpirun",
+        "-n",
+        str(nb_bridges),
+        "--oversubscribe",
+        sys.executable,
+        "-u",
+        __file__,
         "--mpi-bridge",
-        "--scheduler-address", scheduler_address,
-        "--nb-bridges", str(nb_bridges),
-        "--array-name", array_name,
-        "--n-sends", str(n_sends),
+        "--scheduler-address",
+        scheduler_address,
+        "--nb-bridges",
+        str(nb_bridges),
+        "--array-name",
+        array_name,
+        "--n-sends",
+        str(n_sends),
     ]
     return subprocess.run(cmd, timeout=120)
 
@@ -167,10 +176,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
         n_workers=1,
         threads_per_worker=1,
         processes=True,
-        host='127.0.0.1',
+        host="127.0.0.1",
         scheduler_port=0,
         dashboard_address=":0",
-        worker_dashboard_address=":0"
+        worker_dashboard_address=":0",
     )
     cluster.wait_for_workers(1, timeout=10)
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
@@ -214,12 +223,14 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
             "99.9": nintyninenine,
             "n": len(results),
         }
-        print(f"\nsend->callback ({nb_bridges} MPI bridges, "
-              f"{N_SENDS} sends/round): "
-              f"avg={avg_ms:.3f}ms, median={median_ms:.3f}ms, "
-              f"min={min_ms:.3f}ms, max={max_ms:.3f}ms, std={std_ms:.3f}ms, "
-              f"75={seventyfive}ms, 90={ninty}ms, 99={nintynine}ms, 99.9={nintyninenine}ms, "
-              f"(n={len(results)})")
+        print(
+            f"\nsend->callback ({nb_bridges} MPI bridges, "
+            f"{N_SENDS} sends/round): "
+            f"avg={avg_ms:.3f}ms, median={median_ms:.3f}ms, "
+            f"min={min_ms:.3f}ms, max={max_ms:.3f}ms, std={std_ms:.3f}ms, "
+            f"75={seventyfive}ms, 90={ninty}ms, 99={nintynine}ms, 99.9={nintyninenine}ms, "
+            f"(n={len(results)})"
+        )
 
 
 # ENTRY POINT SWITCH
@@ -241,10 +252,7 @@ if __name__ == "__main__":
     if args.mpi_bridge:
         try:
             os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = args.scheduler_address
-            _mpi_bridge_main(
-                array_name=args.array_name,
-                n_sends=args.n_sends,
-            )
+            _mpi_bridge_main(array_name=args.array_name, n_sends=args.n_sends)
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)
             import traceback

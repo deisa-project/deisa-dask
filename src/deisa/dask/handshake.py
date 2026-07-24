@@ -38,14 +38,14 @@ logger = logging.getLogger(__name__)
 
 
 class Handshake:
-    _DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = 'deisa_handshake_actor_future'
-    _DEISA_WAIT_FOR_DONE_EVENT = 'deisa_handshake_done'
-    _DEISA_WAIT_FOR_BRIDGE_DONE_EVENT = 'deisa_handshake_bridge_done'
-    _DEISA_WAIT_FOR_GO_EVENT = 'deisa_handshake_go'
+    _DEISA_HANDSHAKE_ACTOR_FUTURE_VARIABLE = "deisa_handshake_actor_future"
+    _DEISA_WAIT_FOR_DONE_EVENT = "deisa_handshake_done"
+    _DEISA_WAIT_FOR_BRIDGE_DONE_EVENT = "deisa_handshake_bridge_done"
+    _DEISA_WAIT_FOR_GO_EVENT = "deisa_handshake_go"
 
     class HandshakeActor:
         def __init__(self):
-            logger.debug('HandshakeActor.__init__()')
+            logger.debug("HandshakeActor.__init__()")
             self.analytics_ready = False
             self.client = get_client()
             self.nb_bridges = 0
@@ -56,8 +56,10 @@ class Handshake:
             self.timestep: Optional[int] = None
 
         def set_bridges_ready(self, nb_bridges: int, arrays_metadata: dict) -> None:
-            logger.debug(f"set_bridges_ready(): nb_bridges={nb_bridges}, arrays_metadata={arrays_metadata}, "
-                         f"analytics_ready={self.analytics_ready}")
+            logger.debug(
+                f"set_bridges_ready(): nb_bridges={nb_bridges}, arrays_metadata={arrays_metadata}, "
+                f"analytics_ready={self.analytics_ready}"
+            )
             self.nb_bridges = nb_bridges
             self.arrays_metadata = arrays_metadata
             self.bridges_ready = True
@@ -92,8 +94,9 @@ class Handshake:
         self.client = client
         self.__handshake_actor: Optional[Handshake.HandshakeActor] = None
         if self.client:
-            self.__handshake_actor = _get_actor(self.client, Handshake.HandshakeActor,
-                                                key=f"{KEY_PREFIX}-HandshakeActor")
+            self.__handshake_actor = _get_actor(
+                self.client, Handshake.HandshakeActor, key=f"{KEY_PREFIX}-HandshakeActor"
+            )
             assert self.__handshake_actor is not None
 
     def all_bridges_ready(self, nb_bridge: int, arrays_metadata: dict, wait_for_go=True) -> None:

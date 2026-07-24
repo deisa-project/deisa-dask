@@ -12,7 +12,7 @@ def env_setup():
     cluster.close()
 
 
-@pytest.mark.parametrize("nb_puts", [10 ** i for i in range(5)])
+@pytest.mark.parametrize("nb_puts", [10**i for i in range(5)])
 def test_queue_put_per_op(nb_puts, benchmark, env_setup):
     client, cluster = env_setup
     q = Queue("Test", client=client)

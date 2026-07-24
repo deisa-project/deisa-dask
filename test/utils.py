@@ -130,10 +130,7 @@ def run_on_all_ranks(comm_builder, fn):
         except BaseException as e:
             errors.put((rank, e))
 
-    threads = [
-        threading.Thread(target=worker, args=(r,))
-        for r in range(size)
-    ]
+    threads = [threading.Thread(target=worker, args=(r,)) for r in range(size)]
 
     for t in threads:
         t.start()
@@ -212,10 +209,7 @@ class FakeComm(ICommunicator):
             state.gather_data[self._rank] = data
 
             if len(state.gather_data) == state.size:
-                state.gather_result = [
-                    state.gather_data[r]
-                    for r in range(state.size)
-                ]
+                state.gather_result = [state.gather_data[r] for r in range(state.size)]
                 state.condition.notify_all()
             else:
                 state.condition.wait_for(lambda: state.gather_result is not None)
@@ -349,9 +343,7 @@ class FakeComm(ICommunicator):
                 state.condition.notify_all()
 
             else:
-                state.condition.wait_for(
-                    lambda: state.free_generation != generation
-                )
+                state.condition.wait_for(lambda: state.free_generation != generation)
 
             # ONLY AFTER ALL RANKS PASSED BARRIER:
             state.freed = True
@@ -380,12 +372,7 @@ class FakeCartComm(FakeComm):
             raise ValueError(f"Cartesian dimensions {self._dims} do not match communicator size {state.size}")
 
     def clone(self, rank: int) -> "FakeCartComm":
-        return FakeCartComm(
-            state=self._state,
-            rank=rank,
-            dims=self._dims,
-            periods=self._periods,
-        )
+        return FakeCartComm(state=self._state, rank=rank, dims=self._dims, periods=self._periods)
 
     @property
     def dims(self) -> tuple[int, ...]:

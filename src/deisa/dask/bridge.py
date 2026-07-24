@@ -126,8 +126,9 @@ class Bridge(IBridge):
             self.handshake = Handshake(self.client)
             # Send merged metadata (from all bridges) to the handshake actor
             metadata_for_handshake = self._handshake_metadata if self._handshake_metadata else self.arrays_metadata
-            self.handshake.all_bridges_ready(nb_bridge=self.comm.Get_size(),
-                                             arrays_metadata=metadata_for_handshake, **kwargs)
+            self.handshake.all_bridges_ready(
+                nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
+            )
 
     def _gather_global_metadata(self):
         """
@@ -185,7 +186,7 @@ class Bridge(IBridge):
             participates = array_name in self._my_arrays
             # Force into a positive 31-bit integer
             # Reserve 0x7FFFFFFF as _UNDEFINED value.
-            color = (zlib.crc32(array_name.encode()) & 0x7ffffffe) if participates else _UNDEFINED
+            color = (zlib.crc32(array_name.encode()) & 0x7FFFFFFE) if participates else _UNDEFINED
 
             # sub_comm is either an instance of: mpi4py.MPI.Comm, mpi4py.MPI.CommNull or None (FakeComm)
             # Split is a collective. All ranks of parent comm must call this.
@@ -269,7 +270,7 @@ class Bridge(IBridge):
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
-        if kwargs.get('update_workers', False):
+        if kwargs.get("update_workers", False):
             # only update worker list if requested
             sub_comm = self._array_comms[array_name]
 
@@ -284,8 +285,8 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() post-bcast workers={workers}")
             workers = dict(self.workers)
 
-        if kwargs.get('filter_workers', False):
-            workers = kwargs['filter_workers'](workers)
+        if kwargs.get("filter_workers", False):
+            workers = kwargs["filter_workers"](workers)
             # check return type
             if not isinstance(workers, list):
                 raise TypeError(f"worker_filter must return a list, got {type(workers)}")
@@ -320,10 +321,7 @@ class Bridge(IBridge):
             self._direct_send(array_name, res, chunk, timestep)
             return
 
-        to_send = {
-            'future-info': res,
-            'chunk_position': self.arrays_metadata[array_name]['chunk_position']
-        }
+        to_send = {"future-info": res, "chunk_position": self.arrays_metadata[array_name]["chunk_position"]}
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
 
         gathered_data = sub_comm.gather(to_send, root=0)
@@ -337,9 +335,9 @@ class Bridge(IBridge):
             nbytes = {}
             keys = []
             for d in gathered_data:
-                who_has.update(d['future-info']['who_has'])
-                nbytes.update(d['future-info']['nbytes'])
-                keys.append(d['future-info']['future'])
+                who_has.update(d["future-info"]["who_has"])
+                nbytes.update(d["future-info"]["nbytes"])
+                keys.append(d["future-info"]["future"])
 
             # only update the scheduler with who has what and register the future once
             self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
@@ -349,17 +347,21 @@ class Bridge(IBridge):
             self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
             to_send = {
-                'array_name': array_name,
-                'iteration': timestep,
-                'futures': [{
-                    'future': d['future-info']['future'],
-                    'shape': chunk.shape,
-                    'dtype': str(chunk.dtype),
-                    'chunk_position': d['chunk_position']
-                } for d in gathered_data]
+                "array_name": array_name,
+                "iteration": timestep,
+                "futures": [
+                    {
+                        "future": d["future-info"]["future"],
+                        "shape": chunk.shape,
+                        "dtype": str(chunk.dtype),
+                        "chunk_position": d["chunk_position"],
+                    }
+                    for d in gathered_data
+                ],
             }
             logger.debug(
-                f"[{self.id}] send() log_event: array={array_name}, timestep={timestep}, n_futures={len(gathered_data)}")
+                f"[{self.id}] send() log_event: array={array_name}, timestep={timestep}, n_futures={len(gathered_data)}"
+            )
             self.client.log_event(array_name, to_send)
 
         # TODO: what to do if error ?
@@ -378,25 +380,23 @@ class Bridge(IBridge):
         """
         assert self.client is not None, "client cannot be None for single-bridge send."
 
-        future_key = res['future']
-        who_has = res['who_has']
-        nbytes = res['nbytes']
+        future_key = res["future"]
+        who_has = res["who_has"]
+        nbytes = res["nbytes"]
 
         self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
-        self.client._send_to_scheduler({
-            "op": "client-desires-keys",
-            "keys": [future_key],
-            "client": CLIENT_KEY
-        })
+        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": [future_key], "client": CLIENT_KEY})
         to_send = {
-            'array_name': array_name,
-            'iteration': timestep,
-            'futures': [{
-                'future': future_key,
-                'shape': chunk.shape,
-                'dtype': str(chunk.dtype),
-                'chunk_position': self.arrays_metadata[array_name]['chunk_position']
-            }]
+            "array_name": array_name,
+            "iteration": timestep,
+            "futures": [
+                {
+                    "future": future_key,
+                    "shape": chunk.shape,
+                    "dtype": str(chunk.dtype),
+                    "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
+                }
+            ],
         }
         self.client.log_event(array_name, to_send)
 
@@ -412,7 +412,7 @@ class Bridge(IBridge):
         - ``:param default:`` The default value to return if the specified timestep is not found.
         - ``:type default:`` Any
         - ``:return:`` The element associated with the specified timestep if found, the entire deque if no
-            timestep is specified, or the default value if the timestep is not found.  
+            timestep is specified, or the default value if the timestep is not found.
         - ``:rtype:`` Optional[Union[Deque, Any]]
         """
         logger.debug(f"[{self.id}] get() key={key}, timestep={timestep}, default={default}")
@@ -422,19 +422,21 @@ class Bridge(IBridge):
             if len(fb_state) == 0:
                 feedback_queue_size = self.handshake.get_feedback_queue_size()
                 fb_state[key] = {
-                    'q': Queue(f'{FEEDBACK_QUEUE_PREFIX}{key}', client=self.client, maxsize=feedback_queue_size),
-                    'deque': deque(maxlen=feedback_queue_size)}
+                    "q": Queue(f"{FEEDBACK_QUEUE_PREFIX}{key}", client=self.client, maxsize=feedback_queue_size),
+                    "deque": deque(maxlen=feedback_queue_size),
+                }
 
-            q: Queue = fb_state[key]['q']
-            d: deque = fb_state[key]['deque']
+            q: Queue = fb_state[key]["q"]
+            d: deque = fb_state[key]["deque"]
 
             if q.qsize() != 0:
                 # List[(int, Any), ...]
                 full_q = q.get(batch=True)  # get all elements. This pops elements from the Dask queue.
-                for v in full_q: d.append(v)  # add all elements to deque
+                for v in full_q:
+                    d.append(v)  # add all elements to deque
             logger.debug(f"[{self.id}] get() fb_state={fb_state}")
 
-        d = self.comm.bcast(fb_state[key]['deque'], root=0)
+        d = self.comm.bcast(fb_state[key]["deque"], root=0)
 
         if timestep is None:
             return d
@@ -453,11 +455,7 @@ class Bridge(IBridge):
             workers = self.workers
 
         if self.client:
-            return self.client.sync(
-                self.__scatter,
-                data,
-                workers=workers,
-                hash=hash)
+            return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
         else:
             return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
 
@@ -490,14 +488,7 @@ class Bridge(IBridge):
 
         _, who_has, nbytes = await scatter_to_workers(workers, data2)
 
-        out = {
-            k: {
-                'future': k,
-                'who_has': who_has,
-                'nbytes': nbytes
-            }
-            for k in data
-        }
+        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
         if issubclass(input_type, (list, tuple, set, frozenset)):
             out = input_type(out[k] for k in names)
