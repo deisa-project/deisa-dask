@@ -41,9 +41,7 @@ bridge = Bridge(
     arrays_metadata={
         "temperature": {
             "global_shape": global_grid_size,
-            "chunk_shape": tuple(
-                g // p for g, p in zip(global_grid_size, mpi_parallelism)
-            ),
+            "chunk_shape": tuple(g // p for g, p in zip(global_grid_size, mpi_parallelism)),
             "chunk_position": rank_coords,
         }
     },

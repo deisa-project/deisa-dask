@@ -1,7 +1,6 @@
 import threading
 
 import pytest
-
 from utils import FakeComm, run_on_all_ranks
 
 
@@ -9,10 +8,7 @@ def test_gather():
     state = FakeComm.State(size=4)
     comm = FakeComm(state, 0)
 
-    results = run_on_all_ranks(
-        lambda: comm,
-        lambda c: c.gather(c.Get_rank())
-    )
+    results = run_on_all_ranks(lambda: comm, lambda c: c.gather(c.Get_rank()))
 
     assert results[0] == [0, 1, 2, 3]
     assert results[1:] == [None, None, None]
@@ -22,10 +18,7 @@ def test_bcast():
     state = FakeComm.State(size=4)
     comm = FakeComm(state, 0)
 
-    results = run_on_all_ranks(
-        lambda: comm,
-        lambda c: c.bcast("hello" if c.Get_rank() == 0 else None)
-    )
+    results = run_on_all_ranks(lambda: comm, lambda c: c.bcast("hello" if c.Get_rank() == 0 else None))
 
     assert results == ["hello"] * 4
 
@@ -94,12 +87,7 @@ def test_split_key_order():
     # rank0(key5)
     # rank3(key8)
 
-    expected = {
-        1: 0,
-        2: 1,
-        0: 2,
-        3: 3,
-    }
+    expected = {1: 0, 2: 1, 0: 2, 3: 3}
 
     for world_rank, subcomm in enumerate(subcomms):
         assert subcomm.Get_rank() == expected[world_rank]

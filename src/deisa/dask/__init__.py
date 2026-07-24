@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Commissariat a l'énergie atomique et aux énergies alternatives (CEA)
 # SPDX-License-Identifier: MIT
 ###################################################################################################
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("deisa-dask")  # installed version
@@ -12,3 +12,5 @@ except PackageNotFoundError:
 from .bridge import Bridge
 from .deisa import Deisa
 from .utils import get_connection_info
+
+__all__ = ["Bridge", "Deisa", "get_connection_info", "__version__"]

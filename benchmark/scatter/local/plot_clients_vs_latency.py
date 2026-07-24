@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
     plt.figure(figsize=(10, 6))
 
-    for (scatter_type, data_size) in sorted(by_line.keys()):
+    for scatter_type, data_size in sorted(by_line.keys()):
         clients_list = sorted(by_line[(scatter_type, data_size)].keys())
         if not clients_list:
             continue
@@ -77,21 +77,8 @@ if __name__ == "__main__":
             stds.append(float(vals.std(ddof=1)) if vals.size > 1 else 0.0)
 
         label = f"{scatter_type}, data_size={data_size}"
-        plt.plot(
-            clients_list,
-            means,
-            marker=".",
-            linewidth=1.8,
-            label=label,
-        )
-        plt.errorbar(
-            clients_list,
-            means,
-            yerr=stds,
-            fmt="none",
-            capsize=2,
-            alpha=0.4,
-        )
+        plt.plot(clients_list, means, marker=".", linewidth=1.8, label=label)
+        plt.errorbar(clients_list, means, yerr=stds, fmt="none", capsize=2, alpha=0.4)
 
     plt.xlabel("Number of clients")
     plt.ylabel("Scatter latency (ns)")
