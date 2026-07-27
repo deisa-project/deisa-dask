@@ -395,6 +395,12 @@ class Deisa(IDeisa):
 
         # Update the sliding window for the modified array.
         entry = state[array_name]
+        if entry["last_iteration"] is not None and iteration < entry["last_iteration"]:
+            raise ValueError(
+                f"callback {callback_id}: array {array_name} received iteration "
+                f"{iteration} which is before last seen iteration "
+                f"{entry['last_iteration']}. Iterations must be monotonically increasing."
+            )
         entry["window"].append(build_deisa_array(darr, iteration))
         entry["changed"] = True
         entry["last_iteration"] = iteration
