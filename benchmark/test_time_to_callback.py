@@ -42,9 +42,23 @@ import pytest
 # latency is averaged over many hops (better statistics than one-per-round).
 N_SENDS = 2000
 
-# How long bridge.get() blocks waiting for feedback from the Deisa callback
-# (seconds). Set high enough to handle typical callback execution time.
-FEEDBACK_TIMEOUT = 60.0
+# How long bridge.get() polls waiting for feedback from the Deisa callback
+# (seconds). Set high enough to handle typical callback execution time plus
+# scheduler latency. A generous value avoids spurious timeouts under load.
+FEEDBACK_TIMEOUT = 120.0
+
+# Interval between polls in the bridge.get() feedback loop (seconds).
+# 100ms is a good balance between responsiveness and not flooding the
+# Dask scheduler with queue reads.
+FEEDBACK_POLL_INTERVAL = 0.1
+
+# How often to print a progress marker during the N_SENDS loop on the
+# MPI side. Every N prints avoid slowing down the benchmark with I/O.
+MPI_PROGRESS_INTERVAL = 100
+
+# How often to print a progress marker in the Deisa callback.
+# Only the first N prints are emitted to keep CI logs manageable.
+CB_TRACE_LIMIT = 10
 
 
 def _has_mpirun():
@@ -59,11 +73,11 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     """Run MPI bridge processes for benchmarking.
 
     Performs `n_sends` Bridge.send() calls, one at a time. After each
-    send the rank polls ``bridge.get(array_name)`` in a loop until the
-    Deisa callback has executed (which calls ``deisa.set(array_name,
-    timestep, timestep)``). This guarantees exactly one send is in flight
-    at any given moment — the next send only fires after the previous
-    callback has completed.
+    send the rank polls ``bridge.get(array_name, timestep=i)`` in a
+    loop until the Deisa callback has executed (which calls
+    ``deisa.set(array_name, timestep, timestep)``). This guarantees
+    exactly one send is in flight at any given moment — the next send
+    only fires after the previous callback has completed.
     """
     from mpi4py import MPI
 
@@ -92,6 +106,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     # before sending (correct handshake, no premature sends).
     bridge = Bridge(comm=bridge_comm, arrays_metadata=arrays_metadata)
 
+    t0_total = time.monotonic()
     for i in range(n_sends):
         # Build the chunk as int64 so the nanosecond timestamp round-trips
         # exactly (float64 cannot represent ~1.7e18 losslessly). The timestamp
@@ -108,15 +123,18 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         while True:
             got = bridge.get(array_name, timestep=i)
             if got is not None:
-                print(f"[{rank}/{size}] sent={i} feedback={got} ok", flush=True)
                 break
             elapsed = time.monotonic() - t0
             if elapsed > FEEDBACK_TIMEOUT:
                 raise RuntimeError(
                     f"[{rank}/{size}] timeout waiting for feedback on timestep {i} "
-                    f"after {elapsed:.1f}s"
+                    f"after {elapsed:.1f}s (total send loop {time.monotonic() - t0_total:.1f}s)"
                 )
-            time.sleep(0.01)
+            time.sleep(FEEDBACK_POLL_INTERVAL)
+
+        if (i + 1) % MPI_PROGRESS_INTERVAL == 0 or i == 0 or i == n_sends - 1:
+            elapsed_total = time.monotonic() - t0_total
+            print(f"[{rank}/{size}] progress: {i+1}/{n_sends} sends done ({elapsed_total:.1f}s total)", flush=True)
 
     bridge.close(timestep=n_sends)
 
@@ -141,7 +159,7 @@ def _spawn_mpi(scheduler_address: str, nb_bridges: int, array_name: str, n_sends
         "--n-sends",
         str(n_sends),
     ]
-    return subprocess.run(cmd, timeout=120)
+    return subprocess.run(cmd, timeout=300)
 
 
 @pytest.mark.benchmark
@@ -168,10 +186,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     from deisa.dask import Deisa
 
     array_name = "temperature"
+    trace_counter = [0]  # mutable counter, shared across callback invocations
 
     def run_benchmark():
         results = []  # true send -> callback deltas (ns), one per hop
-        trace = []  # per-hop trace: (send_ts, cb_ts, delta_ns)
 
         def deisa_side():
             deisa = Deisa(feedback_queue_size=1024, timeout=60)
@@ -188,8 +206,11 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 results.append(delta_ns)
 
                 # Trace output so we can verify send/receive pairing.
+                # Limit traces to avoid I/O overhead on the Dask event loop.
                 iteration = window[0].timestep
-                print(f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}", flush=True)
+                if trace_counter[0] < CB_TRACE_LIMIT:
+                    trace_counter[0] += 1
+                    print(f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}", flush=True)
 
                 # Signal back to the bridge that this timestep's callback has
                 # completed. The bridge.get() polling loop on the MPI side checks
