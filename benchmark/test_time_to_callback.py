@@ -59,7 +59,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     """Run MPI bridge processes for benchmarking.
 
     Performs `n_sends` Bridge.send() calls, one at a time. After each
-    send the rank blocks on ``bridge.get(array_name, timestep)`` until the
+    send the rank polls ``bridge.get(array_name)`` in a loop until the
     Deisa callback has executed (which calls ``deisa.set(array_name,
     timestep, timestep)``). This guarantees exactly one send is in flight
     at any given moment — the next send only fires after the previous
@@ -102,11 +102,21 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
         # Block until the Deisa callback has executed for this timestep.
-        # bridge.get() polls the feedback queue and returns only once the
-        # callback has called deisa.set(array_name, i, i) — the value is the
-        # timestep itself. This ensures only one send is in flight at a time.
-        got = bridge.get(array_name, timestep=i)
-        print(f"[{rank}/{size}] sent={i} feedback={got}", flush=True)
+        # bridge.get() polls the feedback queue (non-blocking per call)
+        # so we must loop until the entry for timestep `i` appears.
+        t0 = time.monotonic()
+        while True:
+            got = bridge.get(array_name, timestep=i)
+            if got is not None:
+                print(f"[{rank}/{size}] sent={i} feedback={got} ok", flush=True)
+                break
+            elapsed = time.monotonic() - t0
+            if elapsed > FEEDBACK_TIMEOUT:
+                raise RuntimeError(
+                    f"[{rank}/{size}] timeout waiting for feedback on timestep {i} "
+                    f"after {elapsed:.1f}s"
+                )
+            time.sleep(0.01)
 
     bridge.close(timestep=n_sends)
 
@@ -148,10 +158,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     Deisa callback timestamp) is averaged over all hops and stored via
     benchmark.extra_info. No timing data is written to disk.
 
-    Synchronization: after each Bridge.send(), the MPI rank blocks on
-    bridge.get(array_name, timestep) until the Deisa callback has fired and
-    called deisa.set(array_name, timestep, timestep). This guarantees exactly
-    one send is in flight at any given moment.
+    Synchronization: after each Bridge.send(), the MPI rank polls
+    bridge.get(array_name, timestep=i) in a blocking loop until the Deisa
+    callback has fired and called deisa.set(array_name, i, i). This guarantees
+    exactly one send is in flight at any given moment.
     """
     from distributed import LocalCluster
 
@@ -182,8 +192,8 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 print(f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}", flush=True)
 
                 # Signal back to the bridge that this timestep's callback has
-                # completed. The bridge.get() call on the MPI side checks for
-                # this entry in the feedback queue.
+                # completed. The bridge.get() polling loop on the MPI side checks
+                # for this entry in the feedback queue.
                 deisa.set(array_name, iteration, timestep=iteration)
 
             deisa.execute_callbacks()
