@@ -42,6 +42,10 @@ import pytest
 # latency is averaged over many hops (better statistics than one-per-round).
 N_SENDS = 2000
 
+# How long bridge.get() blocks waiting for feedback from the Deisa callback
+# (seconds). Set high enough to handle typical callback execution time.
+FEEDBACK_TIMEOUT = 60.0
+
 
 def _has_mpirun():
     return shutil.which("mpirun") is not None
@@ -98,10 +102,11 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
         # Block until the Deisa callback has executed for this timestep.
-        # bridge.get() polls the feedback queue and returns once the callback
-        # has called deisa.set(array_name, i, i). This ensures only one send
-        # is in flight at a time.
-        bridge.get(array_name, timestep=i)
+        # bridge.get() polls the feedback queue and returns only once the
+        # callback has called deisa.set(array_name, i, i) — the value is the
+        # timestep itself. This ensures only one send is in flight at a time.
+        got = bridge.get(array_name, timestep=i)
+        print(f"[{rank}/{size}] sent={i} feedback={got}", flush=True)
 
     bridge.close(timestep=n_sends)
 
@@ -156,6 +161,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
 
     def run_benchmark():
         results = []  # true send -> callback deltas (ns), one per hop
+        trace = []  # per-hop trace: (send_ts, cb_ts, delta_ns)
 
         def deisa_side():
             deisa = Deisa(feedback_queue_size=1024, timeout=60)
@@ -168,12 +174,16 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 cb_ns = time.time_ns()
                 np_arr = window[0].compute()
                 send_ns = int(np.min(np_arr))
-                results.append(cb_ns - send_ns)
+                delta_ns = cb_ns - send_ns
+                results.append(delta_ns)
+
+                # Trace output so we can verify send/receive pairing.
+                iteration = window[0].timestep
+                print(f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}", flush=True)
 
                 # Signal back to the bridge that this timestep's callback has
-                # completed. The bridge.get() call on the MPI side unblocks
-                # only after this set() is received.
-                iteration = window[0].timestep
+                # completed. The bridge.get() call on the MPI side checks for
+                # this entry in the feedback queue.
                 deisa.set(array_name, iteration, timestep=iteration)
 
             deisa.execute_callbacks()
