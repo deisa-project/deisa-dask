@@ -78,6 +78,17 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     ``deisa.set(array_name, timestep, timestep)``). This guarantees
     exactly one send is in flight at any given moment — the next send
     only fires after the previous callback has completed.
+
+    Ordering: bridge.send() publishes a topic message via
+    client.log_event(). The Dask client's topic handler dispatches it
+    asynchronously on the client event loop, creating a callback task
+    via asyncio.create_task(). The callback runs (possibly on a thread
+    pool via asyncio.to_thread()), and only when it finishes does it
+    call deisa.set(), which puts the feedback entry into the Dask
+    Queue. bridge.get() then sees that entry in the queue and returns
+    it. This ordering is critical — without the initial sleep (which
+    gives the async task a chance to be created and start executing)
+    bridge.get() can return None repeatedly until the timeout fires.
     """
     from mpi4py import MPI
 
@@ -117,18 +128,24 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
         # Block until the Deisa callback has executed for this timestep.
-        # bridge.get() polls the feedback queue (non-blocking per call)
-        # so we must loop until the entry for timestep `i` appears.
+        # The feedback entry is set only after the callback completes and
+        # calls deisa.set(). bridge.get() is non-blocking (returns None
+        # when the queue is empty), so we poll with a sleep between checks.
+        # The initial sleep gives the async topic handler a chance to receive
+        # the log_event message and dispatch the callback task before we
+        # start polling.
         t0 = time.monotonic()
+        deadline = t0 + FEEDBACK_TIMEOUT
+        time.sleep(0.05)
         while True:
             got = bridge.get(array_name, timestep=i)
             if got is not None:
                 break
-            elapsed = time.monotonic() - t0
-            if elapsed > FEEDBACK_TIMEOUT:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise RuntimeError(
                     f"[{rank}/{size}] timeout waiting for feedback on timestep {i} "
-                    f"after {elapsed:.1f}s (total send loop {time.monotonic() - t0_total:.1f}s)"
+                    f"after {t0 - t0_total:.1f}s total (total send loop {time.monotonic() - t0_total:.1f}s)"
                 )
             time.sleep(FEEDBACK_POLL_INTERVAL)
 
@@ -179,7 +196,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     Synchronization: after each Bridge.send(), the MPI rank polls
     bridge.get(array_name, timestep=i) in a blocking loop until the Deisa
     callback has fired and called deisa.set(array_name, i, i). This guarantees
-    exactly one send is in flight at any given moment.
+    exactly one send is in flight at any given moment. A small initial sleep
+    (50ms) before polling gives the async topic handler time to dispatch the
+    callback task, ensuring the feedback queue entry has been set by the time
+    bridge.get() starts being polled.
     """
     from distributed import LocalCluster
 
