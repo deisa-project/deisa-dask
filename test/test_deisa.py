@@ -808,7 +808,6 @@ class TestUsingDaskCluster:
         deisa.execute_callbacks()
         del deisa
 
-
     def test_multi_array_callback_consistent_iterations(self, env_setup):
         """Regression test for issue #128: missing iterations when using multiple arrays in a callback.
 
@@ -819,34 +818,40 @@ class TestUsingDaskCluster:
         global_grid_size = (8, 8)
         mpi_parallelism = (1, 1)
 
-        sim = TestSimulation(client,
-                               mpi_parallelism=mpi_parallelism,
-                               arrays_metadata={
-                                   'x': {
-                                       'global_shape': global_grid_size,
-                                       'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
-                                                       global_grid_size[1] // mpi_parallelism[1]),
-                                   },
-                                   'y': {
-                                       'global_shape': global_grid_size,
-                                       'chunk_shape': (global_grid_size[0] // mpi_parallelism[0],
-                                                       global_grid_size[1] // mpi_parallelism[1]),
-                                   }
-                               },
-                               wait_for_go=False)
+        sim = TestSimulation(
+            client,
+            mpi_parallelism=mpi_parallelism,
+            arrays_metadata={
+                "x": {
+                    "global_shape": global_grid_size,
+                    "chunk_shape": (
+                        global_grid_size[0] // mpi_parallelism[0],
+                        global_grid_size[1] // mpi_parallelism[1],
+                    ),
+                },
+                "y": {
+                    "global_shape": global_grid_size,
+                    "chunk_shape": (
+                        global_grid_size[0] // mpi_parallelism[0],
+                        global_grid_size[1] // mpi_parallelism[1],
+                    ),
+                },
+            },
+            wait_for_go=False,
+        )
         deisa = Deisa(wait_for_go=False)
-        time.sleep(.2)
+        time.sleep(0.2)
 
         # Record iterations at which the callback actually fires
         called_iterations = []
 
-        @deisa.register('x', 'y')
+        @deisa.register("x", "y")
         def cb(x_arrays, y_arrays):
             x_t = x_arrays[-1].timestep
             y_t = y_arrays[-1].timestep
             called_iterations.append((x_t, y_t))
 
-        time.sleep(.2)
+        time.sleep(0.2)
 
         # Send x and y arrays for iterations 1 through 3, individually
         # to stress-test that they are not mixed across iterations
@@ -857,16 +862,16 @@ class TestUsingDaskCluster:
             x_chunk = x_data
             y_chunk = y_data
 
-            sim.bridges[0].send('x', x_chunk, timestep=i)
-            sim.bridges[0].send('y', y_chunk, timestep=i)
+            sim.bridges[0].send("x", x_chunk, timestep=i)
+            sim.bridges[0].send("y", y_chunk, timestep=i)
 
-            assert wait_for(lambda: len(called_iterations) >= i, timeout=10), \
+            assert wait_for(lambda: len(called_iterations) >= i, timeout=10), (
                 f"callback was not called for iteration {i}"
+            )
 
         # The critical check: every callback invocation must have
         # x and y at the same iteration
         for x_t, y_t in called_iterations:
-            assert x_t == y_t, \
-                f"callback received inconsistent iterations: x at {x_t}, y at {y_t}"
+            assert x_t == y_t, f"callback received inconsistent iterations: x at {x_t}, y at {y_t}"
 
         async_close_bridges(sim.bridges, 1)
