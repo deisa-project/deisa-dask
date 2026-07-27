@@ -22,11 +22,13 @@ Types of changes:
 - benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
 - Define Ruff code format.
 - CI: check code format and style using Ruff linter.
+- check monotonically increasing timestep in callbacks.
 
 ### Fixed
 
 - Deisa `execute_callbacks` block until all callbacks complete.
 - Deisa `_free_windows` concurrency issue.
+- inconsistent iteration in callback data.
 
 ## [0.6.2]
 
