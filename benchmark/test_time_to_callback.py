@@ -54,10 +54,12 @@ def _is_xdist():
 def _mpi_bridge_main(array_name: str, n_sends: int):
     """Run MPI bridge processes for benchmarking.
 
-    Performs `n_sends` Bridge.send() calls. The per-hop send timestamp (ns,
-    int64) is embedded directly into the array payload at element [0, 0] right
-    before each send, so the Deisa callback can compute the true send ->
-    callback latency with NO disk I/O.
+    Performs `n_sends` Bridge.send() calls, one at a time. After each
+    send the rank blocks on ``bridge.get(array_name, timestep)`` until the
+    Deisa callback has executed (which calls ``deisa.set(array_name,
+    timestep, timestep)``). This guarantees exactly one send is in flight
+    at any given moment — the next send only fires after the previous
+    callback has completed.
     """
     from mpi4py import MPI
 
@@ -94,6 +96,12 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         data[0, 0] = np.int64(time.time_ns())
 
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
+
+        # Block until the Deisa callback has executed for this timestep.
+        # bridge.get() polls the feedback queue and returns once the callback
+        # has called deisa.set(array_name, i, i). This ensures only one send
+        # is in flight at a time.
+        bridge.get(array_name, timestep=i)
 
     bridge.close(timestep=n_sends)
 
@@ -134,6 +142,11 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     true per-hop latency (send timestamp embedded in the array payload vs the
     Deisa callback timestamp) is averaged over all hops and stored via
     benchmark.extra_info. No timing data is written to disk.
+
+    Synchronization: after each Bridge.send(), the MPI rank blocks on
+    bridge.get(array_name, timestep) until the Deisa callback has fired and
+    called deisa.set(array_name, timestep, timestep). This guarantees exactly
+    one send is in flight at any given moment.
     """
     from distributed import LocalCluster
 
@@ -157,6 +170,12 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 send_ns = int(np.min(np_arr))
                 results.append(cb_ns - send_ns)
 
+                # Signal back to the bridge that this timestep's callback has
+                # completed. The bridge.get() call on the MPI side unblocks
+                # only after this set() is received.
+                iteration = window[0].timestep
+                deisa.set(array_name, iteration, timestep=iteration)
+
             deisa.execute_callbacks()
 
         thread = threading.Thread(target=deisa_side)
@@ -173,7 +192,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
         thread.join(timeout=10)
         return results
 
-    # --- setup (not measured): fresh cluster + workers per round -----------
+    # --- setup (not measured): fresh cluster + workers per round ---
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=1,
