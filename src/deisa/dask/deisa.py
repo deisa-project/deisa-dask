@@ -220,7 +220,8 @@ class Deisa(IDeisa):
 
         # per-callback state
         callback_state = {
-            arr_name: {"window": collections.deque(maxlen=ws), "changed": False} for arr_name, ws in parsed
+            arr_name: {"window": collections.deque(maxlen=ws), "changed": False, "last_iteration": None}
+            for arr_name, ws in parsed
         }
 
         self._callbacks[callback_id] = {
@@ -396,6 +397,7 @@ class Deisa(IDeisa):
         entry = state[array_name]
         entry["window"].append(build_deisa_array(darr, iteration))
         entry["changed"] = True
+        entry["last_iteration"] = iteration
 
         ordered_array_names = cb_data["array_names"]
 
@@ -432,11 +434,16 @@ class Deisa(IDeisa):
             entry["changed"] = False
 
         else:  # AND
-            if all(state[name]["changed"] for name in ordered_array_names):
-                _call_callback()
+            # Verify all arrays arrived at the same iteration before calling
 
-                for name in ordered_array_names:
-                    state[name]["changed"] = False
+            iterations = {state[name]["last_iteration"] for name in ordered_array_names}
+
+            if (all(state[name]["changed"] for name in ordered_array_names)
+                    and len(iterations) == 1 and None not in iterations):
+                    _call_callback()
+
+                    for name in ordered_array_names:
+                        state[name]["changed"] = False
 
     def _handle_callback_exception(self, callback_id, cb_data, ex):
         try:
