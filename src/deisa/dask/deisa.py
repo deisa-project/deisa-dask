@@ -441,15 +441,16 @@ class Deisa(IDeisa):
 
         else:  # AND
             # Verify all arrays arrived at the same iteration before calling
-
             iterations = {state[name]["last_iteration"] for name in ordered_array_names}
+            if (
+                all(state[name]["changed"] for name in ordered_array_names)
+                and len(iterations) == 1
+                and None not in iterations
+            ):
+                _call_callback()
 
-            if (all(state[name]["changed"] for name in ordered_array_names)
-                    and len(iterations) == 1 and None not in iterations):
-                    _call_callback()
-
-                    for name in ordered_array_names:
-                        state[name]["changed"] = False
+                for name in ordered_array_names:
+                    state[name]["changed"] = False
 
     def _handle_callback_exception(self, callback_id, cb_data, ex):
         try:
