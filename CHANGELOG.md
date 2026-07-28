@@ -18,14 +18,15 @@ Types of changes:
 
 ### Added
 
-- CI: run mpi tests against openmpi and mpich
+- CI: run mpi tests against openmpi and mpich.
 - benchmark: time-to-callback. Measure the time between `Bridge.send()` and the execution of a callback.
-- Define Ruff code format
-- CI: check code format and style using Ruff linter
+- Define Ruff code format.
+- CI: check code format and style using Ruff linter.
 
 ### Fixed
 
-- fix Deisa `execute_callbacks` block until all callbacks complete
+- Deisa `execute_callbacks` block until all callbacks complete.
+- Deisa `_free_windows` concurrency issue.
 
 ## [0.6.2]
 

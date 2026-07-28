@@ -392,39 +392,44 @@ class Deisa(IDeisa):
     def _process_callback(self, callback_id, cb_data, array_name: str, darr: da.Array, iteration: int):
         state = cb_data["state"]
 
-        # update sliding window
-        d = state[array_name]
-        d["window"].append(build_deisa_array(darr, iteration))
-        d["changed"] = True
+        # Update the sliding window for the modified array.
+        entry = state[array_name]
+        entry["window"].append(build_deisa_array(darr, iteration))
+        entry["changed"] = True
 
         ordered_array_names = cb_data["array_names"]
 
-        windows = [list(state[name]["window"]) for name in ordered_array_names]
-
         def _call_callback():
+            windows = [list(state[name]["window"]) for name in ordered_array_names]
+
+            # Save the current head of each deque so we know whether it can be
+            # safely discarded once the callback completes.
+            # This must be done *BEFORE* the callback is run as another callback may modify the window.
+            pre_cb_exec_info = [
+                (window[0], len(window) == state[name]["window"].maxlen)
+                for window, name in zip(windows, ordered_array_names)
+            ]
+
             async def _run():
                 try:
                     await asyncio.to_thread(cb_data["callback"], *windows)
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
 
-            def _free_window(_):
-                # The next call to append will remove the 1st element.
-                # Might as well remove it now to free memory earlier.
-                # Remove all
-                for s in cb_data["state"].values():
-                    dq = s["window"]
-                    if len(dq) == dq.maxlen:
+            def _free_windows(_):
+                for name, (first_elem, was_full) in zip(ordered_array_names, pre_cb_exec_info):
+                    dq = state[name]["window"]
+                    if was_full and dq and dq[0] is first_elem:
                         dq.popleft()
 
             task = asyncio.create_task(_run())
             task.add_done_callback(self._tasks.discard)
-            task.add_done_callback(_free_window)
+            task.add_done_callback(_free_windows)
             self._tasks.add(task)
 
         if cb_data["when"] == "OR":
             _call_callback()
-            d["changed"] = False
+            entry["changed"] = False
 
         else:  # AND
             if all(state[name]["changed"] for name in ordered_array_names):

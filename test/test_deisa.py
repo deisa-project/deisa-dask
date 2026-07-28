@@ -267,7 +267,10 @@ class TestUsingDaskCluster:
                 len(state[array_name]) == min(i, expected[array_name]["window_size"])
                 if expected[array_name]["window_size"] is not None
                 else DEFAULT_SLIDING_WINDOW_SIZE
-            ), "callback was not called with correct window size"
+            ), (
+                f"callback was not called with correct window size. "
+                f"{len(state[array_name])=} != {min(i, expected[array_name]['window_size'])=}"
+            )
 
             # Run some compute using the data. This checks that we can use the data.
             for darr in state[array_name]:
@@ -353,7 +356,7 @@ class TestUsingDaskCluster:
             self.check_array("temperature", state, i, expected)
             self.check_array("pressure", state, i, expected)
 
-    class ThreeArrayNameDecorator(RegisterAndCheck):
+    class ThreeArrayNameDecoratorSlow(RegisterAndCheck):
         def register_cb(self, state, deisa, expected_window_size: dict[str, int | None]):
             @deisa.register(
                 Window("temperature", expected_window_size["temperature"])
@@ -370,6 +373,7 @@ class TestUsingDaskCluster:
                 state["pressure"] = pressure
                 state["density"] = density
                 state["counter"] += 1
+                time.sleep(1)
 
         def check(self, state, i, expected):
             self.check_array("temperature", state, i, expected)
@@ -410,7 +414,7 @@ class TestUsingDaskCluster:
     @pytest.mark.parametrize("pressure_global_grid_size", [(8, 8)])
     @pytest.mark.parametrize("pressure_window_size", [None, 1])
     @pytest.mark.parametrize("mpi_parallelism", [(2, 2)])
-    @pytest.mark.parametrize("nb_iterations", [1, 5])
+    @pytest.mark.parametrize("nb_iterations", [1, 10])
     @pytest.mark.parametrize(
         "register_fn",
         [
@@ -418,7 +422,7 @@ class TestUsingDaskCluster:
             TwoArrayName(),
             SingleArrayNameDecorator(),
             TwoArrayNameDecorator(),
-            ThreeArrayNameDecorator(),
+            ThreeArrayNameDecoratorSlow(),
             MapBlocks(),
         ],
     )
