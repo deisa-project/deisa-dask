@@ -127,23 +127,14 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
         # Block until the Deisa callback has executed for this timestep.
-        # bridge.get() is non-blocking (returns None when the queue is
-        # empty), so we poll with a sleep between checks. The sleep gives
-        # the Deisa callback thread time to execute and call deisa.set()
-        # between polls.
-        t0 = time.monotonic()
-        deadline = t0 + FEEDBACK_TIMEOUT
-        while True:
-            got = bridge.get(array_name, timestep=i)
-            if got is not None:
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(
-                    f"[{rank}/{size}] timeout waiting for feedback on timestep {i} "
-                    f"after {t0 - t0_total:.1f}s total (total send loop {time.monotonic() - t0_total:.1f}s)"
-                )
-            time.sleep(FEEDBACK_POLL_INTERVAL)
+        # bridge.get() blocks on the Dask queue with a timeout.
+        # It returns None when the queue is empty and the timeout
+        # expires; the RuntimeError below handles that case.
+        got = bridge.get(array_name, timestep=i)
+        if got is None:
+            raise RuntimeError(
+                f"[{rank}/{size}] timeout waiting for feedback on timestep {i}"
+            )
 
         if (i + 1) % MPI_PROGRESS_INTERVAL == 0 or i == 0 or i == n_sends - 1:
             elapsed_total = time.monotonic() - t0_total
