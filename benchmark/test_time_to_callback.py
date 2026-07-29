@@ -42,15 +42,10 @@ import pytest
 # latency is averaged over many hops (better statistics than one-per-round).
 N_SENDS = 100
 
-# How long bridge.get() polls waiting for feedback from the Deisa callback
-# (seconds). Set high enough to handle typical callback execution time plus
-# scheduler latency. A generous value avoids spurious timeouts under load.
+# How long bridge.get() blocks waiting for feedback from the Deisa callback
+# (seconds). 10 seconds is generous enough to handle typical callback execution
+# time plus scheduler dispatch latency under normal load.
 FEEDBACK_TIMEOUT = 10.0
-
-# Interval between polls in the feedback loop (seconds).
-# 100ms is a good balance between responsiveness and not flooding the
-# Dask scheduler with queue reads.
-FEEDBACK_POLL_INTERVAL = 0.1
 
 # How often to print a progress marker during the N_SENDS loop on the
 # MPI side. Every N prints avoid slowing down the benchmark with I/O.
@@ -73,21 +68,16 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     """Run MPI bridge processes for benchmarking.
 
     Performs `n_sends` Bridge.send() calls, one at a time. After each
-    send the rank polls ``bridge.get(array_name, timestep=i)`` in a
-    loop until the Deisa callback has executed (which calls
+    send the rank calls ``bridge.get(array_name, timestep=i)`` which
+    blocks until the Deisa callback has executed (which calls
     ``deisa.set(array_name, timestep, timestep)``). This guarantees
     exactly one send is in flight at any given moment — the next send
     only fires after the previous callback has completed.
 
-    Synchronization approach: bridge.get() uses Dask Queues for
+    Synchronization approach: bridge.get() uses a Dask Queue for
     feedback (bridge.get() retrieves feedback put by deisa.set()
-    in the Deisa callback). The polling loop calls bridge.get()
-    repeatedly with a sleep between checks.
-
-    Note: bridge.get() is non-blocking (returns None if queue is
-    empty). The polling loop accounts for this with a sleep between
-    checks. The sleep gives the Deisa callback thread time to
-    execute and call deisa.set() between polls.
+    in the Deisa callback). bridge.get() now blocks (blocking Queue.get)
+    so there is no polling loop or sleep needed.
     """
     from mpi4py import MPI
 
@@ -180,10 +170,9 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     Deisa callback timestamp) is averaged over all hops and stored via
     benchmark.extra_info. No timing data is written to disk.
 
-    Synchronization: after each Bridge.send(), the MPI rank polls
-    bridge.get(array_name, timestep=i) in a blocking loop until the Deisa
-    callback has fired and called deisa.set(array_name, i, i). This guarantees
-    exactly one send is in flight at any given moment.
+    Synchronization: after each Bridge.send(), the MPI rank calls bridge.get()
+    which blocks until the Deisa callback has fired and called deisa.set().
+    This guarantees exactly one send is in flight at any given moment.
     """
     from distributed import LocalCluster
 
@@ -221,8 +210,8 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                     )
 
                 # Signal back to the bridge that this timestep's callback has
-                # completed. The bridge.get() polling loop on the MPI side checks
-                # for this entry in the feedback queue.
+                # completed. The bridge.get() call on the MPI side waits for
+                # this entry in the feedback queue.
                 deisa.set(array_name, iteration, timestep=iteration)
 
             deisa.execute_callbacks()
