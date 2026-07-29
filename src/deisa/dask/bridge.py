@@ -43,7 +43,7 @@ from distributed.utils_comm import scatter_to_workers
 from tlz import valmap
 
 from dask.tokenize import tokenize
-from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX
+from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, FEEDBACK_TIMEOUT, KEY_PREFIX
 from deisa.dask.handshake import Handshake
 from deisa.dask.utils import get_client
 
@@ -432,11 +432,16 @@ class Bridge(IBridge):
             q: Queue = fb_state[key]["q"]
             d: deque = fb_state[key]["deque"]
 
-            if q.qsize() != 0:
-                # List[(int, Any), ...]
-                full_q = q.get(batch=True)  # get all elements. This pops elements from the Dask queue.
-                for v in full_q:
-                    d.append(v)  # add all elements to deque
+            # Use queue_get with a timeout to block until feedback
+            # arrives from the Deisa callback (deisa.set() → queue.put).
+            # This replaces the qsize/poll loop that missed feedback
+            # due to async dispatch latency under Dask scheduler load.
+            try:
+                full_q = q.get(timeout=FEEDBACK_TIMEOUT, batch=True)
+            except TimeoutError:
+                full_q = []
+            for v in full_q:
+                d.append(v)
             logger.debug(f"[{self.id}] get() fb_state={fb_state}")
 
         d = self.comm.bcast(fb_state[key]["deque"], root=0)
