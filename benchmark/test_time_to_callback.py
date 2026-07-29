@@ -47,7 +47,7 @@ N_SENDS = 100
 # scheduler latency. A generous value avoids spurious timeouts under load.
 FEEDBACK_TIMEOUT = 10.0
 
-# Interval between polls in the bridge.get() feedback loop (seconds).
+# Interval between polls in the feedback loop (seconds).
 # 100ms is a good balance between responsiveness and not flooding the
 # Dask scheduler with queue reads.
 FEEDBACK_POLL_INTERVAL = 0.1
@@ -78,6 +78,16 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     ``deisa.set(array_name, timestep, timestep)``). This guarantees
     exactly one send is in flight at any given moment — the next send
     only fires after the previous callback has completed.
+
+    Synchronization approach: bridge.get() uses Dask Queues for
+    feedback (bridge.get() retrieves feedback put by deisa.set()
+    in the Deisa callback). The polling loop calls bridge.get()
+    repeatedly with a sleep between checks.
+
+    Note: bridge.get() is non-blocking (returns None if queue is
+    empty). The polling loop accounts for this with a sleep between
+    checks. The sleep gives the Deisa callback thread time to
+    execute and call deisa.set() between polls.
     """
     from mpi4py import MPI
 
@@ -110,7 +120,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     for i in range(n_sends):
         # Build the chunk as int64 so the nanosecond timestamp round-trips
         # exactly (float64 cannot represent ~1.7e18 losslessly). The timestamp
-        # lives at element [0, 0]; remaining elements are arbitrary fill.
+        # lives at element [0]; remaining elements are arbitrary fill.
         data = np.zeros(chunk_shape, dtype=np.int64)
         data[0] = np.int64(time.time_ns())
 
@@ -118,7 +128,9 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
 
         # Block until the Deisa callback has executed for this timestep.
         # bridge.get() is non-blocking (returns None when the queue is
-        # empty), so we poll with a sleep between checks.
+        # empty), so we poll with a sleep between checks. The sleep gives
+        # the Deisa callback thread time to execute and call deisa.set()
+        # between polls.
         t0 = time.monotonic()
         deadline = t0 + FEEDBACK_TIMEOUT
         while True:
@@ -200,7 +212,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
             def timed_callback(window):
                 # Deisa passes a list of DeisaArray (one per registered array
                 # name); window[0] is the GLOBAL dask array. Materialize it to
-                # read the int64 send timestamp embedded at element [0, 0].
+                # read the int64 send timestamp embedded at element [0].
                 cb_ns = time.time_ns()
                 np_arr = window[0].compute()
                 send_ns = int(np.min(np_arr))
@@ -268,7 +280,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     # benchmark.extra_info so it lands in the machine-readable JSON for CI
     # regression tracking.
     benchmark.extra_info["nb_bridges"] = nb_bridges
-    benchmark.extra_info["global_shape"] = (nb_bridges, 1)
+    benchmark.extra_info["global_shape"] = (nb_bridges,)
     benchmark.extra_info["n_sends_per_round"] = N_SENDS
 
     if results and len(results) > 0:
