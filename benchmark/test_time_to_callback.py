@@ -84,15 +84,15 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
     from deisa.dask import Bridge
 
     bridge_comm = MPI.COMM_WORLD
-    dims = MPI.Compute_dims(bridge_comm.Get_size(), 2)
+    dims = MPI.Compute_dims(bridge_comm.Get_size(), 1)
     bridge_comm = bridge_comm.Create_cart(dims)
     rank = bridge_comm.Get_rank()
     size = bridge_comm.Get_size()
 
     print(f"[{rank}/{size}] Bridge started.", flush=True)
 
-    global_shape = (size, 1)
-    chunk_shape = tuple(gs // d for gs, d in zip(global_shape, dims))
+    global_shape = (size,)
+    chunk_shape = (1,)
 
     arrays_metadata = {
         array_name: {
@@ -112,7 +112,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         # exactly (float64 cannot represent ~1.7e18 losslessly). The timestamp
         # lives at element [0, 0]; remaining elements are arbitrary fill.
         data = np.zeros(chunk_shape, dtype=np.int64)
-        data[0, 0] = np.int64(time.time_ns())
+        data[0] = np.int64(time.time_ns())
 
         bridge.send(array_name, data, timestep=i, update_workers=False, filter_workers=lambda w: list(w.keys()))
 
@@ -135,7 +135,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
 
         if (i + 1) % MPI_PROGRESS_INTERVAL == 0 or i == 0 or i == n_sends - 1:
             elapsed_total = time.monotonic() - t0_total
-            print(f"[{rank}/{size}] progress: {i+1}/{n_sends} sends done ({elapsed_total:.1f}s total)", flush=True)
+            print(f"[bridge {rank}] progress: {i + 1}/{n_sends} sends done ({elapsed_total:.1f}s total)", flush=True)
 
     bridge.close(timestep=n_sends)
 
@@ -166,7 +166,7 @@ def _spawn_mpi(scheduler_address: str, nb_bridges: int, array_name: str, n_sends
 @pytest.mark.benchmark
 @pytest.mark.skipif(_is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not _has_mpirun(), reason="mpirun not available")
-@pytest.mark.parametrize("nb_bridges", [1, 2])
+@pytest.mark.parametrize("nb_bridges", [1, 2, 4])
 def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     """Measure the true send() -> Deisa callback latency using real MPI.
 
@@ -212,7 +212,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 iteration = window[0].timestep
                 if trace_counter[0] < CB_TRACE_LIMIT:
                     trace_counter[0] += 1
-                    print(f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}", flush=True)
+                    print(
+                        f"[deisa-cb] iter={iteration} send_ns={send_ns} cb_ns={cb_ns} delta_ms={delta_ns / 1e6:.3f}",
+                        flush=True,
+                    )
 
                 # Signal back to the bridge that this timestep's callback has
                 # completed. The bridge.get() polling loop on the MPI side checks
