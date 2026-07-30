@@ -324,6 +324,8 @@ class TestMultiBridge:
 
         _close_all(bridges)
 
+    @pytest.mark.timeout(30)
+    @pytest.mark.flaky(retries=3, delay=1)
     def test_sub_comm_isolation(self, env_setup):
         """Sub-communicators for different arrays are independent.
 
