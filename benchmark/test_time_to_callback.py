@@ -122,9 +122,7 @@ def _mpi_bridge_main(array_name: str, n_sends: int):
         # expires; the RuntimeError below handles that case.
         got = bridge.get(array_name, timestep=i)
         if got is None:
-            raise RuntimeError(
-                f"[{rank}/{size}] timeout waiting for feedback on timestep {i}"
-            )
+            raise RuntimeError(f"[{rank}/{size}] timeout waiting for feedback on timestep {i}")
 
         if (i + 1) % MPI_PROGRESS_INTERVAL == 0 or i == 0 or i == n_sends - 1:
             elapsed_total = time.monotonic() - t0_total
@@ -183,7 +181,6 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
 
     def run_benchmark():
         results = []  # true send -> callback delta (ns), one per hop
-        deisa_threads = []  # collected threads for joining after benchmark
 
         def deisa_side():
             deisa = Deisa(feedback_queue_size=1024, timeout=60)
@@ -218,7 +215,6 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
 
         thread = threading.Thread(target=deisa_side)
         thread.start()
-        deisa_threads.append(thread)
 
         result = _spawn_mpi(
             scheduler_address=os.environ["DEISA_DASK_SCHEDULER_ADDRESS"],
@@ -228,7 +224,8 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
         )
         assert result.returncode == 0, f"MPI bridge failed with returncode {result.returncode}"
 
-        return results, deisa_threads
+        thread.join(timeout=10)
+        return results
 
     # --- setup (not measured): fresh cluster + workers per round ---
     cluster = LocalCluster(
@@ -243,11 +240,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     cluster.wait_for_workers(1, timeout=10)
     os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
 
-    results, deisa_threads = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
-
-    # Join the Deisa threads after benchmark finishes
-    for t in deisa_threads:
-        t.join(timeout=10)
+    results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
 
     print(f"\n\n>>>> len(results)={len(results)} \n\n")
 

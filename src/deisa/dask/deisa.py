@@ -221,7 +221,8 @@ class Deisa(IDeisa):
 
         # per-callback state
         callback_state = {
-            arr_name: {"window": collections.deque(maxlen=ws), "changed": False} for arr_name, ws in parsed
+            arr_name: {"window": collections.deque(maxlen=ws), "changed": False, "last_iteration": None}
+            for arr_name, ws in parsed
         }
 
         self._callbacks[callback_id] = {
@@ -393,41 +394,60 @@ class Deisa(IDeisa):
     def _process_callback(self, callback_id, cb_data, array_name: str, darr: da.Array, iteration: int):
         state = cb_data["state"]
 
-        # update sliding window
-        d = state[array_name]
-        d["window"].append(build_deisa_array(darr, iteration))
-        d["changed"] = True
+        # Update the sliding window for the modified array.
+        entry = state[array_name]
+        if entry["last_iteration"] is not None and iteration < entry["last_iteration"]:
+            raise ValueError(
+                f"callback {callback_id}: array {array_name} received iteration "
+                f"{iteration} which is before last seen iteration "
+                f"{entry['last_iteration']}. Iterations must be monotonically increasing."
+            )
+        entry["window"].append(build_deisa_array(darr, iteration))
+        entry["changed"] = True
+        entry["last_iteration"] = iteration
 
         ordered_array_names = cb_data["array_names"]
-        windows = [list(state[name]["window"]) for name in ordered_array_names]
 
         def _call_callback():
+            windows = [list(state[name]["window"]) for name in ordered_array_names]
+
+            # Save the current head of each deque so we know whether it can be
+            # safely discarded once the callback completes.
+            # This must be done *BEFORE* the callback is run as another callback may modify the window.
+            pre_cb_exec_info = [
+                (window[0], len(window) == state[name]["window"].maxlen)
+                for window, name in zip(windows, ordered_array_names)
+            ]
+
             async def _run():
                 try:
                     await asyncio.to_thread(cb_data["callback"], *windows)
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
 
-            def _free_window(_):
-                # The next call to append will remove the 1st element.
-                # Might as well remove it now to free memory earlier.
-                # Remove all
-                for s in cb_data["state"].values():
-                    dq = s["window"]
-                    if len(dq) == dq.maxlen:
+            def _free_windows(_):
+                for name, (first_elem, was_full) in zip(ordered_array_names, pre_cb_exec_info):
+                    dq = state[name]["window"]
+                    if was_full and dq and dq[0] is first_elem:
                         dq.popleft()
 
             task = asyncio.create_task(_run())
             task.add_done_callback(self._tasks.discard)
-            task.add_done_callback(_free_window)
+            task.add_done_callback(_free_windows)
             self._tasks.add(task)
 
         if cb_data["when"] == "OR":
             _call_callback()
-            d["changed"] = False
+            entry["changed"] = False
 
         else:  # AND
-            if all(state[name]["changed"] for name in ordered_array_names):
+            # Verify all arrays arrived at the same iteration before calling
+            iterations = {state[name]["last_iteration"] for name in ordered_array_names}
+            if (
+                all(state[name]["changed"] for name in ordered_array_names)
+                and len(iterations) == 1
+                and None not in iterations
+            ):
                 _call_callback()
 
                 for name in ordered_array_names:
