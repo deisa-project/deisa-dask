@@ -278,6 +278,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
             "99": nintynine,
             "99.9": nintyninenine,
             "n": len(results),
+            "raw": results,
         }
         print(
             f"\nsend->callback ({nb_bridges} MPI bridges, "
