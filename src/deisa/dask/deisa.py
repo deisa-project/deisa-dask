@@ -286,7 +286,20 @@ class Deisa(IDeisa):
         #         raise ValueError(f"timestep {timestep} has already been set")
 
         value = (timestep, value)
-        q.put(value)
+        # Use asyncio.to_thread to avoid blocking the event loop.
+        # q.put() is a synchronous call that internally uses
+        # run_coroutine_threadsafe() — calling it from a thread
+        # pool (asyncio.to_thread context) without asyncio.to_thread
+        # wrapping would risk deadlock since the synchronous client.sync()
+        # must run in a non-async context outside the event loop thread.
+        # We need q.put() to run on the client's event loop without
+        # blocking it, so asyncio.to_thread gives us the right context:
+        # the event loop is free to run _put() while the thread pool
+        # handles the synchronous q.put() call.
+        async def _async_put():
+            await asyncio.to_thread(q.put, value)
+
+        self._tasks.add(asyncio.create_task(_async_put()))
 
     def execute_callbacks(self) -> None:
         """
