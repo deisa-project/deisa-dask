@@ -266,7 +266,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark, env_setup):
                 # Signal back to the bridge that this timestep's callback has
                 # completed. The bridge.get() call on the MPI side waits for
                 # this entry in the feedback queue.
-                deisa.set(array_name, iteration, timestep=iteration)
+                deisa.set(array_name, iteration, timestep=iteration)  # noqa: F821
 
             deisa.execute_callbacks()
             del deisa
