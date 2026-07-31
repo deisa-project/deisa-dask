@@ -100,13 +100,17 @@ class Deisa(IDeisa):
         self._tasks = set()
 
     def __del__(self):
-        # delete Futures
-        for cb in self._callbacks.values():
-            for a in cb["state"].values():
-                a["window"].clear()
-
-        del self._callbacks
-        self.client.close()
+        try:
+            if self.client:
+                self.client.close()
+            # delete Futures
+            if self._callbacks:
+                for cb in self._callbacks.values():
+                    for a in cb["state"].values():
+                        a["window"].clear()
+                del self._callbacks
+        except Exception as e:
+            logger.error(f"Cloud not cleanly close deisa. exception={e}")
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
