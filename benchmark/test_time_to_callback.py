@@ -183,11 +183,38 @@ def _spawn_mpi(scheduler_address: str, nb_bridges: int, array_name: str, n_sends
     return subprocess.run(cmd, timeout=300)
 
 
+@pytest.fixture(scope="function")
+def env_setup():
+    import gc
+
+    from distributed import LocalCluster
+
+    # --- setup (not measured): fresh cluster + workers per round ---
+    cluster = LocalCluster(
+        n_workers=1,
+        threads_per_worker=1,
+        processes=True,
+        host="127.0.0.1",
+        scheduler_port=0,
+        dashboard_address=":0",
+        worker_dashboard_address=":0",
+    )
+
+    cluster.wait_for_workers(1, timeout=10)
+    os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
+
+    yield cluster
+
+    cluster.close()
+
+    gc.collect()
+
+
 @pytest.mark.benchmark
 @pytest.mark.skipif(_is_xdist(), reason="requires serial execution")
 @pytest.mark.skipif(not _has_mpirun(), reason="mpirun not available")
 @pytest.mark.parametrize("nb_bridges", [1, 2, 4])
-def test_time_to_callback_mpi(nb_bridges: int, benchmark):
+def test_time_to_callback_mpi(nb_bridges: int, benchmark, env_setup):
     """Measure the true send() -> Deisa callback latency using real MPI.
 
     pytest-benchmark's setup pays the cluster spin-up and worker wait once per
@@ -201,9 +228,10 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
     which blocks until the Deisa callback has fired and called deisa.set().
     This guarantees exactly one send is in flight at any given moment.
     """
-    from distributed import LocalCluster
 
     from deisa.dask import Deisa
+
+    _ = env_setup
 
     array_name = "temperature"
     trace_counter = [0]  # mutable counter, shared across callback invocations
@@ -241,6 +269,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
                 deisa.set(array_name, iteration, timestep=iteration)
 
             deisa.execute_callbacks()
+            del deisa
 
         thread = threading.Thread(target=deisa_side)
         thread.start()
@@ -256,24 +285,9 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark):
         thread.join(timeout=10)
         return results
 
-    # --- setup (not measured): fresh cluster + workers per round ---
-    cluster = LocalCluster(
-        n_workers=1,
-        threads_per_worker=1,
-        processes=True,
-        host="127.0.0.1",
-        scheduler_port=0,
-        dashboard_address=":0",
-        worker_dashboard_address=":0",
-    )
-    cluster.wait_for_workers(1, timeout=10)
-    os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler.address
-
     results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
 
-    print(f"\n\n>>>> len(results)={len(results)} \n\n")
-
-    cluster.close()
+    print(f"\n\n>>>> [{len(results)}] {results} \n\n")
 
     # pytest-benchmark's main column measures the timed phase only (cluster
     # already up, Deisa thread waiting, mpirun send -> callback hops). The
