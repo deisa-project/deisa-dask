@@ -23,6 +23,7 @@ Types of changes:
 ### Fixed
 
 - Missing first callback(s) due to not waiting for `Deisa.execute_callbacks()`
+- Deisa: avoid exceptions raised from `__del__()`
 
 ## [0.6.3]
 
