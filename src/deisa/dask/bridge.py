@@ -91,6 +91,9 @@ class Bridge(IBridge):
             configuration parameters like timeout used during client setup.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
+        # Consumed by this constructor only; must NOT leak into
+        # ``handshake.all_bridges_ready(**kwargs)`` below (R10).
+        wait_timeout = kwargs.pop("wait_timeout", 300)
         self.comm: ICommunicator = comm
         self.id = self.comm.Get_rank()
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
@@ -148,13 +151,11 @@ class Bridge(IBridge):
             # in ``_get_task_branches`` keeps correctness.
             go_received = True
             if kwargs.get("wait_for_go", True):
-                go_received = Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait(
-                    timeout=kwargs.get("wait_timeout", 300)
-                )
+                go_received = Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait(timeout=wait_timeout)
                 if not go_received:
                     logger.warning(
                         f"[{self.id}] Bridge __init__(): WAIT_FOR_EXECUTE_CB_EVENT not received within "
-                        f"{kwargs.get('wait_timeout', 300)}s. Proceeding without prefetching task branches; "
+                        f"{wait_timeout}s. Proceeding without prefetching task branches; "
                         f"branches will be fetched lazily on the first send() (full-chunk scatter until then)."
                     )
         else:
