@@ -92,7 +92,7 @@ class Bridge(IBridge):
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         # Consumed by this constructor only; must NOT leak into
-        # ``handshake.all_bridges_ready(**kwargs)`` below (R10).
+        # ``handshake.all_bridges_ready(**kwargs)`` below.
         wait_timeout = kwargs.pop("wait_timeout", 300)
         self.comm: ICommunicator = comm
         self.id = self.comm.Get_rank()
@@ -140,7 +140,7 @@ class Bridge(IBridge):
                 nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
             )
 
-            # R10: the go-event wait is BOUNDED. ``WAIT_FOR_EXECUTE_CB_EVENT`` is
+            # The go-event wait is bounded. ``WAIT_FOR_EXECUTE_CB_EVENT`` is
             # set only by ``Deisa.execute_callbacks()``; an unbounded wait would
             # hang every rank (rank 0 here, the others at the world barrier
             # below) whenever bridges are constructed without immediately
@@ -391,7 +391,7 @@ class Bridge(IBridge):
         # Fetch task hints and execute reduction operations locally on the bridge-process numpy chunk.
         # The resulting partials are tiny (scalar / 1-d arrays) compared to the full chunk. The goal of precompute is
         # to ship only the partials to the worker, never the full chunk.
-        # R9: this runs ONLY on participating ranks -- the ``_COMM_NULL`` early
+        # This runs only on participating ranks -- the ``_COMM_NULL`` early
         # return above exits before any branch fetch/execution, so a rank that
         # does not own the array never executes every branch func on the chunk
         # just to discard the result (pure overhead; no collective is ordered by
@@ -445,7 +445,7 @@ class Bridge(IBridge):
             who_has = {}
             nbytes = {}
             keys = []
-            # R6: carry each partial set's OWN chunk_position with the entry.
+            # Carry each partial set's own chunk_position with the entry.
             # Indexing ``all_partials_meta`` with ``enumerate`` against
             # ``gathered_data[i]`` misaligns when any bridge shipped no partials
             # (its branch func raised and the ``continue`` above dropped it):

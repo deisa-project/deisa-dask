@@ -146,7 +146,7 @@ class TestPrecomputeMemory:
 
         Parametrized over ``sum`` / ``mean`` / ``var`` / ``std``; the
         callback result is asserted against the true global value computed
-        from the same data ``generate_data`` returned (T-B1: the pre-fix
+        from the same data ``generate_data`` returned (the pre-fix
         ``var``/``std`` predicates were ``x >= 0.0``, which the buggy ``0.0``
         result satisfied).
         """
@@ -212,7 +212,7 @@ class TestPrecomputeMemory:
             )
 
         # The callback must have fired exactly once (one iteration) and
-        # returned the TRUE reduction value for this op (B1 regression: var/std
+        # returned the true reduction value for this op (var/std
         # used to deliver 0.0, which the old ``x >= 0.0`` predicates accepted).
         # ``generate_data`` fills the array with random values in [0, 1).
         assert len(callback_results) == 1, f"Expected exactly one callback invocation, got {len(callback_results)}"
@@ -353,7 +353,7 @@ class TestPrecomputeMemory:
         assert y_shape == (2, 1, 16)
 
     def test_multi_reduction_callback_receives_all_reductions(self, env_setup_2workers):
-        """T-B2: a 3-reduction callback receives ALL THREE true values.
+        """A 3-reduction callback receives all three true values.
 
         Pre-fix only the FIRST reduction's partials were delivered to the
         callback (`darr = darr_chunks[0]`); the mean/max callbacks then ran on
@@ -400,9 +400,9 @@ class TestPrecomputeMemory:
         assert np.isclose(mx, float(np.max(global_data)), rtol=1e-5, atol=1e-9), f"max {mx} != {np.max(global_data)}"
 
     def test_same_op_axis_pairs_survive_end_to_end(self, env_setup_2workers):
-        """T-B3 e2e: ``arr.sum()`` + ``arr.sum(axis=0)`` both correct.
+        """Precomputed delivery: ``arr.sum()`` + ``arr.sum(axis=0)`` both correct.
 
-        Pre-fix both hints carried output_key ``f-sum`` (B3), one branch
+        Pre-fix both hints carried output_key ``f-sum``; one branch
         overwrote the other in the bridge's ``output_key`` index, and the
         callback received a wrong shape (or an exception) for the axis
         reduction.
@@ -447,7 +447,7 @@ class TestPrecomputeMemory:
         assert np.allclose(s0, truth0, rtol=1e-5, atol=1e-9), "sum(axis=0) values differ from truth"
 
     def test_axis_reductions_end_to_end(self, env_setup_2workers):
-        """T-B4 e2e: ``arr.mean(axis=0)`` and ``arr.sum(axis=1)`` on the
+        """Precomputed delivery: ``arr.mean(axis=0)`` and ``arr.sum(axis=1)``,
         (2, 1) grid.
 
         ``mean(axis=0)`` reduces over the 2 row-strips (red grid level 0,
@@ -497,7 +497,7 @@ class TestPrecomputeMemory:
         assert np.allclose(s1, truth_s1, rtol=1e-5, atol=1e-9), "sum(axis=1) values differ from truth"
 
     def test_multiple_callbacks_same_array_each_correct(self, env_setup_2workers):
-        """T-B5: TWO callbacks on the SAME array each get their OWN result.
+        """Two callbacks on the same array each get their own result.
 
         Pre-fix ``set_task_branches`` blindly overwrote the per-array branch
         list, so only the LAST registered callback's branches were executed
@@ -541,7 +541,7 @@ class TestPrecomputeMemory:
 
     @pytest.mark.parametrize("expr", ["(arr * arr).sum()", "arr[2:5].sum()"])
     def test_registration_refuses_chained_reduction(self, env_setup_2workers, expr):
-        """T-F1: registration REFUSES non-direct reductions loudly.
+        """Registration REFUSES non-direct reductions loudly.
 
         ``(arr * arr).sum()`` and ``arr[2:5].sum()`` cannot be reconstructed
         on the callback side (the unrewritten callback re-applies the chain on

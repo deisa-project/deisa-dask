@@ -210,7 +210,7 @@ def test_compute_multiple_reductions() -> None:
 
 
 def test_same_op_different_axes_distinct_output_keys() -> None:
-    """``arr.sum()`` + ``arr.sum(axis=0)`` must produce DISTINCT output keys (B3).
+    """``arr.sum()`` + ``arr.sum(axis=0)`` must produce distinct output keys.
 
     On the pre-fix code both hints carried ``f-sum`` (the key was
     ``f"{array_name}-{op_name}"``), so the topic handler grouped the two

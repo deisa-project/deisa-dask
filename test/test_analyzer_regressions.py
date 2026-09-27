@@ -26,21 +26,21 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-"""PR#4 regression tests: A1/A2/A3 and R8 (registration path), cluster-free.
+"""Regression tests for the precompute analyzer Fixes (registration path), cluster-free.
 
 Every test here FAILS on the pre-fix source and PASSES on the fix:
 
-- A1 ``_call_map_blocks`` returned the pre-map receiver, so ``arr.map_blocks
+- ``_call_map_blocks`` returned the pre-map receiver, so ``arr.map_blocks
   (lambda...)`` was analysed as the raw ``arr`` (wrong partials). A resolvable
   func (``np.abs``) analysed the mapped graph; an opaque func (``lambda``)
   is refused at registration.
-- A2 the cross-reduction guard resolved the chunk layer positionally, so the
+- the cross-reduction guard resolved the chunk layer positionally, so the
   ordering-dependent bypass ``arr.sum() + (arr - arr.mean()).sum()`` emitted
   a wrong hint. It must be REFUSED.
-- A3 ``_Missing`` had no comparison dunders (``TypeError`` crashed analysis);
+- ``_Missing`` had no comparison dunders (``TypeError`` crashed analysis);
   unknown operands must be UNKNOWN, never an assumed branch. Subscripting an
   unbound callback parameter must not crash either.
-- R8 ``register_callback`` must store the callback payload only after the
+- ``register_callback`` must store the callback payload only after the
   analysis succeeds (the payload write was removed entirely in the preserved
   commit, so no callback could ever fire; a failed registration must leak
   nothing).
@@ -71,13 +71,13 @@ def _make_callback(name: str, body: str, params: str = "arr") -> Callable:
     """
     src = textwrap.dedent(f"def {name}({params}):\n{textwrap.indent(body, '    ')}")
     scope: Dict[str, Any] = {}
-    exec(compile(src, f"<test_pr4_regressions:{name}>", "exec"), scope)
+    exec(compile(src, f"<analyzer_regression:{name}>", "exec"), scope)
     fn = scope[name]
     fn.__source__ = src  # type: ignore[attr-defined]
     return fn
 
 
-def _analyze(body: str, params: str = "arr", name: str = "pr4_cb", meta: Dict[str, Any] = META) -> Any:
+def _analyze(body: str, params: str = "arr", name: str = "analyze_cb", meta: Dict[str, Any] = META) -> Any:
     cb = _make_callback(name, body, params=params)
     return _analyze_callback_for_branches(cb, meta)
 
@@ -88,7 +88,7 @@ def _scalar(value: Any) -> float:
 
 
 # ---------------------------------------------------------------------------
-# A1 -- _call_map_blocks must analyse the MAPPED array, never the receiver
+# _call_map_blocks must analyze the mapped array, never the receiver
 # ---------------------------------------------------------------------------
 def test_map_blocks_opaque_lambda_refused():
     """``arr.map_blocks(lambda ...)`` cannot be precomputed: registration refuses.
@@ -115,7 +115,7 @@ def test_map_blocks_resolvable_function_uses_mapped_array():
 
 
 # ---------------------------------------------------------------------------
-# A2 -- cross-reduction guard must be ordering-independent
+# cross-reduction guard must be ordering-independent
 # ---------------------------------------------------------------------------
 def test_cross_reduction_simple_refused():
     """``(arr - arr.mean()).sum()`` is refused (inner reduction feeds another)."""
@@ -148,7 +148,7 @@ def test_sibling_reductions_still_emitted():
 
 
 # ---------------------------------------------------------------------------
-# A3 -- _Missing comparisons and unbound-param subscripts degrade, never crash
+# _Missing comparisons and unbound-param subscripts degrade, never crash
 # ---------------------------------------------------------------------------
 def test_missing_comparison_walks_both_branches():
     """``if state > 3:`` (state unknown) walks BOTH branches.
@@ -175,7 +175,7 @@ def test_unbound_param_subscript_does_not_crash():
 
 
 # ---------------------------------------------------------------------------
-# R5 -- partial_shape/partial_dtype describe a CHUNK partial, not the whole array
+# partial_shape/partial_dtype describe a chunk partial, not the whole array
 # ---------------------------------------------------------------------------
 def test_partial_metadata_is_chunk_not_whole_array():
     """``arr.sum(axis=0)`` on an (8, 8) array with (4, 4) chunks records (1, 4).
@@ -197,7 +197,7 @@ def test_partial_metadata_scalar_full_reduction():
 
 
 # ---------------------------------------------------------------------------
-# R8 -- registration stores the payload only after analysis succeeds
+# registration stores the payload only after analysis succeeds
 # ---------------------------------------------------------------------------
 class _FakeClient:
     """Minimal client surface used by Deisa._register_callback_impl."""
@@ -261,7 +261,7 @@ def test_registration_success_stores_callback_payload():
 def test_registration_failure_leaves_no_trace():
     """A registration whose analysis raises leaks nothing.
 
-    Pre-fix (original R8 shape): ``_callbacks[callback_id]`` was written BEFORE
+    Pre-fix: ``_callbacks[callback_id]`` was written BEFORE
     the analysis, so a raising analysis left a half-registered entry that
     ``unregister_callback`` could never reach (FAIL: ``_callbacks != {}``).
     """

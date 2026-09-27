@@ -691,7 +691,7 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 # the whole array. ``_discover_partial_metadata`` records the
                 # partial that the branch_func returns, and that metadata is
                 # shipped in the topic event as the shape/dtype of the REAL
-                # per-bridge chunk partial (R5). Computing the branch func over
+                # per-bridge chunk partial. Computing the branch func over
                 # the whole array records a whole-array partial (e.g. ``(1, 8)``
                 # for ``sum(axis=0)`` on an ``(8, 8)`` stub with ``(4, 4)``
                 # chunks) while every bridge actually ships ``(1, 4)`` chunk

@@ -446,7 +446,7 @@ class TestMultiReductionBranches:
             assert np.isclose(self._scalar(combined.compute(scheduler="sync")), float(expected))
 
     def test_axis_reduction_combine_correct(self):
-        # B4 unit: the two-phase, data-axis-ordered combine must produce the
+        # The two-phase, data-axis-ordered combine must produce the
         # TRUE axis reduction for per-bridge partials on a 2x2 grid. On the
         # pre-fix code mean(axis=0)/sum(axis=*) raised and mean(axis=1)
         # silently returned the wrong values ([7.5 9.5] vs truth
@@ -512,7 +512,7 @@ def _make_spec(output_key, op_name="sum", output_kind="scalar", dispatch_sig=(),
 
 
 def test_merge_branches_dedup_same_key_keeps_all_distinct_keys() -> None:
-    """B5 merge helper: identical signatures dedup, distinct keys survive."""
+    """Merging identical signatures dedups; distinct keys survive."""
     from deisa.dask.branch import merge_branches
 
     existing = [_make_spec("f-sum"), _make_spec("f-mean", op_name="mean", output_kind="mean")]
@@ -524,7 +524,7 @@ def test_merge_branches_dedup_same_key_keeps_all_distinct_keys() -> None:
 
 
 def test_merge_branches_refuses_same_key_different_signature() -> None:
-    """B5 merge helper: a same-key/different-signature collision must raise.
+    """Merging a same-key/different-signature collision must raise.
 
     A window read ``x[-1].sum()`` and a true ``x.sum(axis=0)`` can both carry
     ``f-sum`` from different callbacks (each starts a fresh per-callback seen

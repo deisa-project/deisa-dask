@@ -534,7 +534,7 @@ def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
     graph layer whose stripped base matches the aggregate base, so in
     ``arr.sum() + (arr - arr.mean()).sum()`` the second ``sum`` aggregate
     resolved to the FIRST ``sum``'s chunk layer and the cross-reduction
-    guard inspected the wrong subgraph (A2: ordering-dependent bypass).
+    guard inspected the wrong subgraph (ordering-dependent bypass).
     Resolving via the aggregate's own upstream references is unambiguous:
     a dask reduction's aggregate layer references exactly its own chunk
     layer (``sum-aggregate-<h>`` -> ``sum-<h>``; ``mean_agg`` ->
@@ -760,7 +760,7 @@ def extract_reduction_hints(
         if not _is_aggregate_layer(layer_name):
             continue
         # Resolve the chunk layer from THIS aggregate's own task references
-        # (A2). The positional base-name match could return the FIRST same-op
+        # The positional base-name match could return the first same-op
         # aggregate's chunk layer, making the guard below inspect the wrong
         # subgraph and let a real cross-reduction expression emit hints.
         chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
@@ -806,7 +806,7 @@ def extract_reduction_hints(
             continue
 
         # Find the matching chunk layer via this aggregate's OWN upstream
-        # references (A2: base-name matching is ordering-dependent).
+        # references (base-name matching is ordering-dependent).
         chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             logger.debug("extract_reduction_hints: no chunk layer for %s", layer_name)

@@ -136,7 +136,7 @@ class Deisa(IDeisa):
         # Per-array merged branch groups (static after registration). The
         # actor API (``set_task_branches``) is unchanged; only the CALLER now
         # passes the full merged list so several callbacks on the same array
-        # all get their branches (B5).
+        # all get their branches.
         self._branch_groups: Dict[str, List[Any]] = {}
         # callback_id -> array_name -> ordered [(output_key, op_name, axis_sig, kind)]
         # recorded at registration; the topic handler builds the per-callback
@@ -293,7 +293,7 @@ class Deisa(IDeisa):
 
         # NOTE: ``self._callbacks[callback_id]`` is written at the END of this
         # method, only after the precompute analysis and topic subscription
-        # succeed (R8). Writing it before the analysis left a half-registered
+        # succeed. Writing it before the analysis left a half-registered
         # callback behind when the analysis raised
         # (``NoPrecomputableReductionError`` / F1 ``UnsupportedReductionError``):
         # the id stayed in ``_callbacks`` (but not in ``_callbacks_by_array``, with
@@ -355,7 +355,7 @@ class Deisa(IDeisa):
                         f"or use precompute=False."
                     )
             # Group branches by their source registered array and file each array's set under its own name.
-            # Merge with the branches of previously registered callbacks on the same array (B5): every
+            # Merge with the branches of previously registered callbacks on the same array: every
             # callback's array gets its OWN set (identical signature -> identical output_key -> shared
             # single branch; distinct reductions coexist).
             by_array: Dict[str, List[Any]] = {}
@@ -392,7 +392,7 @@ class Deisa(IDeisa):
                 logger.debug(f"_register_callback_impl: subscribe_topic() {array_name}")
                 self.client.subscribe_topic(array_name, handler)
 
-        # R8: register the callback payload ONLY after every step that can raise
+        # Register the callback payload only after every step that can raise
         # (analysis, branch filing, topic subscription) has succeeded. Writing it
         # earlier left a permanent half-registered entry in ``_callbacks``
         # (unreachable via ``unregister_callback``) whenever the analysis raised
@@ -610,8 +610,8 @@ class Deisa(IDeisa):
                         f"with shapes {[c.shape for c in combined_by_key.values()]}"
                     )
                     # Build the per-callback dispatch view: each callback sees ITS OWN combined array per recorded
-                    # reduction (B5). The view neutralizes the callback's re-application (B3/B4) and refuses calls
-                    # that were never recorded (B6).
+                    # reduction. The view neutralizes the callback's re-application and refuses calls
+                    # that were never recorded.
                     views = _weak_self._build_callback_views(array_name, iteration, combined_by_key)
                 else:
                     views = {}
@@ -688,7 +688,7 @@ class Deisa(IDeisa):
         A callback that registered reductions on ``array_name`` receives a
         ``_PrecomputedDeisaArray`` whose signature map routes ITS OWN
         reduction calls to the combined array the analyzer recorded for that
-        callback and that reduction (B5, B6). Callbacks whose branches all
+        callback and that reduction. Callbacks whose branches all
         live on other arrays get no view here (nothing to deliver).
         """
         views: Dict[str, Any] = {}

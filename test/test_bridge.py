@@ -216,8 +216,8 @@ class TestBridge:
         assert "boom" in str(excinfo.value)
 
 
-class TestPR4Regressions:
-    """PR#4 regression tests for the bridge/runtime findings (R6/R9/R10/__del__).
+class TestPrecomputeRegressions:
+    """Regression tests for bridge delivery and interpreter-shutdown teardown.
 
     Each test FAILS on the pre-fix source and PASSES on the fix.
     """
@@ -226,7 +226,7 @@ class TestPR4Regressions:
         return {array_name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": chunk_pos}}
 
     def test_go_wait_is_bounded(self, env_setup):
-        """R10: Bridge.__init__ must not hang when the callback go event never fires.
+        """Bridge.__init__ must not hang when the callback go event never fires.
 
         Pre-fix: after the handshake go event was set (analytics ready, the
         normal ``execute_callbacks()``-preceding state), rank 0 blocked
@@ -243,7 +243,7 @@ class TestPR4Regressions:
         client, cluster = env_setup
         # The handshake go event is part of the normal pre-execute state
         # (``deisa_ready()``); set it so ``all_bridges_ready(wait_for_go=True)``
-        # completes and the ONLY remaining unbounded wait is the R10
+        # completes and the only remaining unbounded wait is the go-event
         # ``WAIT_FOR_EXECUTE_CB_EVENT`` one under test.
         Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
         start = time.monotonic()
@@ -297,7 +297,7 @@ class TestPR4Regressions:
         assert barriers == [], "close() must skip the world barrier during interpreter shutdown"
 
     def test_send_non_participating_rank_skips_branch_work(self, env_setup):
-        """R9: a rank whose sub-comm for the array is _COMM_NULL does no branch work.
+        """A rank whose sub-comm for the array is _COMM_NULL does no branch work.
 
         Pre-fix: ``send()`` fetched task branches and executed every branch
         func on the chunk BEFORE the ``_COMM_NULL`` early return, then
@@ -337,7 +337,7 @@ class TestPR4Regressions:
         async_close_bridges([b0, b1], 0)
 
     def test_gather_partial_positions_follow_their_bridge(self, env_setup):
-        """R6: a partial's chunk_position comes from ITS bridge, not the index.
+        """A partial's chunk_position comes from its own bridge, not the index.
 
         Two bridges share array ``temperature``: bridge 0 ships NO partials
         (legacy i.e. its branch cache is empty) and bridge 1 ships one

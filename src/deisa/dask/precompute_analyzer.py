@@ -461,7 +461,7 @@ class _Missing:
     # ``_Missing("STATE") > 3`` raised ``TypeError``, which ``analyze_callback``
     # does not catch). The decision logic lives in ``_BoundaryWalker._apply_compare``,
     # which treats ``_Missing`` operands as UNKNOWN (``None``) so ``ast.If`` walks
-    # both branches instead of assuming an outcome (A3). These dunders are the
+    # both branches instead of assuming an outcome. These dunders are the
     # non-crash backstop for direct Python comparisons outside the walker; they
     # return ``False`` so a raw ``if _Missing("x") > 3:`` degrades to the same
     # falsy behavior as ``__bool__``.
@@ -919,7 +919,7 @@ class _BoundaryWalker:
         if isinstance(value, _UnboundParam):
             # An unbound callback parameter is a placeholder scalar; subscripting
             # it is as opaque as subscripting ``_Missing`` (previously raised
-            # ``TypeError`` and crashed analysis) (A3).
+            # ``TypeError`` and crashed analysis).
             return _Missing(f"{value.name}[...]")
         if isinstance(value, da.Array):
             return value[slc]
@@ -963,7 +963,7 @@ class _BoundaryWalker:
         ``False`` for ``Or``, silently picking the branch the analysis cannot
         actually decide, while ``ast.If`` walks BOTH branches on unknown.
         Returning ``None`` keeps the walker consistent: an unknown guard makes
-        both branches explored rather than emitting a wrong hint (A3).
+        both branches explored rather than emitting a wrong hint.
         """
         saw_unknown = False
         if isinstance(op, ast.And):
@@ -991,7 +991,7 @@ class _BoundaryWalker:
             ok = self._apply_compare(op, left, right)
             if ok is None:
                 # Unknown operand: the whole comparison is UNKNOWN. The walker's
-                # ``ast.If`` handler then explores both branches (A3); it never
+                # ``ast.If`` handler then explores both branches; it never
                 # assumes the comparison's outcome.
                 return None
             if not ok:
@@ -1004,7 +1004,7 @@ class _BoundaryWalker:
 
         ``_Missing`` / ``_UnboundParam`` operands, unknown comparison nodes, or
         operators that raise (ambiguity, unsupported operand types) all yield
-        ``None`` -- never an assumed outcome. This is the A3 decision: graceless
+        ``None`` -- never an assumed outcome: an opaque condition must not emit
         degradation must not mean "assume a branch and emit a wrong hint".
         """
         if isinstance(left, (_Missing, _UnboundParam)) or isinstance(right, (_Missing, _UnboundParam)):
@@ -1047,7 +1047,7 @@ class _BoundaryWalker:
         # ``arr.map_blocks(func, *args, **kwargs)`` must produce a placeholder
         # for the MAPPED array, never the receiver: ``y = arr.map_blocks(lambda b: b*2);
         # y.sum()`` analysed on the receiver would emit a branch whose chunk func sums the
-        # RAW chunk -- ``sum(arr)`` where the user asked for ``sum(2*arr)`` (A1).
+        # RAW chunk -- ``sum(arr)`` where the user asked for ``sum(2*arr)``.
         # Build the real mapped placeholder when the mapping is symbolically evaluable
         # (resolvable func/args); otherwise return ``_Missing`` so the downstream reduction
         # is refused/falls back instead of being attributed to the pre-map array.
