@@ -525,6 +525,37 @@ def _chunk_func_and_kwargs(chunk_layer) -> Optional[tuple]:
 # ---------------------------------------------------------------------------
 # branch extraction
 # ---------------------------------------------------------------------------
+def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
+    """Locate the chunk-stage layer feeding ``layer_name`` from the
+    aggregate layer's OWN task references (Blockwise ``indices`` /
+    first-task args).
+
+    The positional name match (``_find_chunk_layer``) returns the FIRST
+    graph layer whose stripped base matches the aggregate base, so in
+    ``arr.sum() + (arr - arr.mean()).sum()`` the second ``sum`` aggregate
+    resolved to the FIRST ``sum``'s chunk layer and the cross-reduction
+    guard inspected the wrong subgraph (A2: ordering-dependent bypass).
+    Resolving via the aggregate's own upstream references is unambiguous:
+    a dask reduction's aggregate layer references exactly its own chunk
+    layer (``sum-aggregate-<h>`` -> ``sum-<h>``; ``mean_agg`` ->
+    ``mean_chunk``; ``max`` -> ``chunk_max``; ``moment_agg`` ->
+    ``moment_chunk``).
+
+    Returns ``None`` when the aggregate references zero, or more than one
+    distinct, non-aggregate layer (not a standard reduction). Callers then
+    skip the branch, which surfaces as a no-hint refusal at registration
+    rather than a guessed chunk layer.
+    """
+    layer = graph.layers.get(layer_name)
+    if layer is None:
+        return None
+    upstream = sorted(set(_blockwise_upstream_layer_names(layer)))
+    candidates = [u for u in upstream if u in graph.layers and not _is_aggregate_layer(u)]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def _find_chunk_layer(graph, agg_base: str) -> Optional[str]:
     """Locate the chunk layer that feeds the aggregate layer with the given base.
 
@@ -728,8 +759,11 @@ def extract_reduction_hints(
     for layer_name in list(graph.layers):
         if not _is_aggregate_layer(layer_name):
             continue
-        agg_base = _base_for_aggregate(layer_name)
-        chunk_layer_name = _find_chunk_layer(graph, agg_base)
+        # Resolve the chunk layer from THIS aggregate's own task references
+        # (A2). The positional base-name match could return the FIRST same-op
+        # aggregate's chunk layer, making the guard below inspect the wrong
+        # subgraph and let a real cross-reduction expression emit hints.
+        chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             continue
         reachable = _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name)
@@ -771,11 +805,11 @@ def extract_reduction_hints(
             logger.debug("extract_reduction_hints: unsupported op %s, skipping", op_name)
             continue
 
-        # Find the matching chunk layer
-        agg_base = _base_for_aggregate(layer_name)
-        chunk_layer_name = _find_chunk_layer(graph, agg_base)
+        # Find the matching chunk layer via this aggregate's OWN upstream
+        # references (A2: base-name matching is ordering-dependent).
+        chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
-            logger.debug("extract_reduction_hints: no chunk layer for %s (base=%s)", layer_name, agg_base)
+            logger.debug("extract_reduction_hints: no chunk layer for %s", layer_name)
             continue
 
         chunk_layer = graph.layers[chunk_layer_name]

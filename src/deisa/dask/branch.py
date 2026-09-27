@@ -69,6 +69,7 @@ from deisa.dask.task_branches import (
     _base_for_aggregate,
     _blockwise_indices_inputs,
     _chunk_func_and_kwargs,
+    _chunk_layer_for_aggregate,
     _find_chunk_layer,
     _is_aggregate_layer,
     _normalize_reduction_axis,
@@ -586,9 +587,8 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
 
     Returns
     -------
-    List[BranchSpec]
-        One BranchSpec per detected reduction. Empty list if the callback contains no chunk-local precomputable
-        operations.
+    One BranchSpec per detected reduction. Empty list if the callback contains no chunk-local precomputable
+    operations.
     """
     # Single AST walk: analyze_callback returns BOTH the reduction hints AND the
     # walker's dask_arrays in one pass. (Calling the hints-extraction and the
@@ -624,7 +624,7 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
         if not hasattr(candidate, "__dask_graph__"):
             continue
         graph = candidate.__dask_graph__()
-        matched, _ = _match_source_arrays(candidate, registered_arrays)
+        matched = _match_source_arrays(candidate, registered_arrays)
         candidates_array_name = matched[0] if matched else next(iter(registered_arrays), "f")
         for layer_name in graph.layers:
             if not _is_aggregate_layer(layer_name):
@@ -682,8 +682,19 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
         array_stub = registered_arrays.get(hint_arr)
         array_ndim = int(getattr(array_stub, "ndim", 0)) if array_stub is not None else 0
         placeholder = array_stub
-        if hasattr(placeholder, "compute"):
+        if hasattr(placeholder, "compute") and array_stub is not None:
             try:
+                # Materialize the FIRST CHUNK of the registered-array stub, not
+                # the whole array. ``_discover_partial_metadata`` records the
+                # partial that the branch_func returns, and that metadata is
+                # shipped in the topic event as the shape/dtype of the REAL
+                # per-bridge chunk partial (R5). Computing the branch func over
+                # the whole array records a whole-array partial (e.g. ``(1, 8)``
+                # for ``sum(axis=0)`` on an ``(8, 8)`` stub with ``(4, 4)``
+                # chunks) while every bridge actually ships ``(1, 4)`` chunk
+                # partials.
+                first_chunk_shape = tuple(int(c[0]) for c in array_stub.chunks)
+                placeholder = array_stub[tuple(slice(0, s) for s in first_chunk_shape)]
                 # Always compute on the synchronous scheduler. Analysis is pure
                 # graph/partial bookkeeping and must never touch an ambient
                 # distributed client: if another test (or the caller) left
@@ -796,13 +807,13 @@ def _chain_direct_and_window_read(graph, agg_name: str) -> Tuple[bool, bool]:
     """
     from deisa.dask.task_branches import (
         _chain_has_window_read,
-        _find_chunk_layer,
+        _chunk_layer_for_aggregate,
         _is_stub_layer_name,
         _is_window_read_layer,
         _window_read_upstream_name,
     )
 
-    chunk_layer_name = _find_chunk_layer(graph, _base_for_aggregate(agg_name))
+    chunk_layer_name = _chunk_layer_for_aggregate(graph, agg_name)
     if chunk_layer_name is None:
         return False, False
     window_read = _chain_has_window_read(graph, chunk_layer_name)
@@ -876,7 +887,6 @@ def _try_chain_branch(
     try:
         return _build_branch(
             branch=branch,
-            chain=chain,
             array_ndim=array_ndim,
             placeholder=placeholder,
             chain_branch_func=chain_branch_func,
@@ -947,8 +957,8 @@ def _try_length1_branch(
 
 def _build_branch(
     branch: Dict[str, Any],
-    chain: List[Tuple[Callable, dict, int]],
-    array_ndim: int,
+    chain: Optional[List[Tuple[Callable, dict, int]]] = None,
+    array_ndim: int = 0,
     placeholder: Optional[Any] = None,
     chain_branch_func: Optional[Callable] = None,
     deliver_direct: Optional[bool] = None,
@@ -990,7 +1000,7 @@ def _build_branch(
         chunk_axis = None
 
     if chain_branch_func is None:
-        chain_branch_func = _build_chain_branch_func(chain)
+        chain_branch_func = _build_chain_branch_func(chain or [])
 
     partial_shape, partial_dtype = _discover_partial_metadata(chain_branch_func, placeholder, branch)
 
@@ -1007,7 +1017,7 @@ def _build_branch(
 
     return BranchSpec(
         output_key=branch["output_key"],
-        input_name=branch.get("array_name", ""),
+        input_name=branch["array_name"],
         output_kind=kind,
         branch_func=chain_branch_func,
         chunk_axis=chunk_axis,
@@ -1015,7 +1025,7 @@ def _build_branch(
         partial_shape=partial_shape,
         partial_dtype=partial_dtype,
         op_name=branch.get("op_name", ""),
-        deliver_direct=(len(chain) == 1) if deliver_direct is None else deliver_direct,
+        deliver_direct=(len(chain or []) == 1) if deliver_direct is None else deliver_direct,
         window_read=window_read,
         dispatch_sig=dispatch_sig,
     )
@@ -1035,7 +1045,7 @@ def _walk_chain(graph, agg_name: str) -> Optional[List[Tuple[Callable, dict, int
         return None
     # Match the chunk layer via the dedicated chunk/aggregate pairs (mean_chunk / mean_agg, chunk_max / max,
     # chunk_min / min, moment_agg / var) instead of requiring an exact base name.
-    chunk_layer_name = _find_chunk_layer(graph, _base_for_aggregate(agg_name))
+    chunk_layer_name = _chunk_layer_for_aggregate(graph, agg_name)
     if chunk_layer_name is None:
         return None
     # Refuse to fold an aggregate whose output feeds ANOTHER reduction's chunk stage (cross-reduction

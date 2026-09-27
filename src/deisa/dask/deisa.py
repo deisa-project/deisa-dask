@@ -291,13 +291,13 @@ class Deisa(IDeisa):
             for arr_name, ws in parsed
         }
 
-        self._callbacks[callback_id] = {
-            "callback": callback,
-            "when": when,
-            "exception_handler": exception_handler,
-            "array_names": array_names,
-            "state": callback_state,
-        }
+        # NOTE: ``self._callbacks[callback_id]`` is written BELOW, only after the
+        # precompute analysis succeeds (R8). Writing it before the analysis left a
+        # half-registered callback behind when the analysis raised
+        # (``NoPrecomputableReductionError`` / F1 ``UnsupportedReductionError``):
+        # the id stayed in ``_callbacks`` (but not in ``_callbacks_by_array``, with
+        # no topic handler), so it was a permanent leak unreachable via
+        # ``unregister_callback``, and ``callback.callback_id`` was never set.
 
         # Analyze all registered arrays together (single pass, not per-array loop).
         # The method takes the full {name: stub} dict so cross-array callbacks (e.g. cb(temperature, pressure))
@@ -325,9 +325,10 @@ class Deisa(IDeisa):
                 logger.debug(
                     f"_register_callback_impl: callback {callback.__name__!r} produced no precomputable branches "
                     f"for any of the registered arrays {array_names!r}."
-                    f"Without branches, the bridge will fall back to scattering the FULL chunk to the dask workers."
-                    f"This is the behavior the precompute optimization is designed to avoid. Set precompute=False and "
-                    f"catch the exception if the full-chunk path is acceptable."
+                    f"Without branches, the bridge falls back to scattering the FULL chunk to the dask workers only "
+                    f"when analysis is skipped (register with precompute=False; the analyzer is not run for that "
+                    f"callback). With precompute=True there is no fallback: registration raises, because the "
+                    f"precompute path requires at least one chunk-local reduction."
                 )
                 raise NoPrecomputableReductionError(
                     f"Callback {callback.__name__!r} produced no precomputable reductions for any of the "
