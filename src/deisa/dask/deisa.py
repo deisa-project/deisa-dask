@@ -61,7 +61,7 @@ from deisa.dask.precompute_analyzer import (
     UnsupportedReductionError,
 )
 from deisa.dask.task_branches import _normalize_reduction_axis
-from deisa.dask.utils import _PrecomputedDeisaArray, build_deisa_array, get_client
+from deisa.dask.utils import _PrecomputedDeisaArray, build_deisa_array, get_client, make_precomputed_view  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -718,17 +718,12 @@ class Deisa(IDeisa):
                     first = array
             if first is None:
                 continue
-            views[callback_id] = _PrecomputedDeisaArray(
+            views[callback_id] = make_precomputed_view(
+                first,
                 t=iteration,
                 signatures=signatures,
                 reapply=reapply,
                 registered_ndim=len(self.arrays_metadata[array_name].get("global_shape", ())),
-                dask=first.dask,
-                name=first.name,
-                chunks=first.chunks,
-                dtype=first.dtype,
-                meta=first._meta,
-                shape=first.shape,
             )
         return views
 

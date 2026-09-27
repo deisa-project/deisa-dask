@@ -125,9 +125,6 @@ def build_deisa_array(darr: da.Array, timestep: int) -> DeisaArray:
     )
 
 
-# The per-callback dispatch view overrides the seven dask array reduction
-# methods (``sum``/``prod``/``max``/``min``/``mean``/``var``/``std``) so the
-# callback's re-application routes to the correct pre-combined array.
 class _PrecomputedDeisaArray(DeisaArray):
     """Per-callback dispatch view over the combined per-bridge partials.
 
@@ -135,47 +132,25 @@ class _PrecomputedDeisaArray(DeisaArray):
     (per ``output_key``). A callback's source is not rewritten, so its
     reduction calls (``arr.sum()``, ``arr.mean()``, ...) must be routed to the
     array the analyzer recorded for THAT callback and THAT reduction -- never
-    re-applied onto a wrong array. This view stores, for each recorded
-    reduction signature ``(op_name, normalized_axis)``, the combined array and
-    dispatches:
+    re-applied onto a wrong array. This view routes by the recorded
+    signature ``(op_name, normalized_axis)``:
 
-    - signature match + scalar FULL reduction (the per-bridge partial
-      ``da.stack``): re-apply the op over the stack via dask (today's
-      backward-compatible shape semantics; the stack's shape is preserved for
-      existing tests);
+    - signature match + scalar FULL reduction (the per-bridge ``da.stack``):
+      re-apply the op over the stack via dask (the callback's op IS the
+      combine step);
     - signature match + anything else (mean/moment, any axis reduction): the
       stored array is already FINAL and correctly shaped -- return it
-      directly, neutralizing the callback's re-application (this is what makes
-      ``var``/``std`` correct: re-applying ``.var()`` to a one-element array is
-      mathematically forced to ``0.0``);
-    - no match (analyzer/runtime signature drift, an op the callback performs
-      but never recorded): raise a typed error -- never silently mis-reduce.
+      directly, neutralizing the callback's re-application (re-applying
+      ``.var()`` to a one-element array is mathematically forced ``0.0``);
+    - no match (an op the callback performs but was never recorded): raise a
+      typed error -- never silently mis-reduce.
 
-    The underlying dask guts wrap the FIRST recorded reduction's combined
-    array so ``.shape`` / ``.dtype`` / ``.ndim`` / ``.t`` / slicing /
-    passthrough attributes behave like a regular ``DeisaArray``.
+    Construction is a class-swap over a REAL ``DeisaArray`` built by
+    :func:`build_deisa_array` (see :func:`make_precomputed_view`): the
+    subclass adds only the seven reduction overrides and three dispatch
+    fields, so every dask-level attribute keeps its parent behavior without
+    duplicating the ``Array.__new__`` argument plumbing here.
     """
-
-    def __new__(cls, t, signatures, reapply, registered_ndim, *args, **kwargs):
-        # ``DeisaArray.__new__`` (``deisa.core``) forwards *all* keyword
-        # arguments to ``dask.array.Array.__new__``, which in current dask
-        # accepts exactly ``(cls, dask, name, chunks, dtype, meta, shape)``.
-        # Consume the dispatch-view extras here so they never reach
-        # ``Array.__new__`` (previously raised ``TypeError: unexpected keyword
-        # argument 'signatures'`` at every precompute topic event).
-        array_kwargs = {key: kwargs.pop(key) for key in ("dask", "name", "chunks", "dtype", "meta", "shape")}
-        if kwargs:
-            raise TypeError(
-                f"_PrecomputedDeisaArray: unexpected keyword arguments {sorted(kwargs)} "
-                f"(allowed array keywords: {sorted(array_kwargs)})"
-            )
-        return super().__new__(cls, t, *args, **array_kwargs)
-
-    def __init__(self, t, signatures, reapply, registered_ndim, *args, **kwargs):
-        super().__init__(t, *args, **kwargs)
-        self._signatures = signatures
-        self._reapply = reapply
-        self._registered_ndim = registered_ndim
 
     def _dispatch(self, op_name: str, axis, keepdims: bool):
         if keepdims:
@@ -239,3 +214,32 @@ class _PrecomputedDeisaArray(DeisaArray):
                 f"(the per-bridge partials are population moments). Use ddof=0 (the default)."
             )
         return self._dispatch("std", axis, keepdims)
+
+
+def make_precomputed_view(
+    first: da.Array,
+    *,
+    t: int,
+    signatures: dict,
+    reapply,
+    registered_ndim: int,
+) -> _PrecomputedDeisaArray:
+    """Build the per-callback dispatch view WITHOUT touching ``Array.__new__``.
+
+    Creates a genuine ``DeisaArray`` through :func:`build_deisa_array` (the
+    same factory every other delivery path uses), attaches the dispatch
+    fields, then transplants the view class onto the instance.
+    ``DeisaArray``/``dask.array.Array`` instances are plain objects whose
+    state lives in ``__dict__``, so the layout is identical across subclasses
+    and the swap is safe (dask itself returns plain ``Array`` instances when
+    a derived subclass cannot be preserved).
+    """
+    if not isinstance(signatures, dict) or not signatures:
+        got = f"{type(signatures).__name__}={signatures!r}"
+        raise PrecomputeRuntimeError(f"make_precomputed_view: signatures must be a non-empty dict, got {got}")
+    view = build_deisa_array(first, t)
+    view._signatures = dict(signatures)
+    view._reapply = frozenset(reapply)
+    view._registered_ndim = registered_ndim
+    view.__class__ = _PrecomputedDeisaArray
+    return view
