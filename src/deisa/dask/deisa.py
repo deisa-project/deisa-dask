@@ -154,7 +154,7 @@ class Deisa(IDeisa):
                         a["window"].clear()
                 del self._callbacks
         except Exception as e:
-            logger.error(f"Cloud not cleanly close deisa. exception={e}")
+            logger.error(f"Could not cleanly close deisa. exception={e}")
 
     @staticmethod
     def __default_exception_handler(exception: BaseException):
@@ -291,9 +291,10 @@ class Deisa(IDeisa):
             for arr_name, ws in parsed
         }
 
-        # NOTE: ``self._callbacks[callback_id]`` is written BELOW, only after the
-        # precompute analysis succeeds (R8). Writing it before the analysis left a
-        # half-registered callback behind when the analysis raised
+        # NOTE: ``self._callbacks[callback_id]`` is written at the END of this
+        # method, only after the precompute analysis and topic subscription
+        # succeed (R8). Writing it before the analysis left a half-registered
+        # callback behind when the analysis raised
         # (``NoPrecomputableReductionError`` / F1 ``UnsupportedReductionError``):
         # the id stayed in ``_callbacks`` (but not in ``_callbacks_by_array``, with
         # no topic handler), so it was a permanent leak unreachable via
@@ -390,6 +391,19 @@ class Deisa(IDeisa):
                 self._topic_handlers[array_name] = handler
                 logger.debug(f"_register_callback_impl: subscribe_topic() {array_name}")
                 self.client.subscribe_topic(array_name, handler)
+
+        # R8: register the callback payload ONLY after every step that can raise
+        # (analysis, branch filing, topic subscription) has succeeded. Writing it
+        # earlier left a permanent half-registered entry in ``_callbacks``
+        # (unreachable via ``unregister_callback``) whenever the analysis raised
+        # ``NoPrecomputableReductionError`` / ``UnsupportedReductionError``.
+        self._callbacks[callback_id] = {
+            "callback": callback,
+            "when": when,
+            "exception_handler": exception_handler,
+            "array_names": array_names,
+            "state": callback_state,
+        }
 
         return callback_id
 

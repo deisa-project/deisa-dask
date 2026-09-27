@@ -143,9 +143,7 @@ def _match_source_arrays(darr: Any, registered_arrays: Dict[str, Any]) -> List[s
         layers = set(darr.__dask_graph__().layers)  # type: ignore[attr-defined]
     except Exception:  # pragma: no cover - safety net
         pass
-    return [
-        name for name, value in registered_arrays.items() if isinstance(value, da.Array) and value.name in layers
-    ]
+    return [name for name, value in registered_arrays.items() if isinstance(value, da.Array) and value.name in layers]
 
 
 # ---------------------------------------------------------------------------

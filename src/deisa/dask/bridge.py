@@ -137,8 +137,28 @@ class Bridge(IBridge):
                 nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
             )
 
+            # R10: the go-event wait is BOUNDED. ``WAIT_FOR_EXECUTE_CB_EVENT`` is
+            # set only by ``Deisa.execute_callbacks()``; an unbounded wait would
+            # hang every rank (rank 0 here, the others at the world barrier
+            # below) whenever bridges are constructed without immediately
+            # reaching ``execute_callbacks()``. On timeout we proceed WITHOUT
+            # the go signal: the prefetch stays off (the handshake may not be
+            # complete, and caching an empty branch list would permanently
+            # disable precompute for the array), and the lazy first-send fetch
+            # in ``_get_task_branches`` keeps correctness.
+            go_received = True
             if kwargs.get("wait_for_go", True):
-                Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait()
+                go_received = Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait(
+                    timeout=kwargs.get("wait_timeout", 300)
+                )
+                if not go_received:
+                    logger.warning(
+                        f"[{self.id}] Bridge __init__(): WAIT_FOR_EXECUTE_CB_EVENT not received within "
+                        f"{kwargs.get('wait_timeout', 300)}s. Proceeding without prefetching task branches; "
+                        f"branches will be fetched lazily on the first send() (full-chunk scatter until then)."
+                    )
+        else:
+            go_received = False
 
         # World-wide barrier. Rank 0 waited on WAIT_FOR_EXECUTE_CB_EVENT (all callbacks
         # have written their task-branches to the handshake actor by then); the other ranks
@@ -149,7 +169,7 @@ class Bridge(IBridge):
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
-        if kwargs.get("wait_for_go", True):
+        if kwargs.get("wait_for_go", True) and go_received:
             # Prefetch static task-branches out of the send() latency path. Safe only on the
             # wait_for_go path: the barrier guarantees branches exist in the handshake (rank 0
             # confirmed via the event). On wait_for_go=False the branches may not be registered
@@ -243,10 +263,23 @@ class Bridge(IBridge):
             )
 
     def __del__(self):
+        """Clean up resources before destruction.
+
+        Never runs a blocking collective at interpreter shutdown
+        (``sys.is_finalizing()``): ``close()`` synchronizes all bridges with an
+        MPI barrier, and at shutdown the peer ranks may already be torn down,
+        so that barrier would hang forever -- a hang is worse than an
+        exception. During normal (non-shutdown) garbage collection the full
+        ``close()`` still runs.
         """
-        Clean up resources before destruction.
-        """
-        self.close(timestep=sys.maxsize)
+        if sys.is_finalizing():
+            logger.debug(f"[{self.id}] Bridge.__del__ during interpreter shutdown: skipping close()")
+            return
+        try:
+            self.close(timestep=sys.maxsize)
+        except Exception:
+            # Never raise from __del__. close() already logs its own errors.
+            pass
 
     def close(self, timestep: int) -> None:
         """
@@ -260,23 +293,30 @@ class Bridge(IBridge):
         try:
             if not self._has_close_been_called:
                 self._has_close_been_called = True
-                # Barrier on communicator — all bridges must synchronize
-                self.comm.barrier()
-                # Free sub-communicators created via Split()
-                for array_name, sub_comm in self._array_comms.items():
-                    if sub_comm is not None and sub_comm != _COMM_NULL:
-                        sub_comm.Free()
-                        logger.debug(f"[{self.id}] Freed sub-communicator for array '{array_name}'")
-                self._array_comms.clear()
-                if self.id == 0:
-                    assert self.handshake, "handshake cannot be None for Bridge id 0."
-                    assert self.client, "client cannot be None for Bridge id 0."
-                    self.handshake.set_bridges_done(timestep=timestep)
+                if sys.is_finalizing():
+                    # Interpreter shutdown: the world barrier and the sub-comm
+                    # Free() calls are collectives that can never complete once
+                    # peer ranks are gone. Skip the coordinated part; the client
+                    # (non-collective) is still closed below.
+                    logger.debug(f"[{self.id}] Bridge close() during interpreter shutdown: skipping collectives")
+                else:
+                    # Barrier on communicator — all bridges must synchronize
+                    self.comm.barrier()
+                    # Free sub-communicators created via Split()
+                    for array_name, sub_comm in self._array_comms.items():
+                        if sub_comm is not None and sub_comm != _COMM_NULL:
+                            sub_comm.Free()
+                            logger.debug(f"[{self.id}] Freed sub-communicator for array '{array_name}'")
+                    self._array_comms.clear()
+                    if self.id == 0:
+                        assert self.handshake, "handshake cannot be None for Bridge id 0."
+                        assert self.client, "client cannot be None for Bridge id 0."
+                        self.handshake.set_bridges_done(timestep=timestep)
 
                 if self.client:
                     self.client.close()
         except Exception as e:
-            logger.error(f"[{self.id}] Cloud not cleanly close bridge. exception={e}")
+            logger.error(f"[{self.id}] Could not cleanly close bridge. exception={e}")
 
     def send(self, array_name: str, chunk: np.ndarray, timestep: int, *args, **kwargs):
         """
@@ -339,12 +379,6 @@ class Bridge(IBridge):
 
         assert len(workers) == 1, "worker list should be of length 1."
 
-        # Fetch task hints and execute reduction operations locally on the bridge-process numpy chunk.
-        # The resulting partials are tiny (scalar / 1-d arrays) compared to the full chunk. The goal of precompute is
-        # to ship only the partials to the worker, never the full chunk.
-        branches = self._get_task_branches(array_name)
-        partials = self._execute_operations_on_chunk(chunk, branches)
-
         # Determine communicator from cached sub-comms (from comm.Split())
         sub_comm = self._array_comms.get(array_name)
 
@@ -352,6 +386,17 @@ class Bridge(IBridge):
             # This rank doesn't participate in this array
             logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
             return
+
+        # Fetch task hints and execute reduction operations locally on the bridge-process numpy chunk.
+        # The resulting partials are tiny (scalar / 1-d arrays) compared to the full chunk. The goal of precompute is
+        # to ship only the partials to the worker, never the full chunk.
+        # R9: this runs ONLY on participating ranks -- the ``_COMM_NULL`` early
+        # return above exits before any branch fetch/execution, so a rank that
+        # does not own the array never executes every branch func on the chunk
+        # just to discard the result (pure overhead; no collective is ordered by
+        # the branch execution).
+        branches = self._get_task_branches(array_name)
+        partials = self._execute_operations_on_chunk(chunk, branches)
 
         # Decide what to ship to workers:
         # - If precompute produced partials for this callback: scatter ONLY the partials (tiny).
@@ -399,7 +444,17 @@ class Bridge(IBridge):
             who_has = {}
             nbytes = {}
             keys = []
-            all_partials_meta: List[Optional[Dict[str, Dict]]] = []
+            # R6: carry each partial set's OWN chunk_position with the entry.
+            # Indexing ``all_partials_meta`` with ``enumerate`` against
+            # ``gathered_data[i]`` misaligns when any bridge shipped no partials
+            # (its branch func raised and the ``continue`` above dropped it):
+            # partials would inherit another bridge's coordinates, the partial
+            # count would no longer cover the grid, and the combine would either
+            # raise (ValueError swallowed by the topic handler's outer except --
+            # the callback silently never fires) or sum fewer partials for
+            # scalar kinds. Pairing the metadata with its position at build time
+            # makes the mapping immune to filtering.
+            all_partials_meta: List[Dict[str, Any]] = []
             for d in gathered_data:
                 who_has.update(d["future-info"]["who_has"])
                 nbytes.update(d["future-info"]["nbytes"])
@@ -409,7 +464,7 @@ class Bridge(IBridge):
                 else:
                     keys.append(future_field)
                 if d.get("precomputed"):
-                    all_partials_meta.append(d["precomputed"])
+                    all_partials_meta.append({"precomputed": d["precomputed"], "chunk_position": d["chunk_position"]})
 
             # only update the scheduler with who has what and register the futures once
             self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
@@ -433,11 +488,11 @@ class Bridge(IBridge):
                 # topic handler to compute the combine's output shape and pass the correct ``axis`` to
                 # ``mean_agg`` / ``moment_agg``.
                 futures_payload = []
-                for bridge_idx, partial_meta in enumerate(all_partials_meta):
+                for partial_meta in all_partials_meta:
                     futures_payload.extend(
                         _build_futures_payload(
-                            partial_meta,
-                            gathered_data[bridge_idx]["chunk_position"],
+                            partial_meta["precomputed"],
+                            partial_meta["chunk_position"],
                         )
                     )
             else:

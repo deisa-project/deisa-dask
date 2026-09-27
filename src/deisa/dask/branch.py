@@ -66,14 +66,17 @@ from deisa.dask.precompute_analyzer import (
 )
 from deisa.dask.task_branches import (
     _aggregate_output_feeds_other_reduction,
-    _base_for_aggregate,
     _blockwise_indices_inputs,
     _chunk_func_and_kwargs,
     _chunk_layer_for_aggregate,
-    _find_chunk_layer,
     _is_aggregate_layer,
     _normalize_reduction_axis,
     _op_for_aggregate_layer,
+)
+from deisa.dask.task_branches import (
+    # Re-exported for the test suite (test_chain.py imports it from here); the
+    # ``as`` alias marks the re-export for ruff (F401).
+    _find_chunk_layer as _find_chunk_layer,
 )
 from deisa.dask.utils import build_deisa_array
 
