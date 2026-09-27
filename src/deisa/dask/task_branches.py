@@ -486,10 +486,9 @@ def _op_for_aggregate_layer(graph, layer_name: str) -> Optional[str]:
     """Return the canonical op name for an aggregate layer, matching hint extraction.
 
     ``moment_agg`` is shared by var and std; the ``_sqrt`` poststep
-    disambiguates them exactly like :func:`extract_reduction_hints`
-    does, so chain folding selects the same op name the hint carries
-    (``hint['op_name']``). Keeping this in one place prevents the two
-    op-naming paths from drifting.
+    disambiguates them exactly like :func:`extract_reduction_hints` does, so
+    chain folding selects the same op name the hint carries. Keeping this in
+    one place prevents the two op-naming paths from drifting.
     """
     agg_func = _aggregate_layer_func(graph.layers[layer_name])
     if agg_func is None:
@@ -644,23 +643,16 @@ def _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name: str) -> set:
 def _aggregate_output_feeds_other_reduction(graph, agg_layer_name: str) -> bool:
     """Return True if ``agg_layer_name``'s output feeds another reduction.
 
-    Walks forward from the aggregate's output through the layers that
-    consume it (via the graph's dependency edges). If the output (or a
-    pointwise layer derived from it) is consumed by another
-    ``-aggregate-`` layer, the aggregate's value participates in a
-    *different* reduction's chunk stage. Folding such an aggregate
-    alone is not a valid local precompute: its consumer needs the
-    aggregate's GLOBAL value, which a bridge cannot produce from its
-    own chunk. This is the mirror image of
-    :func:`_chunk_inputs_reach_other_aggregate` (which detects the
-    same expression from the consumer's side) and lets chain
-    walkers refuse the INNER reduction of a cross-reduction expression
-    without having to reject the whole graph.
-
-    Returns False if the aggregate output is only consumed by the
-    graph's terminal layers (or nothing), e.g. two sibling reductions
-    combined pointwise once -- ``(arr*arr).sum() + arr.max()`` -- where
-    both aggregates feed only the final ``add`` layer.
+    Walks forward from the aggregate's output through the layers consuming
+    it. If the output (or a pointwise layer derived from it) reaching another
+    ``-aggregate-`` layer, the aggregate participates in a DIFFERENT
+    reduction's chunk stage: its consumer needs the aggregate's GLOBAL
+    value, which a bridge cannot produce from its own chunk -- so the inner
+    reduction of a cross-reduction expression must be refused (mirror of
+    :func:`_chunk_inputs_reach_other_aggregate`, which detects the same
+    expression from the consumer's side). Returns False when the output
+    feeds only terminal layers, e.g. the once-combined sibling sums in
+    ``(arr*arr).sum() + arr.max()``.
     """
     dependencies = getattr(graph, "dependencies", None)
     if dependencies is None:
@@ -725,20 +717,7 @@ def extract_reduction_hints(
     array_name: str = "f",
     output_key_seen: Optional[Dict] = None,
 ) -> List[Dict[str, Any]]:
-    """Inspect ``darr``'s task graph and return a branch dict per reduction.
-
-    - ``:param darr:`` A dask array whose graph contains at least one reduction
-      (typically built symbolically by ``deisa.dask.precompute_analyzer``).
-    - ``:param array_name:`` Base name for the reduction output keys.
-    - ``:param output_key_seen:`` Optional shared ``{seen}`` dict for
-      :func:`_assign_output_key`. Pass ONE dict per callback (across all its
-      compute boundaries) so ``output_key`` stays unique per reduction
-      signature; ``None`` allocates a fresh per-call dict.
-    - ``:return:`` List of branch dicts matching the schema above.
-
-    Note: this walks the graph but never executes any task; the dask arrays
-    used at analysis time are zero-filled placeholders, and we don't run them.
-    """
+    """Inspect ``darr``'s task graph and return a branch dict per reduction."""
     hints: List[Dict[str, Any]] = []
     if output_key_seen is None:
         output_key_seen = {}  # fresh per-call seen map

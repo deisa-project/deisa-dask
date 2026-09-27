@@ -658,21 +658,12 @@ class Deisa(IDeisa):
     ) -> Tuple[int, ...]:
         """Return the runtime dispatch signature recorded for ``output_key``.
 
-        The registered branches' descriptors were recorded with the branch
-        builder's ``dispatch_sig`` (``()`` for full reductions and window
-        reads, the sorted axes otherwise). A same-``output_key`` reduction
-        is recorded identically by every callback that holds it (merged
-        branches dedup to one signature), so the first descriptor found is
-        authoritative. Falls back to re-normalizing the payload ``hint_axis``
-        when no callback descriptor matches (e.g. the callback was
-        unregistered after branches were filed): the payload's ``chunk_axis``
-        is then the only available signature source.
-
-        - ``:param array_name:`` The array the event was published for.
-        - ``:param output_key:`` The reduction's unique output key.
-        - ``:param hint_axis:`` The payload's ``chunk_axis`` (fallback source).
-        - ``:param array_ndim:`` The array's ndim (fallback normalization).
-        - ``:return:`` The dispatch signature tuple (``()`` = full reduction).
+        Registered descriptors are recorded with the branch builder's
+        ``dispatch_sig`` (``()`` for full reductions and window reads, the
+        sorted axes otherwise); every callback holding the same
+        ``output_key`` records it identically, so the first match wins.
+        Falls back to re-normalizing the payload ``hint_axis`` when no
+        descriptor matches (e.g. the callback was unregistered).
         """
         for descriptors in self._callback_reductions.values():
             for key, _op, axes_sig, _kind in descriptors.get(array_name, []):

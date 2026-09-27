@@ -766,31 +766,15 @@ class Bridge(IBridge):
         array_name: str,
         workers: List[str],
     ) -> Dict[str, Any]:
-        """
-        Scatter precomputed reduction partials to a worker instead of the full chunk.
+        """Scatter precomputed reduction partials to a worker instead of the full chunk.
 
-        Each partial value is the local result of running the branch's chunk-stage callable on the bridge's numpy chunk.
-        Three flavors:
-        - ``"scalar"`` partials (sum/prod/max/min): plain scalars or numpy arrays. Shipped as one future key per
-          reduction.
-        - ``"mean"`` partials (mean): a ``{"n": x, "total": y}`` dict from dask's ``mean_chunk``.
-          Shipped as one future key whose value is the whole dict; the Deisa-side combine resolves the dicts and
-          calls ``mean_agg`` over them.
-        - ``"moment"`` partials (var/std): a ``{"n": x, "total": y, "M": z}`` dict from dask's ``moment_chunk``.
-          Same dict-blob handling as mean, but the combine calls ``moment_agg`` (and sqrt for std).
-
-        Returns a dict shaped like the legacy ``_better_scatter`` result
-        (``{"future": [...], "who_has": {...}, "nbytes": {...}}``) plus a ``precomputed`` entry mapping each
-        ``output_key`` to its scatter metadata (``{future, kind, shape, dtype, finalize}``) so the topic handler can
-        reconstruct the right dask graph.
-
-        - ``:param partials:`` Mapping of ``output_key`` -> partial value produced by _execute_operations_on_chunk`.
-        - ``:param branches:`` The :class:`BranchSpec` objects the bridge used to compute the partials.
-            Carry per-reduction ``kind``/``finalize``/``partial_shape``/``partial_dtype`` metadata.
-        - ``:param array_name:`` Array name (used for key prefixing).
-        - ``:param workers:`` Single-element list of worker names to scatter to.
-        - ``:return:`` Dict with ``future-info`` (legacy-shape scatter result  containing all partials' keys)
-            and ``precomputed`` (per-partial metadata for the topic handler).
+        Partial flavors: ``scalar`` (sum/prod/max/min: plain numbers/arrays,
+        one future key per reduction), ``mean`` (``{"n", "total"}`` dict,
+        combined with ``mean_agg``) and ``moment`` (``{"n", "total", "M"}``
+        dict for var/std, combined with ``moment_agg`` + sqrt). Returns the
+        legacy scatter result plus a ``precomputed`` map of ``output_key``
+        to ``{future, kind, shape, dtype, finalize}`` metadata so the topic
+        handler can reconstruct the right dask graph.
         """
         assert len(workers) == 1, "_scatter_partials expects a single target worker"
         target_worker = workers[0]
@@ -888,18 +872,10 @@ def _build_futures_payload(
 ) -> List[Dict[str, Any]]:
     """Build per-reduction ``futures`` entries for a precompute topic event.
 
-    One entry per reduction in ``meta`` (``{output_key: {future, shape, dtype,
-    kind?, finalize?, chunk_axis?}}``), carrying the partial's reduced
+    One entry per reduction in ``meta``, carrying the partial's reduced
     shape/dtype, the reduction's ``chunk_axis`` and the caller-provided
-    ``chunk_position``. Shared by :meth:`Bridge.send` (multi-bridge gather) and
-    :meth:`Bridge._direct_send` (single-bridge fast path) so both emit
-    byte-identical payloads.
-
-    - ``:param meta:`` Per-reduction precompute metadata
-        (``{output_key: {future, shape, dtype, kind?, finalize?, chunk_axis?}}``).
-    - ``:param chunk_position:`` The MPI coordinates of the bridge that
-        contributed this partial (used to rebuild the nested chunk-grid layout).
-    - ``:return:`` The ``futures`` payload list for the topic event.
+    ``chunk_position``; shared by multi-bridge gather and the single-bridge
+    fast path so both byte-identically shape the payload.
     """
     return [
         {

@@ -154,22 +154,11 @@ class BranchSpec:
 def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[BranchSpec]:
     """Merge two branch lists, deduping by ``output_key``.
 
-    Identical reduction signatures (same op, same axis -- e.g. two callbacks
-    both doing ``arr.sum()``) carry the SAME ``output_key`` and are
-    semantically identical: one branch, one bridge execution, shared by every
-    callback's dispatch view. Distinct keys (different reductions) all
-    survive intact.
-
-    A same-key branch whose RUNTIME dispatch signature differs (e.g. a
-    window-read ``x[-1].sum()`` vs a true ``x.sum(axis=0)`` -- both chunk
-    over axis 0 but deliver different shapes) can never be shared: one of the
-    two callbacks would receive the other's result. Refusing loudly at
-    registration beats silently delivering a wrong number.
-
-    - ``:param existing:`` The previously registered branches for an array.
-    - ``:param new:`` The newly analyzed branches for the same array.
-    - ``:return:`` The merged list (order: existing first, then new keys).
-    - ``:raises PrecomputeRuntimeError:`` On a same-key/different-signature collision.
+    Identical signatures (same op, same axis) share one bridge execution;
+    same key with a DIFFERENT runtime dispatch signature (e.g. a window
+    read vs. a true axis reduction over the same axis) always raises
+    :class:`PrecomputeRuntimeError` -- the two deliver different shapes and
+    sharing them silently delivers one callback the other one's result.
     """
     merged = list(existing)
     seen: Dict[str, BranchSpec] = {b.output_key: b for b in merged}
@@ -193,19 +182,12 @@ def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[Br
 
 
 def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True):
-    """
-    Analyze the callback's source and build a list of :class:`BranchSpec` objects describing the chunk-local
-    sub-expressions the bridge can execute.
+    """Analyze the callback's source and build a list of :class:`BranchSpec` objects.
 
-    The callback is NOT executed: the AST is parsed and walked symbolically to find compute boundaries
-    (.compute(), client.compute(), etc.) and the dask arrays they reference.
-
-    - ``:param callback:`` The callback function to analyze.
-    - ``:param registered_arrays:`` Mapping of array name -> dask array (or placeholder) for all registered arrays.
-    - ``:param precompute:`` If False, log warnings instead of raising on
-         analysis errors. Defaults to True.
-    - ``:return:`` List of BranchSpec objects (empty if analysis fails
-         or no reductions are detected).
+    Each spec describes a chunk-local sub-expression the bridge can
+    execute. The callback is NOT executed: the AST is parsed and walked
+    symbolically to find compute boundaries (``.compute()``,
+    ``client.compute()``, ...) and the dask arrays they reference.
     """
 
     # Build a dask array stub matching the registered array's shape/chunks so the symbolic AST walker has something
@@ -357,26 +339,7 @@ def _combine_two_phase(
     out_dtype: str,
     finalize: Optional[str],
 ) -> np.ndarray:
-    """Combine per-bridge partials into the final, correctly-shaped reduction.
-
-    ``flat_entries`` is ``[(chunk_position, partial_value), ...]`` where the
-    partial values (dicts for mean/moment, plain arrays/scalars for scalar
-    kind) have already been resolved by the scheduler.
-
-    Phase A: for each kept-grid coordinate, aggregate the sub-nest over the
-    RED grid levels (levels whose data axis is in ``red_axes``):
-    - mean/moment: ``mean_agg`` / ``moment_agg`` with ``axis=red_axes`` (the
-      DATA axes being reduced -- ``_concatenate2`` walks the nest level by
-      level and the level axis equals the data axis for our grid layout);
-    - scalar: fold the plain partial arrays with the op's binary ufunc.
-
-    Phase B: np.concatenate the Phase-A results along each KEPT data axis in
-    kept-level order (nesting order == data-axis order guarantees contiguity).
-
-    The returned array's shape automatically equals the kept axes' full
-    global extents; scalar partials carry their own dims and mean/moment
-    aggregators collapse the reduced axes.
-    """
+    """Combine per-bridge partials into the final, correctly-shaped reduction."""
     by_coord = {tuple(c): v for c, v in flat_entries}
 
     def _full_coord(kept_coord: Tuple[int, ...], red_coord: Tuple[int, ...]) -> Tuple[int, ...]:
@@ -446,34 +409,7 @@ def _combine_array_from_partials(
     global_shape: Optional[Tuple[int, ...]] = None,
     grid_extent: Optional[Tuple[int, ...]] = None,
 ) -> Any:
-    """Build a single-block dask array that combines per-bridge partials.
-
-    The two-phase, data-axis-ordered combine (``_combine_two_phase``)
-    aggregates the partials over the RED grid levels (data axes in
-    ``hint_axis``) and concatenates the results over the KEPT levels, so the
-    output is the FINAL correctly-shaped reduction -- unlike the previous
-    all-grid nest, which could only express full reductions.
-
-    - ``:param partials:`` One entry per (bridge, reduction): the payload
-      dicts from the topic event, each carrying ``future`` / ``shape`` /
-      ``dtype`` / ``chunk_position`` / ``chunk_axis``.
-    - ``:param kind:`` ``"mean"`` / ``"moment"`` (dict-blob partials) or
-      ``"scalar"`` (plain arrays -- axis reductions only; full scalar
-      reductions stay on the ``da.stack`` path in the topic handler).
-    - ``:param finalize:`` ``"sqrt"`` for std, else ``None``.
-    - ``:param hint_axis:`` The chunk's reduction axes (data axes). ``None``
-      or a tuple covering all data axes means a full reduction.
-    - ``:param array_ndim:`` The registered array's dimensionality.
-    - ``:param op_name:`` Canonical op name (``sum``/``mean``/...); required
-      for scalar-kind folding.
-    - ``:param global_shape:`` The array's full global shape; used for the
-      combine's output shape. Falls back to the per-bridge partial shape when
-      omitted (legacy callers, full reductions).
-    - ``:param grid_extent:`` Per-data-axis chunk grid extent from the
-      metadata (``global_shape[i] // chunk_shape[i]``); validated against the
-      partials' positions when provided (F5).
-    - ``:return:`` A dask array via ``da.from_delayed``.
-    """
+    """Build a single-block dask array that combines per-bridge partials."""
     if not partials:
         raise ValueError("_combine_array_from_partials: no partials provided")
     nested, grid_shape = _nest_partial_dicts_by_grid(partials, grid_extent=grid_extent)
@@ -532,14 +468,7 @@ def _discover_partial_metadata(
     placeholder: Optional[Any],
     branch: Dict[str, Any],
 ) -> Tuple[Tuple[int, ...], str]:
-    """Run ``branch_func`` on the placeholder and return ``(partial_shape, partial_dtype)``.
-
-    Used by :func:`_build_branch`. Structural inspection only:
-    ``branch_func`` is a numpy op / chain composition, not the user callback, so calling it has no side effects.
-    ``mean``/``moment`` branch_funcs return a dict; the per-key reduced shape is taken from ``total`` (fallback
-    ``M``, else first key). Without a placeholder, falls back to the branch ``shape``/``dtype`` (``shape`` unset by
-    the analyzer -> ``()``/``float64``, overwritten by the bridge at run time).
-    """
+    """Run ``branch_func`` on the placeholder and return ``(partial_shape, partial_dtype)``."""
     if placeholder is None:
         partial_shape: Tuple[int, ...] = tuple(branch.get("shape") or ())
         partial_dtype = str(branch.get("dtype", "float64"))
@@ -564,35 +493,7 @@ def _discover_partial_metadata(
 
 
 def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True) -> List[BranchSpec]:
-    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch.
-
-    Every reduction branch becomes one :class:`BranchSpec`. For each branch, the chain walker (``_walk_chain``)
-    inspects the registered dask array's task graph and, if the reduction's chunk has a single-input upstream chain of
-    pointwise layers, **folds the chain into one branch**. The branch_func applies every chain layer to the chunk on the
-    bridge side and ships a single (small) partial instead of relying on dask workers to re-run the chunk pointwise
-    chain.
-
-    Folding is opportunistic. If ``_walk_chain`` returns ``None`` for a branch (cross-array upstream, scalar constant,
-    non-Blockwise upstream, etc.) the branch degrades to the length-1 path: just the reduction's chunk_func.
-    The chain walker only adds coverage, it never removes it.
-
-    Parameters
-    ----------
-    callback : Callable
-        The user's callback function. Not invoked.
-    registered_arrays : Dict[str, Any]
-        Mapping of name -> dask array (or other placeholder) for each registered array. Dask arrays become the roots of
-        the task graph walk. Non-dask values are treated as opaque helpers (their attributes may be read for
-        opaque-resolvable branches).
-    precompute : bool
-        If False, skip unresolvable reductions with a warning instead of raising.
-        Matches :func:`analyze_callback`'s ``precompute`` semantics.
-
-    Returns
-    -------
-    One BranchSpec per detected reduction. Empty list if the callback contains no chunk-local precomputable
-    operations.
-    """
+    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch."""
     # Single AST walk: analyze_callback returns BOTH the reduction hints AND the
     # walker's dask_arrays in one pass. (Calling the hints-extraction and the
     # walker separately would parse + walk the callback's AST twice.) The
@@ -855,19 +756,7 @@ def _try_chain_branch(
     aggregate_candidates: Dict[Tuple[str, str], List[Tuple[str, Any]]],
     seen_chains: Dict[Tuple[str, int], Any],
 ) -> Optional[BranchSpec]:
-    """Try to fold the branch's reduction into a chain-folded BranchSpec.
-
-    Folding must use the aggregate layer that belongs to THIS branch:
-    the hint carries its canonical op name (``op_name``) and its source
-    array (``array_name``), and we match the (array_name, op_name) pair
-    against the candidate aggregate layers collected from all walker
-    graphs. Zero candidates (no foldable graph) or more than one
-    (duplicate op across boundaries, e.g. two ``sum`` reductions on the
-    same array) make the assignment ambiguous, so folding is refused and
-    the caller falls back to the length-1 path, which computes the
-    branch's OWN ``chunk_func``. Cross-array / constant upstreams also
-    return ``None`` via ``_walk_chain``.
-    """
+    """Try to fold the branch's reduction into a chain-folded BranchSpec."""
     op_name = branch.get("op_name")
     array_name = branch.get("array_name")
     if op_name is None:
@@ -1035,15 +924,7 @@ def _build_branch(
 
 
 def _walk_chain(graph, agg_name: str) -> Optional[List[Tuple[Callable, dict, int]]]:
-    """Walk from a chunk layer back to the placeholder root.
-
-    Returns a list of ``(func, kwargs, input_count)`` triples in root-to-chunk order, or ``None`` if the chain can't be
-    folded (cross-array, scalar constants, non-Blockwise upstream, etc.).
-
-    The returned chain is built entirely from the dask task graph. No task is ever executed.
-    ``input_count`` records how many upstream references the layer has: 1 for a normal single-input pointwise op,
-    2 for a self-referential op like ``arr * arr``.
-    """
+    """Walk from a chunk layer back to the placeholder root."""
     if not _is_aggregate_layer(agg_name):
         return None
     # Match the chunk layer via the dedicated chunk/aggregate pairs (mean_chunk / mean_agg, chunk_max / max,

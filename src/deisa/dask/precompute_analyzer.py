@@ -26,20 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-"""
-Compute-boundary precompute analyzer (no AST pattern matching, no callback execution).
-
-The analyzer finds "compute boundaries" in the user's callback source -- points where a dask array is forced to
-materialize (.compute(), client.compute(...), client.submit(...), np.array(...), etc.) -- and walks each dask array's
-task graph to discover the reductions that should run locally on the bridge before the data is scattered.
-
-The approach is generic: the analyzer never enumerates reduction methods (arr.sum, da.sum, etc.). It just builds the
-dask graph lazily (dask operations are not executed) and hands the resulting dask array to
-:func:`deisa.dask.task_branches.extract_reduction_hints`, which walks the graph.
-
-Hard contract: **the user's callback is never invoked during analysis.** All "evaluation" is symbolic: dask operations
-on dask arrays are lazy and return new dask arrays, never running tasks.
-"""
+"""Compute-boundary precompute analyzer (no AST pattern matching, no callback execution)."""
 
 from __future__ import annotations
 
@@ -68,14 +55,9 @@ class PrecomputeError(Exception):
 class UnsupportedReductionError(PrecomputeError):
     """A reduction is present but its input expression cannot be traced back to a dask array.
 
-    Example: ``da.sum(opaque_object)``, or a custom function wrapping a reduction.
-    """
-
-
-class OpaqueParameterError(PrecomputeError):
-    """A reduction's input depends on a parameter that is not (and cannot be derived from) a dask array.
-
-    Example: ``da.sum(f * v2)`` where ``v2`` is built from a config object we can't trace.
+    Covers opaque operands (``da.sum(opaque_object)``), wrapped reductions
+    (a custom function around a dask call), and untraceable parameters
+    (``da.sum(f * v2)`` where ``v2`` is derived from a config object).
     """
 
 
@@ -124,19 +106,14 @@ class NoComputeBoundaryError(PrecomputeError):
 # Source-array attribution
 # ---------------------------------------------------------------------------
 def _match_source_arrays(darr: Any, registered_arrays: Dict[str, Any]) -> List[str]:
-    """Return the list of registered array names whose stub layer appears in
-    the expression's task graph (empty when the expression does not descend
-    from any registered array, e.g. a ``da.zeros`` created inside the callback).
+    """Return the registered array names whose stub layer appears in the expression's task graph.
 
-    The fallback used when no stub matches is the caller's own ``primary_name``
-    (first registered array name); this function no longer returns it because
-    every call site recomputed it anyway.
-
-    Stubs are created with a unique dask layer-name tag (``deisa-stub-<name>``, see
-    :mod:`deisa.dask.branch`), so graph-layer membership reliably attributes an
-    expression to its source array even when two registered arrays share identical
-    metadata (two plain ``da.zeros`` with the same shape/chunks collapse to one dask
-    name).
+    Only stub-tagged layers attribute the expression to a source array
+    (an empty result covers e.g. a ``da.zeros`` created inside the
+    callback). Stubs carry a unique layer-name tag ``deisa-stub-<name>`` so
+    graph-layer membership attributes an expression to its source array
+    even when two registered arrays would otherwise collapse to one dask
+    name (identical metadata).
     """
     layers: set = set()
     try:
@@ -155,24 +132,7 @@ def analyze_callback(
     helpers: Optional[Dict[str, Callable]] = None,
     precompute: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Analyze the callback's source to find all reducible operations.
-
-    - ``:param callback:`` The user's callback function. **Not invoked.**
-    - ``:param registered_arrays:`` Mapping of name -> value. Values that are :class:`dask.array.Array` are the actual
-      arrays the callback receives; any other value is treated as an opaque helper (e.g. a config object) whose
-      attributes can be read at analysis time.
-    - ``:param helpers:`` Optional mapping of function name -> function object for helper functions defined in another
-      module (or to disambiguate same-file helpers). Helpers not listed here are also resolved by walking the callback's
-      source file.
-    - ``:param precompute:`` If False, skip unresolvable reductions with a warning instead of raising.
-    - ``:return:`` Tuple ``(hints, dask_arrays)``. ``hints`` is the list of branch dicts (the schema from
-      :mod:`deisa.dask.task_branches`); ``dask_arrays`` is the AST walker's snapshot. Each entry in the ``dask_arrays``
-      list is ``{"array": darr, "kind": "compute"|"client.compute"|..., "lineno": int}`` -- ``darr`` is the dask
-      expression the walker built at that compute boundary (e.g. ``(arr*arr).sum()``). This is the graph the chain
-      walker in :mod:`deisa.dask.branch` needs to fold multi-layer pointwise chains; the registered placeholders' graphs
-      only have the root layer, not the chain.
-    - ``:raises PrecomputeError:`` On any unresolvable reduction (unless ``precompute=False``).
-    """
+    """Analyze the callback's source to find all reducible operations."""
     try:
         hints, err, dask_arrays = _analyze_callback(callback, registered_arrays, helpers)
     except PrecomputeError as e:
@@ -193,13 +153,7 @@ def _analyze_callback(
     registered_arrays: Dict[str, Any],
     helpers: Optional[Dict[str, Callable]],
 ) -> tuple[List[Dict[str, Any]], Optional[PrecomputeError], List[Dict[str, Any]]]:
-    """Internal worker for :func:`analyze_callback` that never swallows errors.
-
-    Returns ``(hints, last_error, dask_arrays)``. The caller decides how to surface the error: ``precompute=False``
-    warnings or normal raises. ``dask_arrays`` is the ``_BoundaryWalker.dask_arrays`` snapshot. The dask expressions the
-    walker built at each compute boundary, each ``{"array": darr, "kind": ..., "lineno": ...}``. Callers that only need
-    hints can ignore it; chain-folding callers in :mod:`deisa.dask.branch` consume it.
-    """
+    """Internal worker for :func:`analyze_callback` that never swallows errors."""
     # 1. Parse callback source
     callback_src = _get_source(callback)
     callback_tree = ast.parse(callback_src)
@@ -395,12 +349,7 @@ class _Scope:
 
 
 class _Missing:
-    """Sentinel for unbound names.
-
-    Behaves as a transparent placeholder in arithmetic and subscript operations: most ops return another ``_Missing``
-    so callers can chain through without erroring. Attribute/subscript access on a ``_Missing`` returns another
-    ``_Missing``. This lets callbacks with closure variables (e.g. a counter dict) be analyzed without raising.
-    """
+    """Sentinel for unbound names."""
 
     __slots__ = ("name",)
 
@@ -955,16 +904,7 @@ class _BoundaryWalker:
         return fn(operand)
 
     def _boolop(self, op: ast.AST, values: List[Any], scope: _Scope) -> Any:
-        """Evaluate ``and``/``or`` with three-valued logic.
-
-        Unknown operands (``_Missing``, dask arrays, anything ``_truthy``
-        cannot decide) propagate as UNKNOWN (``None``) instead of collapsing to
-        an assumed result -- the old code returned ``True`` for ``And`` and
-        ``False`` for ``Or``, silently picking the branch the analysis cannot
-        actually decide, while ``ast.If`` walks BOTH branches on unknown.
-        Returning ``None`` keeps the walker consistent: an unknown guard makes
-        both branches explored rather than emitting a wrong hint.
-        """
+        """Evaluate ``and``/``or`` with three-valued logic."""
         saw_unknown = False
         if isinstance(op, ast.And):
             for v in values:
