@@ -189,6 +189,13 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
     execute. The callback is NOT executed: the AST is parsed and walked
     symbolically to find compute boundaries (``.compute()``,
     ``client.compute()``, ...) and the dask arrays they reference.
+
+    ``precompute`` is a passthrough toggle for the fallback machinery that
+    registration never needs removed: the only production caller is
+    ``Deisa._register_callback_impl``, which calls this with
+    ``precompute=True`` from the sole branch where the analysis runs at all
+    (``precompute=False`` short-circuits the analysis there). Tests exercise
+    the explicit fallback behavior with ``precompute=False``.
     """
 
     # Build a dask array stub matching the registered array's shape/chunks so the symbolic AST walker has something
@@ -491,7 +498,12 @@ def _discover_partial_metadata(
 
 
 def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True) -> List[BranchSpec]:
-    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch."""
+    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch.
+
+    ``precompute=False`` is the permissive fallback mode and is exercised
+    directly by tests only; production analysis is registration-strict
+    (``precompute=True``).
+    """
     # Single AST walk: analyze_callback returns reduction hints AND the walker's dask_arrays in one pass. The
     # dask_arrays are the walker's expressions at each compute boundary (e.g. ``(arr*arr).sum()``); the registered
     # placeholders only have the root layer, so the chain walker needs these.
