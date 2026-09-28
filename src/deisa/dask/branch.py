@@ -203,7 +203,7 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
     return _analyze_branch(callback, registered_arrays=stubs)
 
 
-# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for Phase A of the axis combine: scalar-axis partials
+# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for the first combine stage: scalar-axis partials
 # are plain arrays (reduced axes already dropped), combined by binary-ufunc fold over identical shapes.
 _SCALAR_FOLDS = {
     "sum": lambda entries: np.sum(entries, axis=0),
@@ -326,7 +326,7 @@ def _combine_two_phase(
         ax = red_axes[idx]
         return [_build_sub(idx + 1, red_prefix + (i,), kept_coord) for i in range(grid_shape[ax])]
 
-    phase_a: Dict[Tuple[int, ...], np.ndarray] = {}
+    per_kept_coord: Dict[Tuple[int, ...], np.ndarray] = {}
     for kept_coord in itertools.product(*(range(grid_shape[ax]) for ax in kept_axes)):
         sub = _build_sub(0, (), kept_coord)
         if kind in ("mean", "moment"):
@@ -334,7 +334,7 @@ def _combine_two_phase(
                 res = mean_agg(sub, dtype=np.dtype(out_dtype), axis=red_axes)
             else:
                 res = moment_agg(sub, order=2, ddof=0, dtype=np.dtype(out_dtype), axis=red_axes)
-            phase_a[kept_coord] = np.asarray(res)
+            per_kept_coord[kept_coord] = np.asarray(res)
         elif kind == "scalar":
             fold = _SCALAR_FOLDS.get(op_name or "")
             if fold is None:
@@ -343,22 +343,22 @@ def _combine_two_phase(
             res = np.asarray(fold(entries))
             # Scalar chunk funcs run with keepdims=True (dask's chunk stage), so the RED axes survive as size-1 dims at
             # their data positions. Drop them so the combined result's shape matches the declared kept-extent out_shape
-            # (and Phase B concatenates cleanly).
+            # (and concatenates cleanly).
             for ax in sorted(red_axes, reverse=True):
                 res = np.squeeze(res, axis=ax)
-            phase_a[kept_coord] = res
+            per_kept_coord[kept_coord] = res
         else:
             raise PrecomputeRuntimeError(f"_combine_two_phase: unknown kind {kind!r}")
 
-    # Phase B: concatenate along kept levels; no kept axes -> single result.
+    # Second stage: concatenate the per-kept-coordinate results along the kept levels; no kept axes -> single result.
     if not kept_axes:
-        result = phase_a[()]
+        result = per_kept_coord[()]
     else:
         kept_grid_shape = tuple(grid_shape[ax] for ax in kept_axes)
 
         def _build_kept_grid(idx: int, prefix: Tuple[int, ...]) -> Any:
             if idx == len(kept_axes):
-                return phase_a[prefix]
+                return per_kept_coord[prefix]
             return [_build_kept_grid(idx + 1, prefix + (i,)) for i in range(kept_grid_shape[idx])]
 
         result = _concat_kept_grid(_build_kept_grid(0, ()), 0)

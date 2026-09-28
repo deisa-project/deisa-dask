@@ -436,7 +436,7 @@ class TestPrecomputeMemory:
         (2, 1) grid.
 
                 ``mean(axis=0)`` reduces over the 2 row-strips (red grid level 0, kept level extent 1); ``sum(axis=1)``
-                keeps grid level 0 (Phase B concatenation over the 2 row-strips along data axis 0). A crash or a
+                keeps grid level 0 (second combine stage concatenates the 2 row-strips along data axis 0). A crash or a
                 silently wrong shape/value here means the red/kept-level geometry was misread.
         """
         client, cluster = env_setup_2workers
