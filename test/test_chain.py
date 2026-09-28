@@ -28,8 +28,7 @@ from deisa.dask.branch import (
 def _make_callback(name: str, body: str) -> Callable:
     """Compile a small snippet ``def <name>(arr): <body>`` and return it.
 
-    Mirrors the helper used in test_precompute.py so ``analyze_callback``
-    can walk the source if needed.
+    Mirrors the helper used in test_precompute.py so ``analyze_callback`` can walk the source if needed.
     """
     src = textwrap.dedent(f"def {name}(arr):\n{textwrap.indent(body, '    ')}")
     scope: Dict[str, Any] = {}
@@ -261,8 +260,7 @@ class TestFindSingleUpstream:
 class TestAnalyzeBranchLength1:
     def test_analyze_branch_emits_branches(self):
         """analyze_branch produces length-1 branches for the
-        per-reduction path. The chain walker folds multi-layer chains
-        into a single branch_func.
+        per-reduction path. The chain walker folds multi-layer chains into a single branch_func.
         """
         from deisa.dask.branch import _analyze_branch
 
@@ -301,10 +299,9 @@ class TestAnalyzeBranchLength1:
 # ---------------------------------------------------------------------------
 class TestMultiReductionBranches:
     """Chain folding is hint-aware: a hint must be folded with the aggregate
-    layer of its OWN reduction, never the first aggregate of the first walked
-    graph. Regression for the aggregate-mismatch bug where
-    ``s=arr.sum(); m=arr.mean(); mx=arr.max()`` folded the SUM chain into all
-    three branches (f-mean and f-max then shipped wrong partials).
+    layer of its OWN reduction, never the first aggregate of the first walked graph. Regression for the
+    aggregate-mismatch bug where ``s=arr.sum(); m=arr.mean(); mx=arr.max()`` folded the SUM chain into all three
+    branches (f-mean and f-max then shipped wrong partials).
     """
 
     def _analyze(self, body: str) -> Dict[str, Any]:
@@ -526,11 +523,10 @@ def test_merge_branches_dedup_same_key_keeps_all_distinct_keys() -> None:
 def test_merge_branches_refuses_same_key_different_signature() -> None:
     """Merging a same-key/different-signature collision must raise.
 
-    A window read ``x[-1].sum()`` and a true ``x.sum(axis=0)`` can both carry
-    ``f-sum`` from different callbacks (each starts a fresh per-callback seen
-    map); their runtime dispatch signatures (() vs (0,)) differ, so a single
-    shared branch cannot serve both callbacks. Refusing loudly at
-    registration beats silently delivering one callback the other's result.
+    A window read ``x[-1].sum()`` and a true ``x.sum(axis=0)`` can both carry ``f-sum`` from different callbacks (each
+    starts a fresh per-callback seen map); their runtime dispatch signatures (() vs (0,)) differ, so a single shared
+    branch cannot serve both callbacks. Refusing loudly at registration beats silently delivering one callback the
+    other's result.
     """
     from deisa.dask.branch import merge_branches
     from deisa.dask.precompute_analyzer import PrecomputeRuntimeError

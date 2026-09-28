@@ -29,28 +29,23 @@
 """
 Extract reduction hints from a dask array's task graph.
 
-Given a dask array whose graph contains reductions (sum, mean, std, var, max,
-min, prod), walk the graph layers to find the aggregate layer and the matching
-chunk layer, then build a branch dict the bridge can execute on a local numpy
+Given a dask array whose graph contains reductions (sum, mean, std, var, max, min, prod), walk the graph layers to find
+the aggregate layer and the matching chunk layer, then build a branch dict the bridge can execute on a local numpy
 chunk before scattering.
 
-branch schema (the contract between the analytics side (precompute analyzer) and
-the bridge side (local chunk execution)):
+branch schema (the contract between the analytics side (precompute analyzer) and the bridge side (local chunk
+execution)):
 
 .. code-block:: python
 
-    {
-        "output_key": "fdistribu-sum",  # unique key for this reduction
-        "op_name": "sum",  # canonical op name
-        "chunk_func_pickle": ...,  # pickle of the chunk callable
-        "chunk_kwargs": {...},  # kwargs for the chunk callable
-        "finalize": "sqrt" | None,  # post-step (sqrt for std)
-        "array_name": "a",  # registered array the reduction descends from
-        "multi_source": False,  # True when the expression descends from >1 registered array
-    }
+{
+        "output_key": "fdistribu-sum", # unique key for this reduction "op_name": "sum", # canonical op name
+        "chunk_func_pickle": ..., # pickle of the chunk callable "chunk_kwargs": {...}, # kwargs for the chunk callable
+        "finalize": "sqrt" | None, # post-step (sqrt for std) "array_name": "a", # registered array the reduction
+        descends from "multi_source": False, # True when the expression descends from >1 registered array
+}
 
-This module is purely about reading the dask graph; it never executes user
-callbacks.
+This module is purely about reading the dask graph; it never executes user callbacks.
 """
 
 from __future__ import annotations
@@ -100,12 +95,10 @@ _REDUCTION_KIND = {
 def _axis_signature(axis) -> Tuple[int, ...]:
     """Sortable signature of the chunk's axis, used ONLY for output-key uniqueness.
 
-    Deliberately ndim-free: the chunk layer's axis is relative to the input
-    (root) array, but ``extract_reduction_hints`` sees the reduction OUTPUT's
-    ndim (0 for a scalar full reduction). Dask normalizes reduction axes to
-    non-negative before building the chunk layer, so no clamping is needed
-    here. Full reductions (``(0, 1)`` on 2-D) and explicit covers-all calls
-    share the signature --- they are semantically identical.
+    Deliberately ndim-free: the chunk layer's axis is relative to the input (root) array, but
+    ``extract_reduction_hints`` sees the reduction OUTPUT's ndim (0 for a scalar full reduction). Dask normalizes
+    reduction axes to non-negative before building the chunk layer, so no clamping is needed here. Full reductions
+    (``(0, 1)`` on 2-D) and explicit covers-all calls share the signature --- they are semantically identical.
     """
     if axis is None:
         return ()
@@ -117,15 +110,12 @@ def _axis_signature(axis) -> Tuple[int, ...]:
 def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
     """Normalize a reduction axis to a signature tuple used for dispatch.
 
-    ``None`` (full reduction with no explicit axis) and an axis that covers
-    ALL data axes (dask's chunk layer always carries the full axis tuple for
-    a no-axis call, e.g. ``(0, 1)`` for a 2-D ``arr.sum()``) both map to the
-    empty tuple ``()`` -- they are the same reduction. Any partial axis maps
-    to its sorted tuple of non-negative axes.
+    ``None`` (full reduction with no explicit axis) and an axis that covers ALL data axes (dask's chunk layer always
+    carries the full axis tuple for a no-axis call, e.g. ``(0, 1)`` for a 2-D ``arr.sum()``) both map to the empty
+    tuple ``()`` -- they are the same reduction. Any partial axis maps to its sorted tuple of non-negative axes.
 
-    - ``:param axis:`` ``None``, an int, or a tuple/list of ints.
-    - ``:param ndim:`` The reduced array's dimensionality.
-    - ``:return:`` ``()`` for the full reduction, else the sorted axis tuple.
+    - ``:param axis:`` ``None``, an int, or a tuple/list of ints. - ``:param ndim:`` The reduced array's
+    dimensionality. - ``:return:`` ``()`` for the full reduction, else the sorted axis tuple.
     """
     if axis is None:
         return ()
@@ -150,11 +140,9 @@ def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
 def _is_window_read_index(index) -> bool:
     """True when ``index`` selects a whole row-plane (the ``param[-1]`` idiom).
 
-    An int, or a tuple whose first element is an int and every other element
-    is a full slice (``slice(None)`` / ``None``). This is the shape produced
-    by ``stub[-1]`` / ``stub[-1, :]``; ``stub[2:5]`` (slice first), ``stub[:,
-    0]`` (int in a non-first position) and ``stub[-1, 0]`` (int in a
-    non-first position as well) are NOT window reads.
+    An int, or a tuple whose first element is an int and every other element is a full slice (``slice(None)`` /
+    ``None``). This is the shape produced by ``stub[-1]`` / ``stub[-1, :]``; ``stub[2:5]`` (slice first), ``stub[:,
+    0]`` (int in a non-first position) and ``stub[-1, 0]`` (int in a non-first position as well) are NOT window reads.
     """
     if isinstance(index, (int, np.integer)):
         return True
@@ -175,8 +163,7 @@ def _is_window_read_layer(layer) -> bool:
     """True when ``layer`` is a MaterializedLayer of ``getitem`` tasks whose
     index is a whole-row-plane selection (see :func:`_is_window_read_index`).
 
-    Every task in the layer must be a window-read getitem; the layer must
-    read from exactly one upstream array.
+        Every task in the layer must be a window-read getitem; the layer must read from exactly one upstream array.
     """
     mapping = getattr(layer, "mapping", None)
     if mapping is None:
@@ -236,14 +223,12 @@ def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
     """True when the reduction's chunk stage reads the root through ONLY
     whole-row-plane getitem layers (the window-read idiom).
 
-    Walks upstream from ``chunk_layer_name``. Any layer that is neither the
-    reduction chunk stage nor a window-read getitem layer (a pointwise op, a
-    real slice, an unwalkable input, ...) makes the chain NOT a window read
-    (conservative: such chains are refused at registration anyway).
+        Walks upstream from ``chunk_layer_name``. Any layer that is neither the reduction chunk stage nor a window-read
+        getitem layer (a pointwise op, a real slice, an unwalkable input, ...) makes the chain NOT a window read
+        (conservative: such chains are refused at registration anyway).
 
-    - ``:param graph:`` The dask graph containing the reduction.
-    - ``:param chunk_layer_name:`` The reduction's chunk layer.
-    - ``:return:`` True only for ``root[-1].op()``-style expressions.
+        - ``:param graph:`` The dask graph containing the reduction. - ``:param chunk_layer_name:`` The reduction's
+        chunk layer. - ``:return:`` True only for ``root[-1].op()``-style expressions.
     """
     # Imported lazily to avoid a circular import at module load time (branch.py imports task_branches and defines
     # _find_single_upstream).
@@ -281,18 +266,15 @@ def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
 def _assign_output_key(array_name: str, op_name: str, axes_sig: Tuple[int, ...], seen: Dict) -> str:
     """Return a per-callback-unique ``output_key`` for one reduction.
 
-    The first occurrence of an op keeps the stable ``{array}-{op}`` key
-    (existing tests assert ``a-sum`` / ``f-sum`` / ``b-sum``); a later call
-    with a DIFFERENT axis signature appends a deterministic discriminator
-    (``-axis0``, ``-axis0x1``, ``-axisall`` for a second full reduction).
-    Two identical signatures (same op, same axis -- e.g. ``arr.sum()``
-    written twice) keep the SAME key: they are semantically identical and
-    dedup to one branch.
+    The first occurrence of an op keeps the stable ``{array}-{op}`` key (existing tests assert ``a-sum`` /
+    ``f-sum`` / ``b-sum``); a later call with a DIFFERENT axis signature appends a deterministic discriminator
+    (``-axis0``, ``-axis0x1``, ``-axisall`` for a second full reduction). Two identical signatures (same op, same
+    axis -- e.g. ``arr.sum()`` written twice) keep the SAME key: they are semantically identical and dedup to one
+    branch.
 
-    - ``:param seen:`` Mutable per-callback dict
-        ``{(array_name, op_name): {axes_sig: output_key}}`` shared across
-        every call of :func:`extract_reduction_hints` for one callback, so
-        keys stay unique across all compute boundaries of the callback.
+        - ``:param seen:`` Mutable per-callback dict ``{(array_name, op_name): {axes_sig: output_key}}`` shared
+        across every call of :func:`extract_reduction_hints` for one callback, so keys stay unique across all
+        compute boundaries of the callback.
     """
     per_op = seen.setdefault((array_name, op_name), {})
     if not per_op:
@@ -329,10 +311,9 @@ def _is_sqrt_layer(layer_name: str) -> bool:
 def _base_for_aggregate(layer_name: str) -> str:
     """Return the chunk-layer base name for a given aggregate layer.
 
-    For ``<base>-aggregate-<hash>`` returns ``<base>``. The chunk layer may
-    use a related base (e.g. ``mean_agg`` aggregate -> ``mean_chunk`` chunk
-    layer; ``max`` aggregate -> ``chunk_max`` chunk layer; ``min`` aggregate
-    -> ``chunk_min`` chunk layer).
+    For ``<base>-aggregate-<hash>`` returns ``<base>``. The chunk layer may use a related base (e.g. ``mean_agg``
+    aggregate -> ``mean_chunk`` chunk layer; ``max`` aggregate -> ``chunk_max`` chunk layer; ``min`` aggregate ->
+    ``chunk_min`` chunk layer).
     """
     base = layer_name.split("-aggregate-", 1)[0]
     return base
@@ -349,10 +330,9 @@ _CHUNK_BASE_FOR_AGG = {
 def _chunk_base_for_aggregate_base(agg_base: str) -> List[str]:
     """Return candidate chunk base names for an aggregate base.
 
-    The chunk layer and aggregate layer usually share a base (``sum``,
-    ``prod``, ``var``). The exceptions are reductions that use a
-    dedicated chunk/aggregate pair: ``mean`` (mean_chunk / mean_agg),
-    ``max`` (chunk_max / max), ``min`` (chunk_min / min).
+    The chunk layer and aggregate layer usually share a base (``sum``, ``prod``, ``var``). The exceptions are
+    reductions that use a dedicated chunk/aggregate pair: ``mean`` (mean_chunk / mean_agg), ``max`` (chunk_max / max),
+    ``min`` (chunk_min / min).
     """
     direct = agg_base
     special = _CHUNK_BASE_FOR_AGG.get(agg_base)
@@ -371,18 +351,14 @@ def _is_task(value: Any) -> bool:
 def _blockwise_indices_inputs(layer) -> Optional[Tuple[List[str], int, bool]]:
     """Parse a new-style Blockwise layer's ``indices``.
 
-    Returns ``(array_input_names, array_input_count, has_non_array_input)``,
-    or ``None`` if the layer has no ``indices`` (not a new-style Blockwise).
-    ``array_input_count`` counts the number of array-input references (so a
-    self-referential op like ``arr * arr`` yields count 2); ``names`` contains
-    one entry per array input. ``has_non_array_input`` is True when a scalar
-    constant (non-string-first-element index key) is present.
+    Returns ``(array_input_names, array_input_count, has_non_array_input)``, or ``None`` if the layer has no
+    ``indices`` (not a new-style Blockwise). ``array_input_count`` counts the number of array-input references (so a
+    self-referential op like ``arr * arr`` yields count 2); ``names`` contains one entry per array input.
+    ``has_non_array_input`` is True when a scalar constant (non-string-first-element index key) is present.
 
-    This is the shared primitive behind both
-    :func:`_blockwise_upstream_layer_names` (names only) and
-    :func:`deisa.dask.branch._find_single_upstream` (single distinct
-    upstream + array-input count + constant rejection), so the Blockwise
-    index-walking logic lives in one place.
+    This is the shared primitive behind both :func:`_blockwise_upstream_layer_names` (names only) and
+    :func:`deisa.dask.branch._find_single_upstream` (single distinct upstream + array-input count + constant
+    rejection), so the Blockwise index-walking logic lives in one place.
     """
     if not (hasattr(layer, "indices") and layer.indices):
         return None
@@ -462,9 +438,8 @@ def _aggregate_layer_func(layer) -> Optional[Any]:
 def _op_for_aggregate_layer(graph, layer_name: str) -> Optional[str]:
     """Return the canonical op name for an aggregate layer, matching hint extraction.
 
-    ``moment_agg`` is shared by var and std; the ``_sqrt`` poststep
-    disambiguates them exactly like :func:`extract_reduction_hints` does, so
-    chain folding selects the same op name the hint carries. Keeping this in
+    ``moment_agg`` is shared by var and std; the ``_sqrt`` poststep disambiguates them exactly like
+    :func:`extract_reduction_hints` does, so chain folding selects the same op name the hint carries. Keeping this in
     one place prevents the two op-naming paths from drifting.
     """
     agg_func = _aggregate_layer_func(graph.layers[layer_name])
@@ -481,11 +456,8 @@ def _op_for_aggregate_layer(graph, layer_name: str) -> Optional[str]:
 def _chunk_func_and_kwargs(chunk_layer) -> Optional[tuple]:
     """Return ``(func, kwargs)`` for a chunk layer.
 
-    Supports:
-    - the new dask task spec (Task objects): ``func`` and ``kwargs`` come
-      from the Task directly.
-    - the legacy tuple form: ``(func, args, kwargs)`` where ``func`` may be
-      a partial with extra keywords baked in.
+    Supports: - the new dask task spec (Task objects): ``func`` and ``kwargs`` come from the Task directly. - the legacy
+    tuple form: ``(func, args, kwargs)`` where ``func`` may be a partial with extra keywords baked in.
     """
     for value in chunk_layer.values():
         if _is_task(value):
@@ -502,24 +474,18 @@ def _chunk_func_and_kwargs(chunk_layer) -> Optional[tuple]:
 # ---------------------------------------------------------------------------
 def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
     """Locate the chunk-stage layer feeding ``layer_name`` from the
-    aggregate layer's OWN task references (Blockwise ``indices`` /
-    first-task args).
+    aggregate layer's OWN task references (Blockwise ``indices`` / first-task args).
 
-    The positional name match (``_find_chunk_layer``) returns the FIRST
-    graph layer whose stripped base matches the aggregate base, so in
-    ``arr.sum() + (arr - arr.mean()).sum()`` the second ``sum`` aggregate
-    resolved to the FIRST ``sum``'s chunk layer and the cross-reduction
-    guard inspected the wrong subgraph (ordering-dependent bypass).
-    Resolving via the aggregate's own upstream references is unambiguous:
-    a dask reduction's aggregate layer references exactly its own chunk
-    layer (``sum-aggregate-<h>`` -> ``sum-<h>``; ``mean_agg`` ->
-    ``mean_chunk``; ``max`` -> ``chunk_max``; ``moment_agg`` ->
-    ``moment_chunk``).
+    The positional name match (``_find_chunk_layer``) returns the FIRST graph layer whose stripped base matches the
+    aggregate base, so in ``arr.sum() + (arr - arr.mean()).sum()`` the second ``sum`` aggregate resolved to the FIRST
+    ``sum``'s chunk layer and the cross-reduction guard inspected the wrong subgraph (ordering-dependent bypass).
+    Resolving via the aggregate's own upstream references is unambiguous: a dask reduction's aggregate layer references
+    exactly its own chunk layer (``sum-aggregate-<h>`` -> ``sum-<h>``; ``mean_agg`` -> ``mean_chunk``; ``max`` ->
+    ``chunk_max``; ``moment_agg`` -> ``moment_chunk``).
 
-    Returns ``None`` when the aggregate references zero, or more than one
-    distinct, non-aggregate layer (not a standard reduction). Callers then
-    skip the branch, which surfaces as a no-hint refusal at registration
-    rather than a guessed chunk layer.
+    Returns ``None`` when the aggregate references zero, or more than one distinct, non-aggregate layer (not a standard
+    reduction). Callers then skip the branch, which surfaces as a no-hint refusal at registration rather than a guessed
+    chunk layer.
     """
     layer = graph.layers.get(layer_name)
     if layer is None:
@@ -534,8 +500,8 @@ def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
 def _find_chunk_layer(graph, agg_base: str) -> Optional[str]:
     """Locate the chunk layer that feeds the aggregate layer with the given base.
 
-    Matches candidate chunk base names (including the dedicated mean/max/min
-    chunk/aggregate pairs) and layers whose name starts with a candidate base.
+        Matches candidate chunk base names (including the dedicated mean/max/min chunk/aggregate pairs) and layers whose
+        name starts with a candidate base.
 
     Returns ``None`` if no matching chunk layer exists.
     """
@@ -565,28 +531,20 @@ def _serialize_func(func: Any) -> bytes:
 
 def _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name: str) -> set:
     """Walk back from ``chunk_layer_name`` through the graph's
-    Blockwise layers and return the names of any aggregate layers
-    (``-aggregate-`` in name) reachable from the chunk-stage's inputs.
+        Blockwise layers and return the names of any aggregate layers (``-aggregate-`` in name) reachable from the
+        chunk-stage's inputs.
 
-    For a chain like ``(arr - arr.mean()).sum()``:
-    - The outer ``sum`` aggregate's chunk-stage reads from a
-      ``subtract`` Blockwise
-    - That ``subtract`` Blockwise reads from ``arr`` AND from a
-      ``mean-aggregate-...`` layer (the inner reduction's output)
-    - So walking back from the outer chunk-stage reaches an aggregate
-      layer.
+    For a chain like ``(arr - arr.mean()).sum()``: - The outer ``sum`` aggregate's chunk-stage reads from a ``subtract``
+    Blockwise - That ``subtract`` Blockwise reads from ``arr`` AND from a ``mean-aggregate-...`` layer (the inner
+    reduction's output) - So walking back from the outer chunk-stage reaches an aggregate layer.
 
-    When this happens, computing the outer reduction locally on a
-    bridge would silently produce wrong results: the bridge doesn't
-    have the global mean, only its chunk's mean. The expression
-    requires data from **all bridges**, so we must refuse to
-    precompute it -- the legacy path (scatter full chunk, let dask
-    workers compute the expression correctly) is the only safe
-    behavior.
+        When this happens, computing the outer reduction locally on a bridge would silently produce wrong results: the
+        bridge doesn't have the global mean, only its chunk's mean. The expression requires data from **all bridges**,
+        so we must refuse to precompute it -- the legacy path (scatter full chunk, let dask workers compute the
+        expression correctly) is the only safe behavior.
 
-    Returns the set of aggregate-layer names reached (empty set if
-    none). Callers should refuse the entire dask expression when the
-    set is non-empty.
+        Returns the set of aggregate-layer names reached (empty set if none). Callers should refuse the entire dask
+        expression when the set is non-empty.
     """
     reachable_aggregates: set = set()
     visited: set = set()
@@ -615,16 +573,13 @@ def _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name: str) -> set:
 def _aggregate_output_feeds_other_reduction(graph, agg_layer_name: str) -> bool:
     """Return True if ``agg_layer_name``'s output feeds another reduction.
 
-    Walks forward from the aggregate's output through the layers consuming
-    it. If the output (or a pointwise layer derived from it) reaching another
-    ``-aggregate-`` layer, the aggregate participates in a DIFFERENT
-    reduction's chunk stage: its consumer needs the aggregate's GLOBAL
-    value, which a bridge cannot produce from its own chunk -- so the inner
-    reduction of a cross-reduction expression must be refused (mirror of
-    :func:`_chunk_inputs_reach_other_aggregate`, which detects the same
-    expression from the consumer's side). Returns False when the output
-    feeds only terminal layers, e.g. the once-combined sibling sums in
-    ``(arr*arr).sum() + arr.max()``.
+    Walks forward from the aggregate's output through the layers consuming it. If the output (or a pointwise layer
+    derived from it) reaching another ``-aggregate-`` layer, the aggregate participates in a DIFFERENT reduction's
+    chunk stage: its consumer needs the aggregate's GLOBAL value, which a bridge cannot produce from its own chunk --
+    so the inner reduction of a cross-reduction expression must be refused (mirror of
+    :func:`_chunk_inputs_reach_other_aggregate`, which detects the same expression from the consumer's side). Returns
+    False when the output feeds only terminal layers, e.g. the once-combined sibling sums in ``(arr*arr).sum() +
+    arr.max()``.
     """
     dependencies = getattr(graph, "dependencies", None)
     if dependencies is None:
@@ -649,8 +604,7 @@ def _aggregate_output_feeds_other_reduction(graph, agg_layer_name: str) -> bool:
 
 def _blockwise_upstream_layer_names(layer) -> List[str]:
     """Return the upstream layer names referenced by a Blockwise
-    layer's task. Falls back to scanning the first task's args if the
-    layer isn't a Blockwise.
+    layer's task. Falls back to scanning the first task's args if the layer isn't a Blockwise.
     """
     # New-style Blockwise: share the index-walking with _find_single_upstream.
     parsed = _blockwise_indices_inputs(layer)

@@ -47,21 +47,16 @@ def get_client(*args, **kwargs):
 
 def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
     """
-    Computes and returns an MPI Cartesian communicator based on the number of desired
-    Cartesian coordinate dimensions.
+    Computes and returns an MPI Cartesian communicator based on the number of desired Cartesian coordinate dimensions.
 
-    This function uses the MPI library to calculate and create a Cartesian communicator
-    from the global MPI communicator (MPI.COMM_WORLD). The dimensions of the Cartesian coordinate
-    grid are determined dynamically based on the size of the Cartesian coordinate dimensions
-    requested by the user and the size of the MPI communicator.
+        This function uses the MPI library to calculate and create a Cartesian communicator from the global MPI
+        communicator (MPI.COMM_WORLD). The dimensions of the Cartesian coordinate grid are determined dynamically based
+        on the size of the Cartesian coordinate dimensions requested by the user and the size of the MPI communicator.
 
 
-    ``:param cart_coord_dims:`` Number of Cartesian coordinate dimensions used to compute the
-        grid layout for the Cartesian communicator. Default is 1.
-    ``:type cart_coord_dims:`` int
-    ``:return:`` A new Cartesian communicator created from the MPI world communicator based
-        on the computed dimensions.
-    ``:rtype:`` mpi4py.MPI.Cartcomm
+    ``:param cart_coord_dims:`` Number of Cartesian coordinate dimensions used to compute the grid layout for the
+    Cartesian communicator. Default is 1. ``:type cart_coord_dims:`` int ``:return:`` A new Cartesian communicator
+    created from the MPI world communicator based on the computed dimensions. ``:rtype:`` mpi4py.MPI.Cartcomm
     """
     from mpi4py import MPI
 
@@ -128,28 +123,21 @@ def build_deisa_array(darr: da.Array, timestep: int) -> DeisaArray:
 class _PrecomputedDeisaArray(DeisaArray):
     """Per-callback dispatch view over the combined per-bridge partials.
 
-    The runtime delivers ONE combined dask array per reduction
-    (per ``output_key``). A callback's source is not rewritten, so its
-    reduction calls (``arr.sum()``, ``arr.mean()``, ...) must be routed to the
-    array the analyzer recorded for THAT callback and THAT reduction -- never
-    re-applied onto a wrong array. This view routes by the recorded
-    signature ``(op_name, normalized_axis)``:
+        The runtime delivers ONE combined dask array per reduction (per ``output_key``). A callback's source is not
+        rewritten, so its reduction calls (``arr.sum()``, ``arr.mean()``, ...) must be routed to the array the analyzer
+        recorded for THAT callback and THAT reduction -- never re-applied onto a wrong array. This view routes by the
+        recorded signature ``(op_name, normalized_axis)``:
 
-    - signature match + scalar FULL reduction (the per-bridge ``da.stack``):
-      re-apply the op over the stack via dask (the callback's op IS the
-      combine step);
-    - signature match + anything else (mean/moment, any axis reduction): the
-      stored array is already FINAL and correctly shaped -- return it
-      directly, neutralizing the callback's re-application (re-applying
-      ``.var()`` to a one-element array is mathematically forced ``0.0``);
-    - no match (an op the callback performs but was never recorded): raise a
-      typed error -- never silently mis-reduce.
+    - signature match + scalar FULL reduction (the per-bridge ``da.stack``): re-apply the op over the stack via dask
+    (the callback's op IS the combine step); - signature match + anything else (mean/moment, any axis reduction): the
+    stored array is already FINAL and correctly shaped -- return it directly, neutralizing the callback's
+    re-application (re-applying ``.var()`` to a one-element array is mathematically forced ``0.0``); - no match (an op
+    the callback performs but was never recorded): raise a typed error -- never silently mis-reduce.
 
-    Construction is a class-swap over a REAL ``DeisaArray`` built by
-    :func:`build_deisa_array` (see :func:`make_precomputed_view`): the
-    subclass adds only the seven reduction overrides and three dispatch
-    fields, so every dask-level attribute keeps its parent behavior without
-    duplicating the ``Array.__new__`` argument plumbing here.
+        Construction is a class-swap over a REAL ``DeisaArray`` built by :func:`build_deisa_array` (see
+        :func:`make_precomputed_view`): the subclass adds only the seven reduction overrides and three dispatch fields,
+        so every dask-level attribute keeps its parent behavior without duplicating the ``Array.__new__`` argument
+        plumbing here.
     """
 
     def _dispatch(self, op_name: str, axis, keepdims: bool):
@@ -226,13 +214,11 @@ def make_precomputed_view(
 ) -> _PrecomputedDeisaArray:
     """Build the per-callback dispatch view WITHOUT touching ``Array.__new__``.
 
-    Creates a genuine ``DeisaArray`` through :func:`build_deisa_array` (the
-    same factory every other delivery path uses), attaches the dispatch
-    fields, then transplants the view class onto the instance.
-    ``DeisaArray``/``dask.array.Array`` instances are plain objects whose
-    state lives in ``__dict__``, so the layout is identical across subclasses
-    and the swap is safe (dask itself returns plain ``Array`` instances when
-    a derived subclass cannot be preserved).
+    Creates a genuine ``DeisaArray`` through :func:`build_deisa_array` (the same factory every other delivery path
+    uses), attaches the dispatch fields, then transplants the view class onto the instance.
+    ``DeisaArray``/``dask.array.Array`` instances are plain objects whose state lives in ``__dict__``, so the layout is
+    identical across subclasses and the swap is safe (dask itself returns plain ``Array`` instances when a derived
+    subclass cannot be preserved).
     """
     if not isinstance(signatures, dict) or not signatures:
         got = f"{type(signatures).__name__}={signatures!r}"

@@ -34,9 +34,8 @@ META = {
 def _make_callback(name: str, body: str, params: str = "arr") -> Callable:
     """Compile a small snippet ``def <name>(<params>): <body>`` and return it.
 
-    Mirrors the helper in test_chain.py so ``analyze_callback`` can walk the source.
-    ``params`` defaults to the single-array signature; multi-array callbacks pass
-    ``params="arr_a, arr_b"``.
+    Mirrors the helper in test_chain.py so ``analyze_callback`` can walk the source. ``params`` defaults to the
+    single-array signature; multi-array callbacks pass ``params="arr_a, arr_b"``.
     """
     src = textwrap.dedent(f"def {name}({params}):\n{textwrap.indent(body, '    ')}")
     scope: Dict[str, Any] = {}

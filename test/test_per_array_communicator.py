@@ -207,8 +207,8 @@ class TestMultiBridge:
         """Two bridges, two arrays: one shared, one only on bridge 0.
 
         - temperature: both bridges declare it → sub-comm size 2 → gather
-        - pressure: only bridge 0 declares it → sub-comm size 1 on bridge 0
-          (fast-path), bridge 1 gets _COMM_NULL from Split and never sends.
+        - pressure: only bridge 0 declares it → sub-comm size 1 on bridge 0 (fast-path), bridge 1 gets _COMM_NULL
+        from Split and never sends.
         """
         client, cluster = env_setup
 
@@ -274,8 +274,7 @@ class TestMultiBridge:
     def test_single_owner_array_in_larger_comm(self, env_setup, comm_size):
         """One bridge owns a 'solo' array; all bridges share 'shared'.
 
-        The owner gets sub-comm size 1 for 'solo' → fast-path.
-        Non-owners get _COMM_NULL for 'solo' → never send it.
+        The owner gets sub-comm size 1 for 'solo' → fast-path. Non-owners get _COMM_NULL for 'solo' → never send it.
         'shared' uses the full comm → gather.
         """
         client, cluster = env_setup
@@ -328,8 +327,8 @@ class TestMultiBridge:
     def test_sub_comm_isolation(self, env_setup):
         """Sub-communicators for different arrays are independent.
 
-        With FakeComm.State(1), Split() still createsComm each
-        time, and each sub-comm has its own synchronization state.
+        With FakeComm.State(1), Split() still createsComm each time, and each sub-comm has its own synchronization
+        state.
         """
         env_setup  # use fixture
 

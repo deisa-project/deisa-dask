@@ -212,12 +212,10 @@ def test_compute_multiple_reductions() -> None:
 def test_same_op_different_axes_distinct_output_keys() -> None:
     """``arr.sum()`` + ``arr.sum(axis=0)`` must produce distinct output keys.
 
-    Both hints MUST carry distinct output keys: a bare
-    ``f"{array_name}-{op_name}"`` key would make the topic handler group
-    the two reductions into one and silently overwrite one of them
-    (``bridge.py`` indexes branches by ``output_key``). The full reduction
-    keeps the stable ``f-sum`` key (existing tests pin it); the axis
-    reduction gets a deterministic discriminator suffix.
+    Both hints MUST carry distinct output keys: a bare ``f"{array_name}-{op_name}"`` key would make the topic handler
+    group the two reductions into one and silently overwrite one of them (``bridge.py`` indexes branches by
+    ``output_key``). The full reduction keeps the stable ``f-sum`` key (existing tests pin it); the axis reduction gets
+    a deterministic discriminator suffix.
     """
     arr = _simple_stub()
     src = """
@@ -238,9 +236,8 @@ def test_same_op_different_axes_distinct_output_keys() -> None:
 def test_same_op_same_axis_keeps_single_output_key() -> None:
     """Two IDENTICAL reductions (``arr.sum()`` twice) keep ONE output key.
 
-    They are semantically identical: one branch, one bridge execution,
-    shared by every callback's dispatch view. Distinct keys would file two
-    branches that compute the same thing.
+    They are semantically identical: one branch, one bridge execution, shared by every callback's dispatch view.
+    Distinct keys would file two branches that compute the same thing.
     """
     arr = _simple_stub()
     src = """
@@ -512,9 +509,8 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
 def test_analyze_strict_raises(source, arr_factory, expected_exc) -> None:
     """``analyze_callback`` never swallows a refusal: it raises.
 
-    Opting out of precompute is a REGISTRATION-time decision
-    (``register(..., precompute=False)`` skips the analysis entirely);
-    the analyzer itself has no lenient mode.
+    Opting out of precompute is a REGISTRATION-time decision (``register(..., precompute=False)`` skips the analysis
+    entirely); the analyzer itself has no lenient mode.
     """
     arr = arr_factory()
     src = textwrap.dedent(source)
@@ -627,10 +623,9 @@ def test_gysela_measure_helper_loop() -> None:
 def test_unsupported_reduction_error(source, helper_src, check_msg) -> None:
     """A reduction depending on another reduction's aggregate must be refused.
 
-    The naive per-reduction hint extraction would emit both an ``f-mean`` and
-    an ``f-sum`` hint, but ``f-sum`` is WRONG in multi-bridge setups: the
-    bridge would compute ``(chunk - chunk.mean()).sum()`` locally, which is
-    always 0. We refuse the whole expression.
+    The naive per-reduction hint extraction would emit both an ``f-mean`` and an ``f-sum`` hint, but ``f-sum`` is WRONG
+    in multi-bridge setups: the bridge would compute ``(chunk - chunk.mean()).sum()`` locally, which is always 0. We
+    refuse the whole expression.
     """
     arr = _simple_stub()
     src = textwrap.dedent(source)
@@ -649,10 +644,8 @@ def test_unsupported_reduction_error(source, helper_src, check_msg) -> None:
 def test_independent_reductions_not_refused() -> None:
     """Two INDEPENDENT reductions on the same array must NOT be refused.
 
-    The walker only refuses when one reduction's chunk-stage depends
-    on ANOTHER reduction's aggregate layer. Two independent
-    reductions (no shared sub-expression) are emitted as separate
-    hints and precomputed independently.
+    The walker only refuses when one reduction's chunk-stage depends on ANOTHER reduction's aggregate layer. Two
+    independent reductions (no shared sub-expression) are emitted as separate hints and precomputed independently.
     """
     arr = _simple_stub()
     src = """
@@ -703,10 +696,9 @@ class _FakeGrid:
 class _FakeClient:
     """Stub for a distributed.Client.
 
-    The analyzer treats ``client.compute(...)`` and ``client.submit(...)`` as
-    compute boundaries; the receiver's actual class doesn't matter, just its
-    attributes. Returning ``None`` from these methods lets the analysis
-    continue without raising.
+    The analyzer treats ``client.compute(...)`` and ``client.submit(...)`` as compute boundaries; the receiver's actual
+    class doesn't matter, just its attributes. Returning ``None`` from these methods lets the analysis continue without
+    raising.
     """
 
     def compute(self, *args: Any, **kwargs: Any) -> None:

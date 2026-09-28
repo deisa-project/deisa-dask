@@ -88,8 +88,8 @@ def _scalar(value: Any) -> float:
 def test_map_blocks_opaque_lambda_refused():
     """``arr.map_blocks(lambda ...)`` cannot be precomputed: registration refuses.
 
-    An opaque callable cannot be resolved, so the reduction is not
-    precomputable — refuse rather than analyse the unmapped receiver.
+    An opaque callable cannot be resolved, so the reduction is not precomputable — refuse rather than analyse the
+    unmapped receiver.
     """
     with pytest.raises(NoPrecomputableReductionError):
         _analyze("y = arr.map_blocks(lambda b: b * 2)\ns = y.sum()\nreturn s.compute()")
@@ -98,8 +98,8 @@ def test_map_blocks_opaque_lambda_refused():
 def test_map_blocks_resolvable_function_uses_mapped_array():
     """``arr.map_blocks(np.abs).sum()`` sums the MAPPED chunks (real value).
 
-    The analyzed branch must run the resolvable func on each raw chunk;
-    ``branch_func`` of a ``-2`` chunk sums ``abs`` of it.
+    The analyzed branch must run the resolvable func on each raw chunk; ``branch_func`` of a ``-2`` chunk sums ``abs``
+    of it.
     """
     branches = _analyze("y = arr.map_blocks(np.abs)\ns = y.sum()\nreturn s.compute()")
     assert len(branches) == 1
@@ -125,9 +125,8 @@ def test_cross_reduction_with_added_mean_refused():
 def test_cross_reduction_ordering_dependent_bypass_refused():
     """``arr.sum() + (arr - arr.mean()).sum()`` is refused.
 
-    The second ``sum``'s guard must inspect ITS OWN subgraph (not the
-    first ``sum``'s, positionally): its chunk depends on ``mean_agg`` and
-    must be refused regardless of layer ordering.
+    The second ``sum``'s guard must inspect ITS OWN subgraph (not the first ``sum``'s, positionally): its chunk depends
+    on ``mean_agg`` and must be refused regardless of layer ordering.
     """
     with pytest.raises(UnsupportedReductionError):
         _analyze("s = arr.sum() + (arr - arr.mean()).sum()\nreturn s.compute()")
@@ -145,8 +144,7 @@ def test_sibling_reductions_still_emitted():
 def test_missing_comparison_walks_both_branches():
     """``if state > 3:`` (state unknown) walks BOTH branches.
 
-    Comparison on an unknown operand must degrade to UNKNOWN and walk both
-    branches, never crash the analysis.
+    Comparison on an unknown operand must degrade to UNKNOWN and walk both branches, never crash the analysis.
     """
     branches = _analyze("if state > 3:\n    s = arr.sum()\nelse:\n    m = arr.mean()\nreturn s.compute(), m.compute()")
     assert sorted(b.output_key for b in branches) == ["f-mean", "f-sum"]
@@ -155,8 +153,8 @@ def test_missing_comparison_walks_both_branches():
 def test_unbound_param_subscript_does_not_crash():
     """Subscripting an unbound callback parameter is opaque, not a crash.
 
-    ``_apply_subscript`` treats ``_UnboundParam`` as an opaque value;
-    the analysis degrades instead of raising ``TypeError``.
+    ``_apply_subscript`` treats ``_UnboundParam`` as an opaque value; the analysis degrades instead of raising
+    ``TypeError``.
     """
     branches = _analyze(
         "x = p[0]\ns = arr.sum()\nreturn s.compute()",
@@ -172,9 +170,8 @@ def test_unbound_param_subscript_does_not_crash():
 def test_partial_metadata_is_chunk_not_whole_array():
     """``arr.sum(axis=0)`` on an (8, 8) array with (4, 4) chunks records (1, 4).
 
-    The partial metadata describes ONE chunk's partial, not the whole
-    array: the value is shipped in the topic event and drives
-    ``da.from_delayed``/combine ``out_shape``.
+    The partial metadata describes ONE chunk's partial, not the whole array: the value is shipped in the topic event
+    and drives ``da.from_delayed``/combine ``out_shape``.
     """
     branches = _analyze("s = arr.sum(axis=0)\nreturn s.compute()")
     assert len(branches) == 1
@@ -234,9 +231,8 @@ def _make_deisa_stub() -> Deisa:
 def test_registration_success_stores_callback_payload():
     """A successful registration stores the payload in ``_callbacks``.
 
-    The topic handler can only fire a callback whose payload lives in
-    ``_callbacks``; it must be stored once every step that can raise
-    has succeeded.
+    The topic handler can only fire a callback whose payload lives in ``_callbacks``; it must be stored once every step
+    that can raise has succeeded.
     """
     d = _make_deisa_stub()
     cb = _make_callback("reg_ok", "s = arr.sum()\nreturn s.compute()")
@@ -257,9 +253,8 @@ def test_registration_success_stores_callback_payload():
 def test_registration_failure_leaves_no_trace():
     """A registration whose analysis raises leaks nothing.
 
-    ``_callbacks[callback_id]`` is written only AFTER the analysis; a
-    raising analysis must leave no half-registered entry that
-    ``unregister_callback`` could never reach.
+    ``_callbacks[callback_id]`` is written only AFTER the analysis; a raising analysis must leave no half-registered
+    entry that ``unregister_callback`` could never reach.
     """
     d = _make_deisa_stub()
     cb = _make_callback("reg_fail", "s = (arr - arr.mean()).sum()\nreturn s.compute()")

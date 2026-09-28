@@ -54,9 +54,8 @@ class PrecomputeError(Exception):
 class UnsupportedReductionError(PrecomputeError):
     """A reduction is present but its input expression cannot be traced back to a dask array.
 
-    Covers opaque operands (``da.sum(opaque_object)``), wrapped reductions
-    (a custom function around a dask call), and untraceable parameters
-    (``da.sum(f * v2)`` where ``v2`` is derived from a config object).
+    Covers opaque operands (``da.sum(opaque_object)``), wrapped reductions (a custom function around a dask call), and
+    untraceable parameters (``da.sum(f * v2)`` where ``v2`` is derived from a config object).
     """
 
 
@@ -70,12 +69,10 @@ class NoPrecomputableReductionError(PrecomputeError):
 class PrecomputeRuntimeError(PrecomputeError):
     """A runtime (post-registration) precompute invariant was violated.
 
-    Raised on the Deisa side (topic handler, callback dispatch view) and the
-    bridge side (executing a branch on the local chunk) when a precompute
-    contract breaks -- e.g. a failed branch dropped a partial, a reduction's
-    partials do not cover the full chunk grid, or a callback calls a
-    reduction that the analyzer did not record. Always prefer raising this
-    over silently delivering a wrong number.
+    Raised on the Deisa side (topic handler, callback dispatch view) and the bridge side (executing a branch on the
+    local chunk) when a precompute contract breaks -- e.g. a failed branch dropped a partial, a reduction's partials do
+    not cover the full chunk grid, or a callback calls a reduction that the analyzer did not record. Always prefer
+    raising this over silently delivering a wrong number.
     """
 
 
@@ -106,11 +103,9 @@ class NoComputeBoundaryError(PrecomputeError):
 def _match_source_arrays(darr: Any, registered_arrays: Dict[str, Any]) -> List[str]:
     """Return the registered array names whose stub layer appears in the expression's task graph.
 
-    Only stub-tagged layers attribute the expression to a source array
-    (an empty result covers e.g. a ``da.zeros`` created inside the
-    callback). Stubs carry a unique layer-name tag ``deisa-stub-<name>`` so
-    graph-layer membership attributes an expression to its source array
-    even when two registered arrays would otherwise collapse to one dask
+    Only stub-tagged layers attribute the expression to a source array (an empty result covers e.g. a ``da.zeros``
+    created inside the callback). Stubs carry a unique layer-name tag ``deisa-stub-<name>`` so graph-layer membership
+    attributes an expression to its source array even when two registered arrays would otherwise collapse to one dask
     name (identical metadata).
     """
     layers: set = set()
@@ -272,9 +267,8 @@ class _SourceFile:
 def _get_source(fn: Callable) -> str:
     """Get the source code for a function, dedented.
 
-    Order of resolution:
-    1. ``fn.__source__`` attribute (set by test helpers that compile via ``exec``)
-    2. ``inspect.getsource`` (works for real source files)
+    Order of resolution: 1. ``fn.__source__`` attribute (set by test helpers that compile via ``exec``) 2.
+    ``inspect.getsource`` (works for real source files)
     """
     src_attr = getattr(fn, "__source__", None)
     if src_attr is not None:
@@ -427,8 +421,8 @@ class _UnboundParam:
 class _WindowProxy:
     """List-like proxy used in place of the user's ``window`` parameter.
 
-    Supports integer subscripting (positive or negative) to return one of
-    the registered arrays. Reading any other attribute/method raises.
+    Supports integer subscripting (positive or negative) to return one of the registered arrays. Reading any other
+    attribute/method raises.
     """
 
     def __init__(self, arrays: List[Any]):
@@ -554,11 +548,9 @@ _PURE_BUILTINS: dict = {
 class _BoundaryWalker:
     """Walks the callback's AST looking for compute boundaries.
 
-    A compute boundary is a call that forces a dask array to materialize:
-    - ``arr.compute()``
-    - ``client.compute(arr)`` / ``client.compute([arr1, ...])``
-    - ``client.submit(func, arr)``
-    - ``np.array(darr)`` / ``np.asarray(darr)`` (materialization - error)
+    A compute boundary is a call that forces a dask array to materialize: - ``arr.compute()`` - ``client.compute(arr)``
+    / ``client.compute([arr1, ...])`` - ``client.submit(func, arr)`` - ``np.array(darr)`` / ``np.asarray(darr)``
+    (materialization - error)
 
     When a boundary is found, the argument expression is symbolically evaluated to a dask array (lazy - no execution),
     and the array is queued for graph extraction. For lists, every element is queued.
@@ -641,11 +633,9 @@ class _BoundaryWalker:
     def _bind_import(self, stmt: "ast.Import | ast.ImportFrom", scope: _Scope) -> None:
         """Bind numpy / dask imports in the walker scope.
 
-        Only the modules the analyzer can resolve symbolically are bound:
-        ``numpy`` (for materialization detection) and ``dask.array`` (for
-        reductions). Any other import is ignored (analysis continues treating
-        the name as opaque). ``from``-imports bind the resolved attribute
-        (``from numpy import array`` binds ``array -> np.array``).
+        Only the modules the analyzer can resolve symbolically are bound: ``numpy`` (for materialization detection) and
+        ``dask.array`` (for reductions). Any other import is ignored (analysis continues treating the name as opaque).
+        ``from``-imports bind the resolved attribute (``from numpy import array`` binds ``array -> np.array``).
         """
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
@@ -875,9 +865,8 @@ class _BoundaryWalker:
     def _apply_compare(self, op: ast.AST, left: Any, right: Any) -> Optional[bool]:
         """Return ``True``/``False``, or ``None`` when the comparison is UNKNOWN.
 
-        ``_Missing`` / ``_UnboundParam`` operands, unknown comparison nodes, or
-        operators that raise (ambiguity, unsupported operand types) all yield
-        ``None`` -- never an assumed outcome: an opaque condition must not emit
+        ``_Missing`` / ``_UnboundParam`` operands, unknown comparison nodes, or operators that raise (ambiguity,
+        unsupported operand types) all yield ``None`` -- never an assumed outcome: an opaque condition must not emit
         degradation must not mean "assume a branch and emit a wrong hint".
         """
         if isinstance(left, (_Missing, _UnboundParam)) or isinstance(right, (_Missing, _UnboundParam)):
@@ -1080,10 +1069,7 @@ class _BoundaryWalker:
     def _register_args_as_dask_arrays(self, value: Any, kind: str, lineno: int) -> None:
         """Recursively register dask arrays found in a boundary argument.
 
-        Handles:
-        - a single dask array
-        - a list/tuple of dask arrays
-        - other values (skipped silently)
+        Handles: - a single dask array - a list/tuple of dask arrays - other values (skipped silently)
         """
         if isinstance(value, da.Array):
             self.dask_arrays.append({"array": value, "kind": kind, "lineno": lineno})

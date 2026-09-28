@@ -69,10 +69,8 @@ logger = logging.getLogger(__name__)
 def _grid_extent_from_metadata(metadata: Dict[str, Any]) -> Optional[Tuple[int, ...]]:
     """Per-data-axis chunk-grid extent from the array metadata.
 
-    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI
-    chunks along data axis ``i`` -- the harness invariant that the MPI cart
-    dims map one-to-one onto the array's data axes. ``None`` when metadata is
-    incomplete.
+    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI chunks along data axis ``i`` -- the harness
+    invariant that the MPI cart dims map one-to-one onto the array's data axes. ``None`` when metadata is incomplete.
     """
     g = metadata.get("global_shape")
     c = metadata.get("chunk_shape")
@@ -96,17 +94,14 @@ class Deisa(IDeisa):
 
     def __init__(self, feedback_queue_size: int = 1024, *args, **kwargs) -> None:
         """
-        Initializes a class instance, configuring the client and setting up the necessary
-        infrastructure for interactions. This includes setting up the necessary feedback
-        queue length, performing handshake operations with the client, and initializing
-        various metadata structures.
+        Initializes a class instance, configuring the client and setting up the necessary infrastructure for
+        interactions. This includes setting up the necessary feedback queue length, performing handshake operations
+        with the client, and initializing various metadata structures.
 
-        - ``:param feedback_queue_size:`` The maximum size of the feedback queue. Defaults to 1024.
-        - ``:type feedback_queue_size:`` int
-        - ``:param args:`` Additional positional arguments passed to the initializer.
-        - ``:type args:`` tuple
-        - ``:param kwargs:`` Additional keyword arguments passed to the initializer.
-        - ``:type kwargs:`` dict
+        - ``:param feedback_queue_size:`` The maximum size of the feedback queue. Defaults to 1024. - ``:type
+        feedback_queue_size:`` int - ``:param args:`` Additional positional arguments passed to the initializer. -
+        ``:type args:`` tuple - ``:param kwargs:`` Additional keyword arguments passed to the initializer. - ``:type
+        kwargs:`` dict
         """
         # dask.config.set({ "distributed.deploy.lost-worker-timeout": 60, "distributed.workers.memory.spill":0.97,
         # "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
@@ -167,44 +162,37 @@ class Deisa(IDeisa):
         """
         Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
 
-        This function acts as a decorator that allows you to register a callback with
-        parameters provided through ``callback_args``. It also handles exceptions using the
-        ``exception_handler`` and defines the execution rules with ``when`` parameter.
+                This function acts as a decorator that allows you to register a callback with parameters provided
+                through ``callback_args``. It also handles exceptions using the ``exception_handler`` and defines the
+                execution rules with ``when`` parameter.
 
-        Supports:
-        Default window size is 1.
-        ``@deisa.register("arr1")``                             # default window size
-        ``@deisa.register("arr1", "arr2")``                     # two arrays, default window size
-        ``@deisa.register(Window("arr1"))``                     # default window size
-        ``@deisa.register(Window("arr1", 2))``                  # window size 2
-        ``@deisa.register(Window("arr1", 2), Window("arr2", 5))``   # window size 2 for arr1 and 5 for arr2
-        ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")``  # window size 2 for arr1 and 5 for arr2,
-                                                                             default window size for arr3
+                Supports: Default window size is 1. ``@deisa.register("arr1")`` # default window size
+                ``@deisa.register("arr1", "arr2")`` # two arrays, default window size
+                ``@deisa.register(Window("arr1"))`` # default window size ``@deisa.register(Window("arr1", 2))`` #
+                window size 2 ``@deisa.register(Window("arr1", 2), Window("arr2", 5))`` # window size 2 for arr1 and 5
+                for arr2 ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")`` # window size 2 for arr1 and
+                5 for arr2, default window size for arr3
 
-        Every callback is automatically analyzed for dask reduction operations (sum, mean, std, var, max, min, prod)
-        which are executed locally on each bridge before scatter to reduce network transfer. Precompute analysis
-        is always attempted (the default), and any callback that cannot be precomputed (no reductions, or a reduction
-        that depends on another reduction's output) raises at registration time. Use ``precompute=False`` to skip
-        the analysis with a warning and fall back to the legacy full-chunk scatter path.
+                Every callback is automatically analyzed for dask reduction operations (sum, mean, std, var, max, min,
+                prod) which are executed locally on each bridge before scatter to reduce network transfer. Precompute
+                analysis is always attempted (the default), and any callback that cannot be precomputed (no reductions,
+                or a reduction that depends on another reduction's output) raises at registration time. Use
+                ``precompute=False`` to skip the analysis with a warning and fall back to the legacy full-chunk scatter
+                path.
 
-        Branch filing contract: registration merges branches in memory and
-        files them with the handshake actor immediately (required: a bridge on
-        the wait_for_go=False path fetches lazily on its first send()).
-        ``unregister_callback`` prunes memory only; the pruned set is re-filed
-        at the per-cycle boundary by ``execute_callbacks()`` (which always
-        flushes before unblocking the bridges). Callbacks registered without a
-        subsequent ``execute_callbacks()`` still reach the bridges via the
-        immediate registration-time filing.
+                Branch filing contract: registration merges branches in memory and files them with the handshake actor
+                immediately (required: a bridge on the wait_for_go=False path fetches lazily on its first send()).
+                ``unregister_callback`` prunes memory only; the pruned set is re-filed at the per-cycle boundary by
+                ``execute_callbacks()`` (which always flushes before unblocking the bridges). Callbacks registered
+                without a subsequent ``execute_callbacks()`` still reach the bridges via the immediate
+                registration-time filing.
 
-        - ``:param callback_args:`` Variable-length arguments representing callback-specific parameters.
-        - ``:param exception_handler:`` Optional exception handler to manage errors during callback execution.
-             Defaults to ``__default_exception_handler``.
-        - ``:param when:`` Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
-             Defaults to 'AND'.
-        - ``:param precompute:`` If False, skip precompute analysis with a warning and use the full-chunk scatter path.
-             Defaults to True (analysis is required).
-        - ``:return:`` A callable that wraps the provided callback with the configured parameters and logic.
-        - ``:rtype:`` Callable
+        - ``:param callback_args:`` Variable-length arguments representing callback-specific parameters. - ``:param
+        exception_handler:`` Optional exception handler to manage errors during callback execution. Defaults to
+        ``__default_exception_handler``. - ``:param when:`` Specifies the conditional logic for triggering the
+        callback. Can be 'AND' or 'OR'. Defaults to 'AND'. - ``:param precompute:`` If False, skip precompute analysis
+        with a warning and use the full-chunk scatter path. Defaults to True (analysis is required). - ``:return:`` A
+        callable that wraps the provided callback with the configured parameters and logic. - ``:rtype:`` Callable
         """
 
         def decorator(callback: IDeisa.Callback) -> IDeisa.Callback:
@@ -227,28 +215,22 @@ class Deisa(IDeisa):
         precompute: bool = True,
     ) -> Callable:
         """
-        Registers a callback function with specific arguments, exception handling, and conditional execution criteria.
+        Registers a callback function with specific arguments, exception handling, and conditional execution
+        criteria. This function allows you to register a callback with parameters provided through
+        ``callback_args``. It also handles exceptions using the ``exception_handler`` and defines the execution
+        rules with ``when`` parameter. Supports: Default window size is 1. ``@deisa.register("arr1")`` #
+        default window size ``@deisa.register("arr1", "arr2")`` # two arrays, default window size
+        ``@deisa.register(Window("arr1")) `` # default window size ``@deisa.register(Window("arr1", 2))`` #
+        window size 2 ``@deisa.register(Window("arr1", 2), Window("arr2", 5))`` # window size 2 for arr1 and 5
+        for arr2 ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")`` # window size 2 for arr1 and
+        5 for arr2, default window size for arr3
 
-        This function allows you to register a callback with parameters provided through ``callback_args``.
-        It also handles exceptions using the ``exception_handler`` and defines the execution rules with ``when``
-        parameter.
-
-        Supports:
-        Default window size is 1.
-        ``@deisa.register("arr1")``                             # default window size
-        ``@deisa.register("arr1", "arr2")``                     # two arrays, default window size
-        ``@deisa.register(Window("arr1")) ``                    # default window size
-        ``@deisa.register(Window("arr1", 2))``                  # window size 2
-        ``@deisa.register(Window("arr1", 2), Window("arr2", 5))``   # window size 2 for arr1 and 5 for arr2
-        ``@deisa.register(Window("arr1", 2), Window("arr2", 5), "arr3")`` # window size 2 for arr1 and 5 for arr2,
-                                                                            default window size for arr3
-
-        - ``:param callback:``  Callback function to register.
-        - ``:param callback_args:``  Variable-length arguments representing callback-specific parameters.
-        - ``:param exception_handler:``  Optional exception handler to manage errors during callback execution.
-        - ``:param when:``  Specifies the conditional logic for triggering the callback. Can be 'AND' or 'OR'.
-        - ``:param precompute:``  If False, skip precompute analysis with a warning and send the full data to workers.
-        - ``:return:``  A callable that wraps the provided callback with the configured parameters and logic.
+        - ``:param callback:`` Callback function to register. - ``:param callback_args:`` Variable-length
+        arguments representing callback-specific parameters. - ``:param exception_handler:`` Optional exception
+        handler to manage errors during callback execution. - ``:param when:`` Specifies the conditional logic
+        for triggering the callback. Can be 'AND' or 'OR'. - ``:param precompute:`` If False, skip precompute
+        analysis with a warning and send the full data to workers. - ``:return:`` A callable that wraps the
+        provided callback with the configured parameters and logic.
         """
         logger.debug(f"register_callback: callback={callback}, callback_args={callback_args}")
         if not callback_args:
@@ -439,16 +421,12 @@ class Deisa(IDeisa):
 
     def set(self, key: str, value: Any, timestep: int) -> None:
         """
-        Sets a value in a queue for a given key, associating it with a specific timestep. This action is
-        intended to store feedback or other time-specific data for the provided key.
+        Sets a value in a queue for a given key, associating it with a specific timestep. This action is intended to
+        store feedback or other time-specific data for the provided key.
 
-        - ``:param key:`` The identifier for which the value is to be set.
-        - ``:type key:`` str
-        - ``:param value:`` The value to be stored, associated with the key and timestep.
-        - ``:type value:`` Any
-        - ``:param timestep:`` The timestamp that corresponds to when the value is set.
-        - ``:type timestep:`` int
-        - ``:return:`` None
+        - ``:param key:`` The identifier for which the value is to be set. - ``:type key:`` str - ``:param value:`` The
+        value to be stored, associated with the key and timestep. - ``:type value:`` Any - ``:param timestep:`` The
+        timestamp that corresponds to when the value is set. - ``:type timestep:`` int - ``:return:`` None
         """
         logger.debug(f"set() key={key}, value={value}, timestep={timestep}")
 
@@ -463,12 +441,10 @@ class Deisa(IDeisa):
     def _flush_branches_to_handshake(self) -> None:
         """File every array's current branch set with the handshake actor.
 
-        Called by ``register_callback`` (a bridge on the wait_for_go=False
-        path fetches lazily on first send(), possibly before the next cycle)
-        and by ``execute_callbacks`` (before the bridges are unblocked).
-        ``unregister_callback`` never files: an actor call inside the async
-        topic handler stalls the handler loop. The pruned state is filed at
-        the next flush point.
+        Called by ``register_callback`` (a bridge on the wait_for_go=False path fetches lazily on first send(),
+        possibly before the next cycle) and by ``execute_callbacks`` (before the bridges are unblocked).
+        ``unregister_callback`` never files: an actor call inside the async topic handler stalls the handler loop. The
+        pruned state is filed at the next flush point.
         """
         for arr_name, branches in self._branch_groups.items():
             self.handshake.set_task_branches(arr_name, branches)
@@ -477,17 +453,13 @@ class Deisa(IDeisa):
         """
         Executes a series of callbacks and waits for necessary processes to finish.
 
-        This method handles the execution of callbacks related to bridges and their completion while also ensuring the
-        orchestration of subsequent tasks. It is responsible for unblocking bridges and waiting for dependencies to
-        signal completion.
+                This method handles the execution of callbacks related to bridges and their completion while also
+                ensuring the orchestration of subsequent tasks. It is responsible for unblocking bridges and waiting
+                for dependencies to signal completion.
 
-        This is also the branch-filing boundary for unregistration: the pruned
-        branch sets (pruned in memory by ``unregister_callback``) are re-filed
-        to the handshake actor here, once per cycle, before the bridges see
-        them.
-
-        - ``:param self:`` The instance of the class invoking this method.
-        - ``:return:`` None
+                This is also the branch-filing boundary for unregistration: the pruned branch sets (pruned in memory by
+                ``unregister_callback``) are re-filed to the handshake actor here, once per cycle, before the bridges
+                see them. - ``:param self:`` The instance of the class invoking this method. - ``:return:`` None
         """
         logger.info("execute_callbacks()")
 
@@ -508,8 +480,8 @@ class Deisa(IDeisa):
         # wait for analysis to be finish
         def _check_deisa_tasks(dask_scheduler):
             """
-            Analyzes the tasks on the Dask scheduler to determine the number
-            of tasks that are strings that do not start with the deisa task prefix.
+            Analyzes the tasks on the Dask scheduler to determine the number of tasks that are strings that do not
+            start with the deisa task prefix.
             """
             tasks = [
                 task
@@ -680,12 +652,10 @@ class Deisa(IDeisa):
     ) -> Tuple[int, ...]:
         """Return the runtime dispatch signature recorded for ``output_key``.
 
-        Registered descriptors are recorded with the branch builder's
-        ``dispatch_sig`` (``()`` for full reductions and window reads, the
-        sorted axes otherwise); every callback holding the same
-        ``output_key`` records it identically, so the first match wins.
-        Falls back to re-normalizing the payload ``hint_axis`` when no
-        descriptor matches (e.g. the callback was unregistered).
+        Registered descriptors are recorded with the branch builder's ``dispatch_sig`` (``()`` for full reductions and
+        window reads, the sorted axes otherwise); every callback holding the same ``output_key`` records it
+        identically, so the first match wins. Falls back to re-normalizing the payload ``hint_axis`` when no descriptor
+        matches (e.g. the callback was unregistered).
         """
         for descriptors in self._callback_reductions.values():
             for key, _op, axes_sig, _kind in descriptors.get(array_name, []):
@@ -698,11 +668,9 @@ class Deisa(IDeisa):
     def _build_callback_views(self, array_name: str, iteration: int, combined_by_key: Dict[str, Any]) -> Dict[str, Any]:
         """Build the per-callback dispatch view for this array's event.
 
-        A callback that registered reductions on ``array_name`` receives a
-        ``_PrecomputedDeisaArray`` whose signature map routes ITS OWN
-        reduction calls to the combined array the analyzer recorded for that
-        callback and that reduction. Callbacks whose branches all
-        live on other arrays get no view here (nothing to deliver).
+        A callback that registered reductions on ``array_name`` receives a ``_PrecomputedDeisaArray`` whose signature
+        map routes ITS OWN reduction calls to the combined array the analyzer recorded for that callback and that
+        reduction. Callbacks whose branches all live on other arrays get no view here (nothing to deliver).
         """
         views: Dict[str, Any] = {}
         for callback_id in list(self._callbacks_by_array.get(array_name, [])):
@@ -835,15 +803,12 @@ class Deisa(IDeisa):
     @staticmethod
     def __tile_dask_blocks(blocks: list[da.Array], global_shape: tuple[int, ...]) -> da.Array:
         """
-        Given a flat list of N-dimensional Dask arrays, tile them into a single Dask array.
-        The tiling layout is inferred from the provided global shape.
+        Given a flat list of N-dimensional Dask arrays, tile them into a single Dask array. The tiling layout is
+        inferred from the provided global shape.
 
-        Parameters:
-            blocks (list of dask.array): Flat list of Dask arrays. All must have the same shape.
-            global_shape (tuple of int): Shape of the full array to reconstruct.
-
-        Returns:
-            dask.array.Array: Combined tiled Dask array.
+            Parameters: blocks (list of dask.array): Flat list of Dask arrays. All must have the same shape.
+            global_shape (tuple of int): Shape of the full array to reconstruct. Returns: dask.array.Array:
+            Combined tiled Dask array.
         """
         if not blocks:
             raise ValueError("No blocks provided.")

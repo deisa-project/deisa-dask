@@ -29,18 +29,16 @@
 """
 Branch-level local compute on the bridge.
 
-A :class:`BranchSpec` describes one chunk-local sub-expression of the
-user's callback that the bridge can execute on its local numpy chunk
-and whose result the Deisa-side topic handler combines across bridges.
+A :class:`BranchSpec` describes one chunk-local sub-expression of the user's callback that the bridge can execute on
+its local numpy chunk and whose result the Deisa-side topic handler combines across bridges.
 
 Branch of **length-1** case: each BranchSpec corresponds to one detected reduction (``arr.sum()``,
-``arr.mean(axis=0)``, ...). The branch is a single chunk callable followed by the reduction's combine aggregator.
-For multi-layer chains (length->=2 branches); the data structure below is designed to support that without further
-changes.
+``arr.mean(axis=0)``, ...). The branch is a single chunk callable followed by the reduction's combine aggregator. For
+multi-layer chains (length->=2 branches); the data structure below is designed to support that without further changes.
 
-The structure mirrors the prior per-reduction branch metadata
-(``kind`` / ``finalize`` / ``shape`` / ``dtype`` / ``chunk_axis``) so the bridge and Deisa-side combine code paths can
-be refactored to consume :class:`BranchSpec` directly without changing semantics.
+The structure mirrors the prior per-reduction branch metadata (``kind`` / ``finalize`` / ``shape`` / ``dtype`` /
+``chunk_axis``) so the bridge and Deisa-side combine code paths can be refactored to consume :class:`BranchSpec`
+directly without changing semantics.
 """
 
 from __future__ import annotations
@@ -93,48 +91,35 @@ _BRANCH_KIND_MOMENT = "moment"
 class BranchSpec:
     """One chunk-local sub-expression the bridge can execute + combine.
 
-    Attributes
-    ----------
-    output_key : str
-        Stable identifier for this branch (e.g. ``"f-mean"``). The
-        bridge uses it to namespace its scatter key and the Deisa
-        topic handler uses it to route the per-bridge partials back to
-        the same branch.
-    input_name : str
-        Registered array name the branch is rooted at (e.g. ``"a"``).
-        The Deisa side groups branches per array using this field
-        (never by parsing ``output_key``) and files each group with
-        ``set_task_branches`` under its own array name via
-        ``execute_callbacks`` -> ``_flush_branches_to_handshake``.
-    output_kind : str
-        One of ``"scalar"`` / ``"mean"`` / ``"moment"``. Drives the
-        Deisa-side combine graph: ``scalar`` -> ``da.stack`` + dask sum,
-        ``mean`` -> ``mean_agg`` over nested list of dicts,
-        ``moment`` -> ``moment_agg`` (+ ``np.sqrt`` for ``finalize ==
-        "sqrt"``).
-    branch_func : Callable
-        Python callable that, given a numpy chunk, returns the branch's
-        per-bridge partial value (a scalar / ndarray / dict). Pickled
-        across the bridge process boundary. Currently a length-1
-        callable (``chunk_func`` from the prior branch); This may
-        produce multi-callable composites.
-    chunk_axis : Optional[Tuple[int, ...]]
-        For reductions, the tuple of axes being reduced in the chunk
-        (e.g. ``(0, 1)`` for full reduction on a 2-D chunk). ``None``
-        for pointwise-only branches.
-    finalize : Optional[str]
-        ``"sqrt"`` for std (apply ``np.sqrt`` after combining), else
-        ``None``.
-    partial_shape : Tuple[int, ...]
-        Shape of the **per-bridge partial** (what the branch_func
-        returns). For ``scalar`` reductions on a 2-D chunk with
-        ``keepdims=False`` this is ``()``; with ``keepdims=True`` it is
-        ``(1, 1)``. For axis reductions the partial keeps the un-reduced
-        axes' full size (e.g. ``mean(axis=0)`` on ``(M, N)`` partial
-        has shape ``(1, N)``). The bridge records this on the topic
-        event so the Deisa side knows what each bridge shipped.
-    partial_dtype : str
-        NumPy dtype string of the per-bridge partial.
+        Attributes
+        ----------
+        output_key : str
+            Stable identifier for this branch (e.g. ``"f-mean"``). The bridge uses it to namespace its scatter key and
+            the Deisa topic handler uses it to route the per-bridge partials back to the same branch.
+        input_name : str
+            Registered array name the branch is rooted at (e.g. ``"a"``). The Deisa side groups branches per array using
+            this field (never by parsing ``output_key``) and files each group with ``set_task_branches`` under its own
+            array name via ``execute_callbacks`` -> ``_flush_branches_to_handshake``.
+        output_kind : str
+            One of ``"scalar"`` / ``"mean"`` / ``"moment"``. Drives the Deisa-side combine graph: ``scalar`` ->
+            ``da.stack`` + dask sum, ``mean`` -> ``mean_agg`` over nested list of dicts, ``moment`` -> ``moment_agg`` (+
+            ``np.sqrt`` for ``finalize == "sqrt"``).
+        branch_func : Callable
+            Python callable that, given a numpy chunk, returns the branch's per-bridge partial value (a scalar /
+            ndarray / dict). Pickled across the bridge process boundary. Currently a length-1 callable (``chunk_func``
+            from the prior branch); This may produce multi-callable composites.
+        chunk_axis : Optional[Tuple[int, ...]]
+            For reductions, the tuple of axes being reduced in the chunk (e.g. ``(0, 1)`` for full reduction on a 2-D
+            chunk). ``None`` for pointwise-only branches.
+        finalize : Optional[str]
+            ``"sqrt"`` for std (apply ``np.sqrt`` after combining), else ``None``.
+        partial_shape : Tuple[int, ...]
+            Shape of the **per-bridge partial** (what the branch_func returns). For ``scalar`` reductions on a 2-D chunk
+            with ``keepdims=False`` this is ``()``; with ``keepdims=True`` it is ``(1, 1)``. For axis reductions the
+            partial keeps the un-reduced axes' full size (e.g. ``mean(axis=0)`` on ``(M, N)`` partial has shape ``(1,
+            N)``). The bridge records this on the topic event so the Deisa side knows what each bridge shipped.
+        partial_dtype : str
+    NumPy dtype string of the per-bridge partial.
     """
 
     output_key: str
@@ -154,11 +139,10 @@ class BranchSpec:
 def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[BranchSpec]:
     """Merge two branch lists, deduping by ``output_key``.
 
-    Identical signatures (same op, same axis) share one bridge execution;
-    same key with a DIFFERENT runtime dispatch signature (e.g. a window
-    read vs. a true axis reduction over the same axis) always raises
-    :class:`PrecomputeRuntimeError` -- the two deliver different shapes and
-    sharing them silently delivers one callback the other one's result.
+    Identical signatures (same op, same axis) share one bridge execution; same key with a DIFFERENT runtime dispatch
+    signature (e.g. a window read vs. a true axis reduction over the same axis) always raises
+    :class:`PrecomputeRuntimeError` -- the two deliver different shapes and sharing them silently delivers one callback
+    the other one's result.
     """
     merged = list(existing)
     seen: Dict[str, BranchSpec] = {b.output_key: b for b in merged}
@@ -184,15 +168,13 @@ def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[Br
 def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[str, Any]):
     """Analyze the callback's source and build a list of :class:`BranchSpec` objects.
 
-    Each spec describes a chunk-local sub-expression the bridge can
-    execute. The callback is NOT executed: the AST is parsed and walked
-    symbolically to find compute boundaries (``.compute()``,
-    ``client.compute()``, ...) and the dask arrays they reference.
+    Each spec describes a chunk-local sub-expression the bridge can execute. The callback is NOT executed: the AST is
+    parsed and walked symbolically to find compute boundaries (``.compute()``, ``client.compute()``, ...) and the dask
+    arrays they reference.
 
-    Analysis is strict: any analysis failure (a ``PrecomputeError``
-    subclass or an unexpected exception) propagates to the caller. The
-    caller decides the fallback policy (skip analysis entirely for
-    ``precompute=False`` callbacks, raise otherwise).
+    Analysis is strict: any analysis failure (a ``PrecomputeError`` subclass or an unexpected exception) propagates to
+    the caller. The caller decides the fallback policy (skip analysis entirely for ``precompute=False`` callbacks,
+    raise otherwise).
     """
 
     # Build a dask array stub matching the registered array's shape/chunks so the symbolic AST walker has something
@@ -235,22 +217,19 @@ def _nest_partial_dicts_by_grid(
     partials: List[Dict[str, Any]], grid_extent: Optional[Tuple[int, ...]] = None
 ) -> Tuple[Any, Tuple[int, ...]]:
     """Arrange per-bridge dict-blob partials into a nested list that mirrors
-    the MPI chunk grid, so that ``mean_agg`` / ``moment_agg`` (which walk the
-    nested list with ``_concatenate2``) can combine them.
+    the MPI chunk grid, so that ``mean_agg`` / ``moment_agg`` (which walk the nested list with ``_concatenate2``) can
+    combine them.
 
-    ``partials`` is a list of dicts each carrying a ``chunk_position`` --
-    the bridge's MPI coords. Returns ``(nested_list, grid_shape)`` where
-    ``grid_shape`` is the MPI grid shape (``(N, M, ...)``) and
-    ``nested_list[i_0][i_1]...`` is the dict (or future-of-dict) at MPI
-    coords ``(i_0, i_1, ...)``.
+    ``partials`` is a list of dicts each carrying a ``chunk_position`` -- the bridge's MPI coords. Returns
+    ``(nested_list, grid_shape)`` where ``grid_shape`` is the MPI grid shape (``(N, M, ...)``) and
+    ``nested_list[i_0][i_1]...`` is the dict (or future-of-dict) at MPI coords ``(i_0, i_1, ...)``.
 
-    ``grid_extent`` (per data axis, from ``global_shape // chunk_shape``) is
-    validated against the coords when provided: a mismatch means the grid
-    layout the partials describe contradicts the array metadata, which would
+    ``grid_extent`` (per data axis, from ``global_shape // chunk_shape``) is validated against the coords when
+    provided: a mismatch means the grid layout the partials describe contradicts the array metadata, which would
     silently corrupt any axis combine -- raise instead (F5).
 
-    For a 1-D MPI grid (e.g. ``(2,)`` or ``(4,)``) this returns a flat
-    list of length N. For higher-D grids the list is nested.
+    For a 1-D MPI grid (e.g. ``(2,)`` or ``(4,)``) this returns a flat list of length N. For higher-D grids the list is
+    nested.
     """
     # Determine grid shape from the unique coords across all partials.
     coords = [tuple(p["chunk_position"]) for p in partials]
@@ -310,10 +289,9 @@ def _flatten_grid_entries(nested: Any) -> List[Any]:
 def _concat_kept_grid(grid: Any, depth: int) -> np.ndarray:
     """np.concatenate a kept-grid (nested over kept axes) along the result axes.
 
-    The Phase-A result for kept-coordinate ``(i0, i1, ...)`` has axes
-    ``(kept data axes in ascending data order)``; nesting level ``depth`` of
-    the grid corresponds to result axis ``depth``, so concatenating level by
-    level reproduces the full-kept-extent array.
+    The Phase-A result for kept-coordinate ``(i0, i1, ...)`` has axes ``(kept data axes in ascending data order)``;
+    nesting level ``depth`` of the grid corresponds to result axis ``depth``, so concatenating level by level
+    reproduces the full-kept-extent array.
     """
     if isinstance(grid[0], list):
         return np.concatenate([_concat_kept_grid(g, depth + 1) for g in grid], axis=depth)
@@ -601,21 +579,15 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any]) -> Li
 def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict) -> Tuple[bool, bool]:
     """Conservative ``(deliver_direct, window_read)`` for the length-1 fallback.
 
-    The chain walker can't tell which candidate aggregate belongs to THIS
-    hint when several reductions share ``(array_name, op_name)`` (e.g.
-    ``arr.sum()`` + ``arr.sum(axis=0)``). The reduction is deemed DIRECT only
-    when EVERY candidate's chain from the chunk stage to the registered root
-    contains just the reduction chunk stage and/or window-read getitem
-    layers (``root[-1].op()`` -- DataFrame.region Python-level list indexing).
-    Zero candidates, an unwalkable chain, a pointwise chain (``arr*arr``), or
-    a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct (refused at
-    registration) so a chained reduction can never sneak past the gate as
-    "direct".
+    The chain walker can't tell which candidate aggregate belongs to THIS hint when several reductions share
+    ``(array_name, op_name)`` (e.g. ``arr.sum()`` + ``arr.sum(axis=0)``). The reduction is deemed DIRECT only when
+    EVERY candidate's chain from the chunk stage to the registered root contains just the reduction chunk stage and/or
+    window-read getitem layers (``root[-1].op()`` -- DataFrame.region Python-level list indexing). Zero candidates, an
+    unwalkable chain, a pointwise chain (``arr*arr``), or a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct
+    (refused at registration) so a chained reduction can never sneak past the gate as "direct".
 
-    ``window_read`` is True when every candidate is a window read (the
-    callback's runtime reduction runs on the WHOLE delivered array, so its
-    dispatch signature is the FULL reduction regardless of the stub-side
-    chunk axis).
+    ``window_read`` is True when every candidate is a window read (the callback's runtime reduction runs on the WHOLE
+    delivered array, so its dispatch signature is the FULL reduction regardless of the stub-side chunk axis).
     """
     op_name = branch.get("op_name")
     array_name = branch.get("array_name")
@@ -638,13 +610,11 @@ def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict
 def _chain_direct_and_window_read(graph, agg_name: str) -> Tuple[bool, bool]:
     """Classify one aggregate's reduction-input chain.
 
-    Walks from the reduction's chunk stage toward the registered root. The
-    chain is DIRECT when every layer between the chunk stage and the root is
-    either the chunk stage itself or a window-read getitem layer; ANY other
-    layer (pointwise blockwise like ``mul``, a real slice, an unwalkable
-    input) makes it non-direct (``(False, ...)``). Returns ``(direct,
-    window_read)`` where ``window_read`` is True when the chain contains a
-    window-read getitem (and is otherwise direct).
+    Walks from the reduction's chunk stage toward the registered root. The chain is DIRECT when every layer between the
+    chunk stage and the root is either the chunk stage itself or a window-read getitem layer; ANY other layer
+    (pointwise blockwise like ``mul``, a real slice, an unwalkable input) makes it non-direct (``(False, ...)``).
+    Returns ``(direct, window_read)`` where ``window_read`` is True when the chain contains a window-read getitem (and
+    is otherwise direct).
     """
     from deisa.dask.task_branches import (
         _chain_has_window_read,
@@ -736,19 +706,16 @@ def _try_length1_branch(
 ) -> Optional[BranchSpec]:
     """Build a length-1 BranchSpec from a per-reduction branch.
 
-    A length-1 branch is a chain of length 1: represented as ``[(chunk_func, effective_kwargs, 1)]``
-    and built via the unified :func:`_build_branch`. The chain machinery binds the chunk_kwargs
-    (axis, keepdims, dtype, ...) to the chunk_func, so the bridge calls ``branch_func(chunk)`` with
-    just the chunk and no extra kwargs.
+    A length-1 branch is a chain of length 1: represented as ``[(chunk_func, effective_kwargs, 1)]`` and built via the
+    unified :func:`_build_branch`. The chain machinery binds the chunk_kwargs (axis, keepdims, dtype, ...) to the
+    chunk_func, so the bridge calls ``branch_func(chunk)`` with just the chunk and no extra kwargs.
 
-    ``deliver_direct`` defaults to False because the length-1 path is reached
-    exactly when the chain walker could not PROVE the reduction reads the
-    registered root directly (no/ambiguous candidates, unwalkable chain); the
-    caller computes the conservative value via :func:`_candidate_chain_classify`.
-    ``window_read`` marks a whole-row-plane ``root[-1]`` read (see
-    :mod:`deisa.dask.task_branches`): the callback's runtime reduction runs on
-    the WHOLE delivered array, so the branch's dispatch signature is the full
-    reduction even though the stub-side chunk axis is partial.
+    ``deliver_direct`` defaults to False because the length-1 path is reached exactly when the chain walker could not
+    PROVE the reduction reads the registered root directly (no/ambiguous candidates, unwalkable chain); the caller
+    computes the conservative value via :func:`_candidate_chain_classify`. ``window_read`` marks a whole-row-plane
+    ``root[-1]`` read (see :mod:`deisa.dask.task_branches`): the callback's runtime reduction runs on the WHOLE
+    delivered array, so the branch's dispatch signature is the full reduction even though the stub-side chunk axis is
+    partial.
     """
     try:
         # For ``mean`` and ``moment`` the bridge overrides ``keepdims=True`` (see
@@ -792,26 +759,21 @@ def _build_branch(
 ) -> BranchSpec:
     """Build a :class:`BranchSpec` from a branch and a layer chain.
 
-    The chain (root-to-chunk ``(func, kwargs, input_count)`` triples) is composed into a single
-    ``branch_func``; the branch provides the reduction's ``kind``/``finalize``/``chunk_axis`` metadata.
-    A length-1 branch is simply a chain of length 1 (``[(chunk_func, effective_kwargs, 1)]``).
+    The chain (root-to-chunk ``(func, kwargs, input_count)`` triples) is composed into a single ``branch_func``; the
+    branch provides the reduction's ``kind``/``finalize``/``chunk_axis`` metadata. A length-1 branch is simply a chain
+    of length 1 (``[(chunk_func, effective_kwargs, 1)]``).
 
-    If ``chain_branch_func`` is provided (the memoized / pre-built version), use it directly instead
-    of rebuilding.
+    If ``chain_branch_func`` is provided (the memoized / pre-built version), use it directly instead of rebuilding.
 
-    ``deliver_direct`` records whether the reduction's chunk stage reads
-    DIRECTLY from the registered array root (a plain ``arr.<op>()`` call,
-    possibly via ``window[-1]``) rather than from a pointwise chain or slice
-    (``(arr*arr).sum()``, ``arr[2:5].sum()``). The registration gate in
-    :mod:`deisa.dask.deisa` refuses non-direct reductions because the
-    precompute delivery path cannot reconstruct a chain on the callback side.
-    ``None`` defaults to ``len(chain) == 1`` (a single layer means the chunk
-    stage is the only layer between root and aggregate).
+    ``deliver_direct`` records whether the reduction's chunk stage reads DIRECTLY from the registered array root (a
+    plain ``arr.<op>()`` call, possibly via ``window[-1]``) rather than from a pointwise chain or slice
+    (``(arr*arr).sum()``, ``arr[2:5].sum()``). The registration gate in :mod:`deisa.dask.deisa` refuses non-direct
+    reductions because the precompute delivery path cannot reconstruct a chain on the callback side. ``None`` defaults
+    to ``len(chain) == 1`` (a single layer means the chunk stage is the only layer between root and aggregate).
 
-    ``window_read`` marks a whole-row-plane ``root[-1]`` read: the callback's
-    runtime reduction runs on the WHOLE delivered array, so the branch's
-    dispatch signature (``dispatch_sig``) is the FULL reduction even though
-    the stub-side chunk axis is partial.
+    ``window_read`` marks a whole-row-plane ``root[-1]`` read: the callback's runtime reduction runs on the WHOLE
+    delivered array, so the branch's dispatch signature (``dispatch_sig``) is the FULL reduction even though the
+    stub-side chunk axis is partial.
     """
     kind = branch.get("kind", _BRANCH_KIND_SCALAR)
     finalize = branch.get("finalize")
@@ -898,9 +860,9 @@ def _walk_chain(graph, agg_name: str) -> Optional[List[Tuple[Callable, dict, int
 
 def _find_single_upstream(layer) -> Optional[Tuple[str, int]]:
     """Return ``(upstream_layer_name, array_input_count)`` if the layer reads from a single upstream Blockwise
-    (one or more times. e.g. ``arr * arr`` reads from ``arr`` twice and is still chunk-local).
-    Returns ``None`` if the layer reads from multiple distinct array upstreams (cross-array, can't fold) or contains
-    scalar constants (deferred to a later commit).
+    (one or more times. e.g. ``arr * arr`` reads from ``arr`` twice and is still chunk-local). Returns ``None`` if the
+    layer reads from multiple distinct array upstreams (cross-array, can't fold) or contains scalar constants (deferred
+    to a later commit).
 
     Uses the shared Blockwise index-walking primitive :func:`deisa.dask.task_branches._blockwise_indices_inputs` so the
     ``layer.indices`` parsing lives in one place.
@@ -924,11 +886,11 @@ def _build_chain_branch_func(chain: List[Tuple[Callable, dict, int]]) -> Callabl
     """Compose a list of ``(func, kwargs, input_count)`` into a single branch_func(chunk).
     Layers reading from a single upstream twice (e.g. ``arr * arr``) get the chunk passed twice.
 
-    Returns a module-level callable (``_chain_branch_func``) bound to the chain tuple via :func:`functools.partial`.
-    The closure is on a top-level function so pickle can find it across processes. Building a fresh
-    ``def branch_func(chunk, _chain=...)`` inside this helper would produce an unpicklable local function
-    (AttributeError: Can't get local object). The ``functools.partial`` + module-level target recipe is the only shape
-    that pickles cleanly.
+        Returns a module-level callable (``_chain_branch_func``) bound to the chain tuple via :func:`functools.partial`.
+        The closure is on a top-level function so pickle can find it across processes. Building a fresh ``def
+        branch_func(chunk, _chain=...)`` inside this helper would produce an unpicklable local function (AttributeError:
+        Can't get local object). The ``functools.partial`` + module-level target recipe is the only shape that pickles
+        cleanly.
     """
     chain_tuple = tuple(chain)
     return functools.partial(_chain_branch_func, _chain=chain_tuple)
@@ -938,8 +900,8 @@ def _chain_branch_func(chunk, _chain=None):
     """Module-level branch callable: apply each (func, kwargs, input_count) in the chain to the chunk,
     threading the result through.
 
-    Pair with :func:`_build_chain_branch_func` which binds ``_chain`` via :func:`functools.partial`.
-    Defined at module level so pickle can find it across the bridge process boundary.
+        Pair with :func:`_build_chain_branch_func` which binds ``_chain`` via :func:`functools.partial`. Defined at
+        module level so pickle can find it across the bridge process boundary.
     """
     if _chain is None:
         raise RuntimeError("_chain_branch_func called without bound _chain")

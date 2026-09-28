@@ -825,8 +825,8 @@ class TestUsingDaskCluster:
     def test_multi_array_callback_consistent_iterations(self, env_setup):
         """Regression test for issue #128: missing iterations when using multiple arrays in a callback.
 
-        When arrays arrive at different times (e.g., due to async topic handlers),
-        the callback must not fire until all arrays have data for the same iteration.
+        When arrays arrive at different times (e.g., due to async topic handlers), the callback must not fire until all
+        arrays have data for the same iteration.
         """
         client, cluster = env_setup
         global_grid_size = (8, 8)

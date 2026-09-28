@@ -33,9 +33,8 @@ pytestmark = pytest.mark.timeout(60)
 
 def _worker_bytes_per_key(client: Client) -> Dict[str, Dict[str, Any]]:
     """Return, per worker, a dict ``{key: nbytes}`` for every key currently
-    resident in that worker's in-memory data store. Includes zeros -- only
-    in-memory keys are visible; spilled-to-disk keys are ignored on purpose
-    so we capture what is actually consuming RAM.
+    resident in that worker's in-memory data store. Includes zeros -- only in-memory keys are visible; spilled-to-disk
+    keys are ignored on purpose so we capture what is actually consuming RAM.
     """
 
     def inspect(dask_worker):
@@ -70,11 +69,10 @@ def _largest_key_per_worker(per_worker: Dict[str, Dict[str, Any]]) -> Dict[str, 
 def _make_callback(op: str, callback_results: List[float]) -> Callable:
     """Compile ``def _cb(window): ...`` reducing ``window[-1]`` via ``arr.<op>()``.
 
-    Mirrors ``test_chain.py::_make_callback``: the snippet is built with
-    ``compile``/``exec`` and the source is attached via ``__source__`` so the
-    AST-based precompute analyzer can read the reduction op. The extra
-    ``callback_results`` override lets the closure append into the test's
-    list (callbacks run in-process on the Deisa event loop).
+    Mirrors ``test_chain.py::_make_callback``: the snippet is built with ``compile``/``exec`` and the source is
+    attached via ``__source__`` so the AST-based precompute analyzer can read the reduction op. The extra
+    ``callback_results`` override lets the closure append into the test's list (callbacks run in-process on the Deisa
+    event loop).
     """
     src = textwrap.dedent(
         f"def _cb(window):\n    arr = window[-1]\n    s = arr.{op}().compute()\n    callback_results.append(float(s))\n"
@@ -90,9 +88,8 @@ def _make_callback(op: str, callback_results: List[float]) -> Callable:
 def _make_compute_callback(body: str, results: List[Any]) -> Callable:
     """Compile ``def _cb(window): <body>`` appending into ``results``.
 
-    ``body`` is the dedented statement list (``textwrap.indent`` re-indents
-    it inside the function). Used by the multi-reduction / axis e2e tests
-    whose callbacks call several reductions and store their outputs.
+    ``body`` is the dedented statement list (``textwrap.indent`` re-indents it inside the function). Used by the
+    multi-reduction / axis e2e tests whose callbacks call several reductions and store their outputs.
     """
     src = textwrap.dedent(f"def _cb(window):\n{textwrap.indent(body, '    ')}")
     scope: Dict[str, Any] = {"results": results, "np": np}
@@ -125,14 +122,12 @@ class TestPrecomputeMemory:
     """End-to-end tests that measure worker memory to confirm the full chunk
     never crosses the bridge -> worker boundary on the precompute path.
 
-    Chain folding (expressions like ``(arr * arr).sum()`` being folded into
-    a single per-bridge branch_func) is NOT exercised here end-to-end. It is
-    covered at the unit level by test/test_chain.py (TestWalkChain /
-    TestChainBranchFunc). The memory layer cannot exercise it through the
-    register path: the registered callback body is both what the analyzer
-    inspects to detect the chain AND what runs on the already-chain-folded
-    partials, so a callback that expresses the chain source cannot correctly
-    consume the folded scalar partials. See test_chain.py for the mechanism.
+        Chain folding (expressions like ``(arr * arr).sum()`` being folded into a single per-bridge branch_func) is NOT
+        exercised here end-to-end. It is covered at the unit level by test/test_chain.py (TestWalkChain /
+        TestChainBranchFunc). The memory layer cannot exercise it through the register path: the registered callback
+        body is both what the analyzer inspects to detect the chain AND what runs on the already-chain-folded partials,
+        so a callback that expresses the chain source cannot correctly consume the folded scalar partials. See
+        test_chain.py for the mechanism.
     """
 
     @pytest.mark.parametrize(
@@ -141,13 +136,12 @@ class TestPrecomputeMemory:
     )
     def test_precompute_worker_only_sees_partials(self, env_setup_2workers, op):
         """With a callback that reduces the global chunk to a scalar via
-        ``arr.<op>()``, only the per-bridge partial (scalar/dict-blob size,
-        ~8 bytes) should appear on workers. The full chunk (~32 MB) must NOT.
+        ``arr.<op>()``, only the per-bridge partial (scalar/dict-blob size, ~8 bytes) should appear on workers. The
+        full chunk (~32 MB) must NOT.
 
-        Parametrized over ``sum`` / ``mean`` / ``var`` / ``std``; the
-        callback result is asserted against the true global value computed
-        from the same data ``generate_data`` returned (a loose ``x >= 0.0``
-        predicate would satisfy a buggy ``0.0`` result).
+        Parametrized over ``sum`` / ``mean`` / ``var`` / ``std``; the callback result is asserted against the true
+        global value computed from the same data ``generate_data`` returned (a loose ``x >= 0.0`` predicate would
+        satisfy a buggy ``0.0`` result).
         """
         client, cluster = env_setup_2workers
         # Use a chunk big enough that "big" vs "small" is unmistakable.
@@ -229,8 +223,7 @@ class TestPrecomputeMemory:
 
     def test_no_precompute_worker_sees_full_chunk(self, env_setup_2workers):
         """Control test: WITHOUT precompute, the full chunk should land on
-        workers. Confirms the memory-measurement harness is sensitive enough
-        to actually see the difference.
+        workers. Confirms the memory-measurement harness is sensitive enough to actually see the difference.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -294,14 +287,12 @@ class TestPrecomputeMemory:
     def test_multi_array_precompute_end_to_end(self, env_setup_2workers):
         """Two arrays registered in ONE callback with precompute=True.
 
-        Each array must get its OWN precompute branch (``x-sum`` for the reduction on
-        ``x``, ``y-sum`` for the reduction on ``y``), so the callback receives
-        per-bridge partial stacks -- shape ``(2,)`` with two bridges -- for BOTH
-        arrays.
+        Each array must get its OWN precompute branch (``x-sum`` for the reduction on ``x``, ``y-sum`` for the
+        reduction on ``y``), so the callback receives per-bridge partial stacks -- shape ``(2,)`` with two bridges --
+        for BOTH arrays.
 
-        The ``(2,)`` shape asserts are the real discriminator: a value-only
-        assert would pass even if both arrays delivered a legacy tiled
-        full-chunk result (a full-chunk sum equals the global sum).
+        The ``(2,)`` shape asserts are the real discriminator: a value-only assert would pass even if both arrays
+        delivered a legacy tiled full-chunk result (a full-chunk sum equals the global sum).
         """
         client, cluster = env_setup_2workers
         chunk_shape = (8, 16)
@@ -351,10 +342,9 @@ class TestPrecomputeMemory:
     def test_multi_reduction_callback_receives_all_reductions(self, env_setup_2workers):
         """A 3-reduction callback receives all three true values.
 
-        Every reduction's partials must be delivered to the callback: if only
-        the FIRST reduction's were (`darr = darr_chunks[0]`), the other
-        reductions would run on the sum-stack artifact and return values far
-        from the truth.
+        Every reduction's partials must be delivered to the callback: if only the FIRST reduction's were (`darr =
+        darr_chunks[0]`), the other reductions would run on the sum-stack artifact and return values far from the
+        truth.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -398,11 +388,9 @@ class TestPrecomputeMemory:
     def test_same_op_axis_pairs_survive_end_to_end(self, env_setup_2workers):
         """Precomputed delivery: ``arr.sum()`` + ``arr.sum(axis=0)`` both correct.
 
-        Two ``sum`` hints on the same array MUST carry distinct output_keys
-        (``f-sum`` and ``f-sum-axis0``): if both shared ``f-sum``, one branch
-        would overwrite the other in the bridge's ``output_key`` index and
-        the callback would receive a wrong shape (or an exception) for the
-        axis reduction.
+        Two ``sum`` hints on the same array MUST carry distinct output_keys (``f-sum`` and ``f-sum-axis0``): if both
+        shared ``f-sum``, one branch would overwrite the other in the bridge's ``output_key`` index and the callback
+        would receive a wrong shape (or an exception) for the axis reduction.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -447,11 +435,9 @@ class TestPrecomputeMemory:
         """Precomputed delivery: ``arr.mean(axis=0)`` and ``arr.sum(axis=1)``,
         (2, 1) grid.
 
-        ``mean(axis=0)`` reduces over the 2 row-strips (red grid level 0,
-        kept level extent 1); ``sum(axis=1)`` keeps grid level 0 (Phase B
-        concatenation over the 2 row-strips along data axis 0). A crash or
-        a silently wrong shape/value here means the red/kept-level
-        geometry was misread.
+                ``mean(axis=0)`` reduces over the 2 row-strips (red grid level 0, kept level extent 1); ``sum(axis=1)``
+                keeps grid level 0 (Phase B concatenation over the 2 row-strips along data axis 0). A crash or a
+                silently wrong shape/value here means the red/kept-level geometry was misread.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -497,10 +483,9 @@ class TestPrecomputeMemory:
     def test_multiple_callbacks_same_array_each_correct(self, env_setup_2workers):
         """Two callbacks on the same array each get their own result.
 
-        The per-array branch list must MERGE across callbacks: if
-        ``set_task_branches`` blindly overwrote it, only the LAST registered
-        callback's branches would be executed and the first callback would
-        compute ``sum()`` of the other's mean blobs.
+        The per-array branch list must MERGE across callbacks: if ``set_task_branches`` blindly overwrote it, only the
+        LAST registered callback's branches would be executed and the first callback would compute ``sum()`` of the
+        other's mean blobs.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -542,11 +527,9 @@ class TestPrecomputeMemory:
     def test_registration_refuses_chained_reduction(self, env_setup_2workers, expr):
         """Registration REFUSES non-direct reductions loudly.
 
-        ``(arr * arr).sum()`` and ``arr[2:5].sum()`` cannot be reconstructed
-        on the callback side (the unrewritten callback re-applies the chain on
-        the partials, e.g. ``(sum x)^2`` instead of ``sum x^2``), so
-        registration raises ``UnsupportedReductionError`` instead of shipping
-        a silently wrong value end-to-end.
+        ``(arr * arr).sum()`` and ``arr[2:5].sum()`` cannot be reconstructed on the callback side (the unrewritten
+        callback re-applies the chain on the partials, e.g. ``(sum x)^2`` instead of ``sum x^2``), so registration
+        raises ``UnsupportedReductionError`` instead of shipping a silently wrong value end-to-end.
         """
         from deisa.dask.precompute_analyzer import UnsupportedReductionError
 
