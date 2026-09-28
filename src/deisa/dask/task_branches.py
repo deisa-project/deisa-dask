@@ -651,15 +651,17 @@ def extract_reduction_hints(
         logger.debug("extract_reduction_hints: failed to get graph: %s", e)
         return hints
 
-    # First pass: refuse expressions whose chunk stages depend on another reduction's aggregate -- those are only
-    # correct end-to-end on the workers (with the full chunk), never as per-bridge partials. Done once per dask array so
-    # a cross-reduction expression yields zero hints, not zero inner hints plus a wrong outer branch.
+    # Refusal pass: expressions whose chunk stages depend on another reduction's aggregate are only correct
+    # end-to-end on the workers (with the full chunk), never as per-bridge partials. Also memoizes each aggregate's
+    # chunk layer so the hint pass below never re-resolves it. Done once per dask array so a cross-reduction
+    # expression yields zero hints, not zero inner hints plus a wrong outer branch.
+    chunk_layers: Dict[str, Optional[str]] = {}
     for layer_name in list(graph.layers):
         if not _is_aggregate_layer(layer_name):
             continue
         # Resolve the chunk layer from THIS aggregate's own task references (a positional base-name match could hit a
         # same-op aggregate's chunk layer and inspect the wrong subgraph).
-        chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
+        chunk_layer_name = chunk_layers[layer_name] = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             continue
         reachable = _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name)
@@ -699,8 +701,8 @@ def extract_reduction_hints(
             continue
 
         # Find the matching chunk layer via this aggregate's OWN upstream references (base-name matching is
-        # ordering-dependent).
-        chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
+        # ordering-dependent). Already resolved by the refusal pass above (same graph, same loop domain).
+        chunk_layer_name = chunk_layers[layer_name]
         if chunk_layer_name is None:
             logger.debug("extract_reduction_hints: no chunk layer for %s", layer_name)
             continue

@@ -534,15 +534,11 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any]) -> Li
                 placeholder = placeholder.compute(scheduler="sync")
             except Exception:
                 # If .compute() fails (e.g. no dask client in the CI worker process), fall back to a synthetic numpy
-                # array that matches the dask array's shape/dtype/chunks so the chunk_func still produces a
-                # representative partial.
-                try:
-                    placeholder = np.zeros(
-                        getattr(array_stub, "shape", (4, 4)),
-                        dtype=getattr(array_stub, "dtype", np.float64),
-                    )
-                except Exception:
-                    placeholder = np.zeros((4, 4), dtype=np.float64)
+                # array with the dask array's shape/dtype when retrievable, else a (4, 4) float64 stand-in, so the
+                # chunk_func still produces a representative partial.
+                shape = getattr(array_stub, "shape", None)
+                dtype = getattr(array_stub, "dtype", np.float64)
+                placeholder = np.zeros(shape if shape else (4, 4), dtype=dtype)
 
         branch = _try_chain_branch(
             branch=branch_dict,

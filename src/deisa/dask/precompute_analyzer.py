@@ -147,10 +147,10 @@ def analyze_callback(
 
     scope = _Scope()
     # Pre-bind common aliases so callbacks can use ``da.sum(...)`` / ``np.array(...)`` without explicit imports (all
-    # lazy, never executed).
-    scope.set("da", da)
-    scope.set("dask_array", da)
-    scope.set("dask", da)
+    # lazy, never executed). ``dask_array`` is the module's own import alias; ``dask`` covers bare-``dask.array``
+    # attribute chains, both resolve to the same ``dask.array`` module.
+    for alias in ("da", "dask_array", "dask"):
+        scope.set(alias, da)
     scope.set("np", np)
 
     for idx, pname in enumerate(param_names):
@@ -1111,9 +1111,6 @@ def _truthy(value: Any) -> Optional[bool]:
         return value
     if isinstance(value, (int, float, str, list, tuple, np.ndarray)):
         return bool(value)
-    if isinstance(value, da.Array):
-        # Don't materialize; assume truthy? Be safe and walk both branches
-        return None
-    if isinstance(value, _Missing):
-        return None
+    # A dask array (would require materializing to answer) and _Missing (an open-world unknown) both leave the value
+    # genuinely unresolvable -- walk both branches downstream.
     return None
