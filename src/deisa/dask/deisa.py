@@ -60,7 +60,6 @@ from deisa.dask.precompute_analyzer import (
     PrecomputeRuntimeError,
     UnsupportedReductionError,
 )
-from deisa.dask.task_branches import _normalize_reduction_axis
 from deisa.dask.utils import _PrecomputedDeisaArray, build_deisa_array, get_client, make_precomputed_view  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -326,12 +325,12 @@ class Deisa(IDeisa):
             # File the merged set with the handshake actor right away: a bridge on the wait_for_go=False path fetches
             # lazily on its FIRST send(), which can happen long before the next execute_callbacks() cycle.
             self._flush_branches_to_handshake()
-            # Record per-callback reduction descriptors (key, op, axis sig, kind) for the topic handler's dispatch view.
-            # ``dispatch_sig`` is the branch builder's signature, NOT a re-normalization of ``chunk_axis``: a chunk axis
-            # is partial even for window reads whose runtime reduction is full.
+            # Record per-callback reduction descriptors (key, op, reduction axes, kind) for the topic handler's
+            # dispatch view. ``reduction_axes`` is the branch builder's recorded value, NOT a re-normalization of
+            # ``chunk_axis``: a chunk axis is partial even for window reads whose runtime reduction is full.
             descriptors: Dict[str, List[Tuple[str, str, Tuple[int, ...], str]]] = {}
             for b in branches:
-                desc = (b.output_key, b.op_name, b.dispatch_sig, b.output_kind)
+                desc = (b.output_key, b.op_name, b.reduction_axes, b.output_kind)
                 if desc not in descriptors.setdefault(b.input_name, []):
                     descriptors[b.input_name].append(desc)
             self._callback_reductions[callback_id] = descriptors
@@ -539,10 +538,7 @@ class Deisa(IDeisa):
                                 f"{len(partial_futures)}. A bridge dropped or failed a branch; refusing to "
                                 f"deliver a corrupted reduction."
                             )
-                        if (
-                            kind == "scalar"
-                            and _weak_self._dispatch_sig_for(array_name, output_key, hint_axis, array_ndim) == ()
-                        ):
+                        if kind == "scalar" and _weak_self._is_full_reduction(array_name, output_key):
                             # Full scalar reduction: stack per-bridge partials along a new axis so the callback's
                             # reduction combines them via dask's natural graph.
                             sorted_partials = sorted(partial_futures, key=lambda p: tuple(p["chunk_position"]))
@@ -624,23 +620,26 @@ class Deisa(IDeisa):
 
         return topic_handler
 
-    def _dispatch_sig_for(
-        self, array_name: str, output_key: str, hint_axis: Optional[Tuple[int, ...]], array_ndim: Optional[int]
-    ) -> Tuple[int, ...]:
-        """Return the runtime dispatch signature recorded for ``output_key``.
+    def _branch_spec_for(self, array_name: str, output_key: str) -> Optional[Any]:
+        """Return the registered :class:`BranchSpec` for ``output_key`` on ``array_name``, or ``None``.
 
-        Registered descriptors are recorded with the branch builder's ``dispatch_sig`` (``()`` for full reductions and
-        window reads, the sorted axes otherwise); every callback holding the same ``output_key`` records it
-        identically, so the first match wins. Falls back to re-normalizing the payload ``hint_axis`` when no descriptor
-        matches (e.g. the callback was unregistered).
+        ``self._branch_groups[array_name]`` is the merged spec list filed at registration time; it is the single
+        source of truth for per-reduction metadata.
         """
-        for descriptors in self._callback_reductions.values():
-            for key, _op, axes_sig, _kind in descriptors.get(array_name, []):
-                if key == output_key:
-                    return axes_sig
-        if hint_axis is None or array_ndim is None:
-            return ()
-        return _normalize_reduction_axis(hint_axis, array_ndim)
+        for spec in self._branch_groups.get(array_name, []):
+            if spec.output_key == output_key:
+                return spec
+        return None
+
+    def _is_full_reduction(self, array_name: str, output_key: str) -> bool:
+        """Whether the recorded reduction for ``output_key`` collapses the WHOLE array (full reduction).
+
+        Read from the registered :class:`BranchSpec`'s ``reduction_axes`` (``()`` = full reduction). Unregistered
+        keys return ``False`` -- without a spec there is no basis for the stack-based delivery path, and the
+        combine/dispatch machinery raises on the unregistered case anyway.
+        """
+        spec = self._branch_spec_for(array_name, output_key)
+        return spec is not None and spec.reduction_axes == ()
 
     def _build_callback_views(self, array_name: str, iteration: int, combined_by_key: Dict[str, Any]) -> Dict[str, Any]:
         """Build the per-callback dispatch view for this array's event.
@@ -658,19 +657,19 @@ class Deisa(IDeisa):
             signatures: Dict[Tuple[str, Tuple[int, ...]], Any] = {}
             reapply: Set[Tuple[str, Tuple[int, ...]]] = set()
             first = None
-            for output_key, op_name, axes_sig, kind in descriptors:
+            for output_key, op_name, reduction_axes, kind in descriptors:
                 array = combined_by_key.get(output_key)
                 if array is None:
                     raise PrecomputeRuntimeError(
                         f"_build_callback_views: callback {callback_id!r} recorded reduction {output_key!r} "
-                        f"(op {op_name!r}, axis {axes_sig!r}) on array {array_name!r} but the topic event "
+                        f"(op {op_name!r}, axes {reduction_axes!r}) on array {array_name!r} but the topic event "
                         f"carried no partials for it (delivered keys: {sorted(combined_by_key)}). "
                         f"Refusing to deliver a callback with a missing reduction."
                     )
-                sig = (op_name, axes_sig)
+                sig = (op_name, reduction_axes)
                 if sig not in signatures:
                     signatures[sig] = array
-                if kind == "scalar" and axes_sig == ():
+                if kind == "scalar" and reduction_axes == ():
                     reapply.add(sig)
                 if first is None:
                     first = array

@@ -489,7 +489,7 @@ class TestMultiReductionBranches:
                 )
 
 
-def _make_spec(output_key, op_name="sum", output_kind="scalar", dispatch_sig=(), **kw):
+def _make_spec(output_key, op_name="sum", output_kind="scalar", reduction_axes=(), **kw):
     """Minimal BranchSpec for merge_branches unit tests (no cluster needed)."""
     from deisa.dask.branch import BranchSpec
 
@@ -503,7 +503,7 @@ def _make_spec(output_key, op_name="sum", output_kind="scalar", dispatch_sig=(),
         partial_shape=(),
         partial_dtype="float64",
         op_name=op_name,
-        dispatch_sig=dispatch_sig,
+        reduction_axes=reduction_axes,
         **kw,
     )
 
@@ -524,14 +524,14 @@ def test_merge_branches_refuses_same_key_different_signature() -> None:
     """Merging a same-key/different-signature collision must raise.
 
     A window read ``x[-1].sum()`` and a true ``x.sum(axis=0)`` can both carry ``f-sum`` from different callbacks (each
-    starts a fresh per-callback seen map); their runtime dispatch signatures (() vs (0,)) differ, so a single shared
+    starts a fresh per-callback seen map); their recorded reduction axes (() vs (0,)) differ, so a single shared
     branch cannot serve both callbacks. Refusing loudly at registration beats silently delivering one callback the
     other's result.
     """
     from deisa.dask.branch import merge_branches
     from deisa.dask.precompute_analyzer import PrecomputeRuntimeError
 
-    window_read = _make_spec("f-sum", dispatch_sig=())
-    axis_zero = _make_spec("f-sum", dispatch_sig=(0,))
+    window_read = _make_spec("f-sum", reduction_axes=())
+    axis_zero = _make_spec("f-sum", reduction_axes=(0,))
     with pytest.raises(PrecomputeRuntimeError):
         merge_branches([window_read], [axis_zero])

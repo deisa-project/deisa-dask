@@ -1,0 +1,133 @@
+# _analyze_callback_for_branches — flow diagram
+
+Registration time, callback NEVER executed. Zero-based numbers = source steps in comments.
+
+                          Deisa.register(callback, arrays)
+                                        │
+                                        v
+                        _register_callback_impl (deisa.py:308)
+                          (skips everything if precompute=False
+                           -> warn + legacy full-chunk scatter)
+                                        │
+                                        v
+             _analyze_callback_for_branches(callback, arrays_metadata)   branch.py:185
+                                        │
+              +-------------------------+-------------------------------+
+              | STAGE 0: build stubs    |                               |
+              |  da.zeros(global_shape, chunks=chunk_shape,              |
+              |           name="deisa-stub-<name>")                      |
+              |  wrapped in DeisaArray (timestep=0)                      |
+              +-------------------------+-------------------------------+
+                                        │ params bound to stubs
+                                        v
+                        _analyze_branch (branch.py:500)
+                                        │
+                                        v
+             analyze_callback (precompute_analyzer.py:126)  [always strict]
+                                        │
+        +===============================+================================+
+        | STAGE 1: SOURCE (step 1)      |                                |
+        |  inspect.getsource(callback)                                   |
+        |  ast.parse -> _SourceFile                                      |
+        |  indexes ALL FunctionDefs                                      |
+        |  (helpers auto-discovered)                                     |
+        +===============================+================================+
+                                        │
+                                        v
+        +================================ STAGE 2: SYMBOLIC WALK =========+
+        |  _BoundaryWalker (precompute_analyzer.py:566)                    |
+        |                                                                  |
+        |  statements evaluated symbolically against the stubs:            |
+        |   - dask ops on stubs: executed LAZILY (free real graphs!)       |
+        |   - unknown names    -> _Missing (open-world, never crashes)     |
+        |   - helper calls     -> recursive walk in child scope            |
+        |   - if               -> True/False/UNKNOWN (both branches)       |
+        |   - for              -> static unroll (bounded range) or refuse  |
+        |   - imports          -> bound (aliases recognized)               |
+        |   - np.array(dask)   -> had_materialization=True                 |
+        |                                                                  |
+        |  OUTPUT per compute boundary                                     |
+        |   arr.compute(), client.compute(arr|[a,b]), client.submit:       |
+        |     dask_arrays += {array: <real dask Array>, lineno}            |
+        +==================================================================+
+                                        │
+                          +-------------+--------------+
+                          |  early refusals (step 6/8) |
+                          |  materialization -> MaterializationError|
+                          |  no boundary     -> NoComputeBoundaryError
+                          |  nothing found   -> NoPrecomputableReductionError
+                          +-------------+--------------+
+                                        │ boundary expressions survive
+                                        v
+        +=============== STAGE 3: GRAPH INSPECTION (step 7) ===============+
+        |  per boundary expression:                                        |
+        |                                                                  |
+        |  1. ATTRIBUTION (_match_source_arrays)                           |
+        |     which deisa-stub-<name> layers appear in graph.layers?       |
+        |     1 array -> array_name    >=2 arrays -> multi_source=True     |
+        |                                                                  |
+        |  2. CROSS-REDUCTION GATE (task_branches.py:700)                  |
+        |     chunk stage of any aggregate reaches ANOTHER aggregate?      |
+        |     e.g. (arr - arr.mean()).sum()                                |
+        |        -> UnsupportedReductionError (whole expression refused)   |
+        |                                                                  |
+        |  3. HINT per aggregate layer:                                    |
+        |     { output_key, op_name (sum/prod/max/min/mean/var/std),       |
+        |       kind (scalar|mean|moment), chunk_func_pickle,              |
+        |       chunk_kwargs (axis, dtype...), finalize, window_read,      |
+        |       array_name, multi_source }                                 |
+        +==================================================================+
+                                        │ hints
+                                        v
+        +================== STAGE 4: hints -> BranchSpecs =================+
+        |  _analyze_branch loop (branch.py:532..612)                       |
+        |                                                                  |
+        |  candidate map (array_name, op_name) -> [(agg_layer, graph)]     |
+        |                                                                  |
+        |  per hint:                                                       |
+        |   multi_source -> UnsupportedReductionError                      |
+        |   unpickle chunk_func                                           |
+        |   materialize stub FIRST chunk (scheduler="sync")                |
+        |     then try (in order):                                         |
+        |                                                                  |
+        |   a) _try_chain_branch                                           |
+        |      exactly 1 candidate & foldable chain:                       |
+        |        _walk_chain -> pointwise steps (mul, slice, ...)          |
+        |        compose into ONE branch_func (memoized)                   |
+        |        deliver_direct = (len(chain)==1)                          |
+        |                                                                  |
+        |   b) _try_length1_branch (fallback)                              |
+        |      raw chunk_func + kwargs; deliver_direct                     |
+        |      from _candidate_chain_classify (conservative)               |
+        |                                                                  |
+        |   both fail -> RuntimeError (defensive)                          |
+        |                                                                  |
+        |  BranchSpec = pickle-able branch_func(chunk)->partial            |
+        |  + output_key, input_name, output_kind, partial_shape,           |
+        |    partial_dtype, finalize, reduction_axes, deliver_direct,        |
+        |    window_read                                                   |
+        +==================================================================+
+                                        │ branches
+                                        v
+                     registration policy gate (deisa.py:344)
+                      any deliver_direct=False -> UnsupportedReductionError
+                      no branches at all       -> NoPrecomputableReductionError
+                                        │
+                                        v
+                 set_task_branches per array -> handshake actor
+                                        │
+                            ... RUNTIME (not part of analysis) ...
+                       bridge per timestep: branch_func(chunk) -> partial
+                       scatter PARTIAL (never the full chunk)
+                       Deisa side: combine graph per output_key, kind/finalize
+                       callback sees already-combined reduction values
+
+Worked example:  def cb(arr, window): n = arr.sum(); f = (arr*arr).mean(); n.compute(); f.compute()
+
+  Stage 2 records: [sum-expr graph, mean-of-square graph]
+  Stage 3 emits:   hint1 {output_key="f-sum",        op=sum,  kind=scalar}
+                   hint2 {output_key="f-mean",       op=mean, kind=mean,  chunk_func=mean_chunk{"n","total"}}
+  Stage 4:         hint1 -> chain [sum]           len 1 -> deliver_direct=True
+                   hint2 -> chain [mul, mean]     len 2 -> deliver_direct=True
+                            (mul proven chunk-local pointwise; callback sees arr*arr rebuilt)
+  Result: 2 BranchSpecs, no full chunk ever crosses to a worker.

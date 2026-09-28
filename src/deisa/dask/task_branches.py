@@ -262,31 +262,31 @@ def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
     return False
 
 
-def _assign_output_key(array_name: str, op_name: str, axes_sig: Tuple[int, ...], seen: Dict) -> str:
+def _assign_output_key(array_name: str, op_name: str, reduction_axes: Tuple[int, ...], seen: Dict) -> str:
     """Return a per-callback-unique ``output_key`` for one reduction.
 
     The first occurrence of an op keeps the stable ``{array}-{op}`` key (existing tests assert ``a-sum`` /
-    ``f-sum`` / ``b-sum``); a later call with a DIFFERENT axis signature appends a deterministic discriminator
-    (``-axis0``, ``-axis0x1``, ``-axisall`` for a second full reduction). Two identical signatures (same op, same
-    axis -- e.g. ``arr.sum()`` written twice) keep the SAME key: they are semantically identical and dedup to one
-    branch.
+    ``f-sum`` / ``b-sum``); a later call with DIFFERENT reduction axes appends a deterministic discriminator
+    (``-axis0``, ``-axis0x1``, ``-axisall`` for a second full reduction). Two identical records (same op, same
+    reduction axes -- e.g. ``arr.sum()`` written twice) keep the SAME key: they are semantically identical and
+    dedup to one branch.
 
-        - ``:param seen:`` Mutable per-callback dict ``{(array_name, op_name): {axes_sig: output_key}}`` shared
-        across every call of :func:`extract_reduction_hints` for one callback, so keys stay unique across all
-        compute boundaries of the callback.
+        - ``:param seen:`` Mutable per-callback dict ``{(array_name, op_name): {reduction_axes: output_key}}``
+        shared across every call of :func:`extract_reduction_hints` for one callback, so keys stay unique across
+        all compute boundaries of the callback.
     """
     per_op = seen.setdefault((array_name, op_name), {})
     if not per_op:
         key = f"{array_name}-{op_name}"
     else:
-        existing = per_op.get(axes_sig)
+        existing = per_op.get(reduction_axes)
         if existing is not None:
             key = existing
-        elif axes_sig == ():
+        elif reduction_axes == ():
             key = f"{array_name}-{op_name}-axisall"
         else:
-            key = f"{array_name}-{op_name}-axis{'x'.join(map(str, axes_sig))}"
-    per_op[axes_sig] = key
+            key = f"{array_name}-{op_name}-axis{'x'.join(map(str, reduction_axes))}"
+    per_op[reduction_axes] = key
     return key
 
 

@@ -133,14 +133,14 @@ class BranchSpec:
     op_name: str = ""
     deliver_direct: bool = True
     window_read: bool = False
-    dispatch_sig: Tuple[int, ...] = ()
+    reduction_axes: Tuple[int, ...] = ()
 
 
 def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[BranchSpec]:
     """Merge two branch lists, deduping by ``output_key``.
 
-    Identical signatures (same op, same axis) share one bridge execution; same key with a DIFFERENT runtime dispatch
-    signature (e.g. a window read vs. a true axis reduction over the same axis) always raises
+    Identical signatures (same op, same reduction axes) share one bridge execution; same key with a DIFFERENT
+    reduction-axes signature (e.g. a window read vs. a true axis reduction over the same axis) always raises
     :class:`PrecomputeRuntimeError` -- the two deliver different shapes and sharing them silently delivers one callback
     the other one's result.
     """
@@ -152,12 +152,12 @@ def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[Br
             merged.append(b)
             seen[b.output_key] = b
             continue
-        if prev.dispatch_sig != b.dispatch_sig or prev.op_name != b.op_name or prev.output_kind != b.output_kind:
+        if prev.reduction_axes != b.reduction_axes or prev.op_name != b.op_name or prev.output_kind != b.output_kind:
             raise PrecomputeRuntimeError(
                 f"merge_branches: array {b.input_name!r} has two reductions sharing output_key "
                 f"{b.output_key!r} but different runtime signatures: "
-                f"(op={prev.op_name!r}, sig={prev.dispatch_sig!r}, kind={prev.output_kind!r}) vs "
-                f"(op={b.op_name!r}, sig={b.dispatch_sig!r}, kind={b.output_kind!r}). The precompute "
+                f"(op={prev.op_name!r}, axes={prev.reduction_axes!r}, kind={prev.output_kind!r}) vs "
+                f"(op={b.op_name!r}, axes={b.reduction_axes!r}, kind={b.output_kind!r}). The precompute "
                 f"delivery path cannot serve both callbacks from one branch; rename one of the reductions "
                 f"or register them on separate arrays."
             )
@@ -587,7 +587,7 @@ def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict
     (refused at registration) so a chained reduction can never sneak past the gate as "direct".
 
     ``window_read`` is True when every candidate is a window read (the callback's runtime reduction runs on the WHOLE
-    delivered array, so its dispatch signature is the FULL reduction regardless of the stub-side chunk axis).
+    delivered array, so its ``reduction_axes`` is the FULL reduction (``()``) regardless of the stub-side chunk axis).
     """
     op_name = branch.get("op_name")
     array_name = branch.get("array_name")
@@ -714,8 +714,8 @@ def _try_length1_branch(
     PROVE the reduction reads the registered root directly (no/ambiguous candidates, unwalkable chain); the caller
     computes the conservative value via :func:`_candidate_chain_classify`. ``window_read`` marks a whole-row-plane
     ``root[-1]`` read (see :mod:`deisa.dask.task_branches`): the callback's runtime reduction runs on the WHOLE
-    delivered array, so the branch's dispatch signature is the full reduction even though the stub-side chunk axis is
-    partial.
+    delivered array, so the branch's ``reduction_axes`` is the full reduction (``()``) even though the stub-side
+    chunk axis is partial.
     """
     try:
         # For ``mean`` and ``moment`` the bridge overrides ``keepdims=True`` (see
@@ -772,8 +772,8 @@ def _build_branch(
     to ``len(chain) == 1`` (a single layer means the chunk stage is the only layer between root and aggregate).
 
     ``window_read`` marks a whole-row-plane ``root[-1]`` read: the callback's runtime reduction runs on the WHOLE
-    delivered array, so the branch's dispatch signature (``dispatch_sig``) is the FULL reduction even though the
-    stub-side chunk axis is partial.
+    delivered array, so the branch's ``reduction_axes`` is the FULL reduction (``()``) even though the stub-side
+    chunk axis is partial.
     """
     kind = branch.get("kind", _BRANCH_KIND_SCALAR)
     finalize = branch.get("finalize")
@@ -792,15 +792,15 @@ def _build_branch(
 
     partial_shape, partial_dtype = _discover_partial_metadata(chain_branch_func, placeholder, branch)
 
-    # Runtime dispatch signature: what the callback's reduction call on the delivered view must match. A window read
-    # runs on the whole array (full reduction); any other direct reduction normalizes its chunk axis against the
-    # registered array's ndim.
+    # Reduction axes the callback's delivered view will be asked for: what the callback's reduction call on the
+    # delivered view must match. A window read runs on the whole array (full reduction, ``()``); any other direct
+    # reduction normalizes its chunk axis against the registered array's ndim.
     if window_read:
-        dispatch_sig: Tuple[int, ...] = ()
+        reduction_axes: Tuple[int, ...] = ()
     elif chunk_axis is None:
-        dispatch_sig = ()
+        reduction_axes = ()
     else:
-        dispatch_sig = _normalize_reduction_axis(chunk_axis, array_ndim)
+        reduction_axes = _normalize_reduction_axis(chunk_axis, array_ndim)
 
     return BranchSpec(
         output_key=branch["output_key"],
@@ -814,7 +814,7 @@ def _build_branch(
         op_name=branch.get("op_name", ""),
         deliver_direct=(len(chain or []) == 1) if deliver_direct is None else deliver_direct,
         window_read=window_read,
-        dispatch_sig=dispatch_sig,
+        reduction_axes=reduction_axes,
     )
 
 
