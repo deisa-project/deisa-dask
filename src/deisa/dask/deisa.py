@@ -136,12 +136,11 @@ class Deisa(IDeisa):
         # True once execute_callbacks() has run; no new callbacks may be
         # registered after the cycle has started.
         self._execute_callbacks_called = False
-        # Per-array merged branch groups. Merged AND filed with the handshake
-        # actor at registration; pruned at unregistration in memory only
-        # (an actor call from inside the async topic handler stalls the
-        # handler loop), with the pruned set re-filed at the per-cycle
-        # boundary by ``execute_callbacks`` -> ``_flush_branches_to_handshake``.
-        # The actor API (``set_task_branches``) itself is unchanged.
+        # Per-array merged branch groups. Merged and filed at registration;
+        # pruned in memory only at unregistration (an actor call inside the
+        # async topic handler stalls the handler loop), re-filed at the
+        # per-cycle boundary by ``execute_callbacks`` ->
+        # ``_flush_branches_to_handshake``.
         self._branch_groups: Dict[str, List[Any]] = {}
         # callback_id -> array_name -> ordered [(output_key, op_name, axis_sig, kind)]
         # recorded at registration; the topic handler builds the per-callback
@@ -312,13 +311,10 @@ class Deisa(IDeisa):
         }
 
         # NOTE: ``self._callbacks[callback_id]`` is written at the END of this
-        # method, only after the precompute analysis and topic subscription
-        # succeed. Writing it before the analysis left a half-registered
-        # callback behind when the analysis raised
-        # (``NoPrecomputableReductionError`` / ``UnsupportedReductionError``):
-        # the id stayed in ``_callbacks`` (but not in ``_callbacks_by_array``, with
-        # no topic handler), so it was a permanent leak unreachable via
-        # ``unregister_callback``, and ``callback.callback_id`` was never set.
+        # method, only after the analysis and topic subscription succeed.
+        # Writing it earlier left a half-registered entry behind when the
+        # analysis raised: the id stayed unreachable via
+        # ``unregister_callback`` and ``callback.callback_id`` was never set.
 
         # Analyze all registered arrays together (single pass, not per-array loop).
         # The method takes the full {name: stub} dict so cross-array callbacks (e.g. cb(temperature, pressure))
@@ -335,13 +331,11 @@ class Deisa(IDeisa):
                 f"use the legacy full-chunk scatter path."
             )
         else:
-            # Single analysis call for all arrays. No loop overhead.
-            # The method takes the full registered_arrays dict, and we pass arrays_metadata here.
-            # Each BranchSpec carries the registered array it descends from (``input_name``); branches
-            # are grouped per array in memory, so each bridge fetches only the
-            # branches that belong to its own array (filed once per cycle by
-            # ``execute_callbacks``). Arrays with no branches simply
-            # fall back to the legacy full-chunk scatter path.
+            # Single analysis pass for all arrays (cross-array callbacks work
+            # because the method takes the full {name: stub} dict). Each
+            # BranchSpec carries its source array (``input_name``); branches
+            # are grouped per array in memory, so each bridge fetches only its
+            # own array's branches (filed per cycle by ``execute_callbacks``).
             branches = _analyze_callback_for_branches(callback, self.arrays_metadata, precompute=True)
             if not branches:
                 logger.debug(
@@ -359,12 +353,11 @@ class Deisa(IDeisa):
                     f"full-chunk scatter path, redesign the callback to use a single dask reduction (sum, mean, var, "
                     f"std, min, max, prod) and avoid expressions whose reduction depends on another reduction's output."
                 )
-            # Refuse non-direct reductions. A reduction whose input is
-            # a pointwise chain or slice ((arr*arr).sum(), arr[2:5].sum()) cannot
-            # be reconstructed on the callback side -- the precompute delivery
-            # would silently compute the reduction of the WRONG input. The
-            # bridge scatters only chunk-local partials; the callbacks' source is
-            # not rewritten. Loud refusal beats silent wrong values.
+            # Refuse non-direct reductions: a reduction over a pointwise
+            # chain or slice ((arr*arr).sum(), arr[2:5].sum()) cannot be
+            # reconstructed on the callback side -- delivery would compute
+            # the reduction of the WRONG input. Loud refusal beats a silent
+            # wrong value.
             for b in branches:
                 if not b.deliver_direct:
                     raise UnsupportedReductionError(
@@ -375,15 +368,12 @@ class Deisa(IDeisa):
                         f"reconstruct correctly on the callback side. Register a plain arr.<op>() reduction "
                         f"or use precompute=False."
                     )
-            # Group branches by their source registered array. Merge with the
-            # branches of previously registered callbacks on the same array:
-            # every callback's array gets its OWN set (identical signature ->
-            # identical output_key -> shared single branch; distinct reductions
-            # coexist). Merging/pruning is in-memory only; the merged sets are
-            # filed with the handshake actor once per cycle by
-            # ``execute_callbacks`` -> ``_flush_branches_to_handshake``, just
-            # before the bridges are unblocked (never from inside a running
-            # event handler: an actor call there stalls the handler loop).
+            # Group branches by source array and merge with previously
+            # registered callbacks' branches (identical signature -> shared
+            # single branch; distinct reductions coexist). Merging/pruning is
+            # in-memory only: filing happens in ``execute_callbacks`` ->
+            # ``_flush_branches_to_handshake``, never inside a running event
+            # handler (an actor call there stalls the handler loop).
             by_array: Dict[str, List[Any]] = {}
             for b in branches:
                 by_array.setdefault(b.input_name, []).append(b)
@@ -394,15 +384,11 @@ class Deisa(IDeisa):
             # on the wait_for_go=False path fetches lazily on its FIRST send(),
             # which can happen long before the next execute_callbacks() cycle.
             self._flush_branches_to_handshake()
-            # Record the per-callback reduction descriptors (output_key, op,
-            # normalized axis signature, kind). The topic handler builds the
-            # callback's dispatch view from these. ``dispatch_sig`` is the
-            # signature computed by the branch builder (window reads and
-            # full reductions -> ``()``; axis reductions -> the sorted axes),
-            # NOT a re-normalization of ``chunk_axis`` here: re-normalizing
-            # would mislabel window reads (their chunk axis is partial even
-            # though the callback's runtime reduction is full) and drift from
-            # the signature the dispatch view matches against.
+            # Record per-callback reduction descriptors (key, op, axis sig,
+            # kind) for the topic handler's dispatch view. ``dispatch_sig``
+            # is the branch builder's signature, NOT a re-normalization of
+            # ``chunk_axis``: a chunk axis is partial even for window reads
+            # whose runtime reduction is full.
             descriptors: Dict[str, List[Tuple[str, str, Tuple[int, ...], str]]] = {}
             for b in branches:
                 desc = (b.output_key, b.op_name, b.dispatch_sig, b.output_kind)
@@ -422,10 +408,7 @@ class Deisa(IDeisa):
                 self.client.subscribe_topic(array_name, handler)
 
         # Register the callback payload only after every step that can raise
-        # (analysis, branch filing, topic subscription) has succeeded. Writing it
-        # earlier left a permanent half-registered entry in ``_callbacks``
-        # (unreachable via ``unregister_callback``) whenever the analysis raised
-        # ``NoPrecomputableReductionError`` / ``UnsupportedReductionError``.
+        # (analysis, branch filing, subscription) has succeeded.
         self._callbacks[callback_id] = {
             "callback": callback,
             "when": when,
@@ -437,21 +420,12 @@ class Deisa(IDeisa):
         return callback_id
 
     def _prune_branches(self, array_name: str) -> None:
-        # Recompute the in-memory per-array branch set from the descriptors of
-        # the callbacks that remain registered on this array. Branches exist
-        # only because some registered callback's reduction needs them; without
-        # pruning, a later valid registration on the same array collides with
-        # the stale (output_key, signature) at merge_branches and is permanently
-        # refused.
-        #
-        # NOTE: this deliberately does NOT re-file the handshake actor
-        # (``set_task_branches``). Unregistering also runs when a callback's
-        # exception handler unregisters it mid-dispatch, i.e. from INSIDE the
-        # async topic handler; an actor call there stalls the handler and drops
-        # the next iteration's event (test_callback_throws regressed exactly
-        # that way). The pruned set is filed with the actor by the next
-        # ``execute_callbacks`` -> ``_flush_branches_to_handshake``, which is
-        # the single filing point for both registration and unregistration.
+        # Recompute the per-array branch set from the remaining registered
+        # callbacks (otherwise a later registration collides with the stale
+        # (output_key, signature) at merge_branches). Deliberately does NOT
+        # re-file the handshake actor: unregistering can run INSIDE the async
+        # topic handler, where an actor call stalls the handler loop; the
+        # pruned set is filed by the next ``_flush_branches_to_handshake``.
         descriptors: Dict[str, List[Tuple[str, str, Tuple[int, ...], str]]] = {}
         for cid in self._callbacks_by_array.get(array_name, ()):
             for arr, descs in self._callback_reductions.get(cid, {}).items():
@@ -502,14 +476,8 @@ class Deisa(IDeisa):
 
         q = Queue(f"{FEEDBACK_QUEUE_PREFIX}{key}", client=self.client, maxsize=self.feedback_queue_size)
 
-        # TODO: check for consistency
-        # if q.qsize() > 0:
-        #     # check for consistency
-        #     t, _ = q.get()
-        #     if timestep < t:
-        #         raise ValueError(f"timestep {timestep} is smaller than previous timestep {t}")
-        #     elif timestep == t:
-        #         raise ValueError(f"timestep {timestep} has already been set")
+        # TODO: consistency check -- reject an out-of-order or duplicate
+        # timestep here once feedback ordering semantics are settled.
 
         value = (timestep, value)
         q.put(value)
@@ -517,14 +485,12 @@ class Deisa(IDeisa):
     def _flush_branches_to_handshake(self) -> None:
         """File every array's current branch set with the handshake actor.
 
-        Called at the end of every successful ``register_callback`` and once
-        per cycle by ``execute_callbacks`` (the latter BEFORE the bridges are
-        unblocked, so lazy first-send fetchers also read complete state).
-        ``unregister_callback`` never files: it can run from inside the async
-        topic handler (exception-handler auto-unregister) and an actor call
-        there stalls the handler loop, dropping the next iteration's event.
-        Filing the pruned state is deferred to the next flush point — the
-        next registration or the next ``execute_callbacks()``.
+        Called by ``register_callback`` (a bridge on the wait_for_go=False
+        path fetches lazily on first send(), possibly before the next cycle)
+        and by ``execute_callbacks`` (before the bridges are unblocked).
+        ``unregister_callback`` never files: an actor call inside the async
+        topic handler stalls the handler loop. The pruned state is filed at
+        the next flush point.
         """
         for arr_name, branches in self._branch_groups.items():
             self.handshake.set_task_branches(arr_name, branches)
@@ -618,20 +584,15 @@ class Deisa(IDeisa):
 
                 precomputed = payload.get("precomputed")
                 if precomputed:
-                    # Precompute path: each ``futures`` entry is one (bridge, reduction) pair with the partial's reduced
-                    # shape/dtype. Group by ``output_key`` and dispatch on the partial ``kind``:
-                    # - ``"scalar"`` + FULL reduction (no axis / axis covers every data axis): stack per-bridge
-                    #   partials along a new axis via ``da.stack``; the callback's reduction (e.g. ``arr.sum()``)
-                    #   aggregates the stack through dask's natural graph.
-                    # - ``"scalar"`` + AXIS reduction (e.g. ``arr.sum(axis=0)``): the per-bridge partials are plain
-                    #   arrays reduced over the red axes and still splittable over the KEPT axes. The two-phase
-                    #   combine folds the red grid levels (binary-ufunc fold) and concatenates over the kept levels --
-                    #   only the kept extents are multiplied by the grid (concatenation), so the shape is correct.
-                    # - ``"mean"`` / ``"moment"``: each bridge ships a ``{n, total[, M]}`` dict blob (per dask's
-                    #   ``mean_chunk`` / ``moment_chunk``). The two-phase combine calls ``mean_agg`` / ``moment_agg``
-                    #   over the nested red-level structure and concatenates over the kept levels, producing the
-                    #   FINAL correctly shaped reduction (this is what makes ``var``/``std`` correct: the callback
-                    #   receives the final value, never a one-element array whose re-applied ``.var()`` is forced to 0).
+                    # Precompute path: one ``futures`` entry per (bridge,
+                    # reduction); group by ``output_key`` and dispatch on kind:
+                    # - scalar FULL: ``da.stack`` partials; the callback's
+                    #   reduction combines them via dask's graph.
+                    # - scalar AXIS: two-phase combine folds red grid levels,
+                    #   concatenates kept levels.
+                    # - mean/moment: ``{n, total[, M]}`` dict blobs; two-phase
+                    #   combine calls ``mean_agg``/``moment_agg`` and delivers
+                    #   the FINAL value (not a re-.var()-able (1,1) array).
                     by_reduction: Dict[str, List[Any]] = {}
                     for f in futures:
                         by_reduction.setdefault(f["output_key"], []).append(f)
@@ -672,10 +633,10 @@ class Deisa(IDeisa):
                             else:
                                 combined_by_key[output_key] = da.stack(blocks)
                         elif kind in ("mean", "moment") or kind == "scalar":
-                            # Dict-blob partials (mean/moment) OR plain-array axis partials (scalar): the two-phase
-                            # combine reduces over the red grid levels and concatenates over the kept levels. It needs
-                            # the ortographic grid<->data-axis map: pass the metadata grid extent and global shape so
-                            # the output shape is the full kept extent and any grid/metadata contradiction is loud.
+                            # Dict blobs or plain-array axis partials: the
+                            # two-phase combine folds red levels and
+                            # concatenates kept levels; pass the grid extent
+                            # and global shape so shape errors are loud.
                             combined_by_key[output_key] = _combine_array_from_partials(
                                 partial_futures,
                                 kind=kind,
@@ -700,9 +661,8 @@ class Deisa(IDeisa):
                         f"topic_handler: precompute path produced {len(combined_by_key)} reduction chunk(s) "
                         f"with shapes {[c.shape for c in combined_by_key.values()]}"
                     )
-                    # Build the per-callback dispatch view: each callback sees ITS OWN combined array per recorded
-                    # reduction. The view neutralizes the callback's re-application and refuses calls
-                    # that were never recorded.
+                    # Per-callback dispatch view: each callback sees its OWN
+                    # combined array; the view rejects unrecorded calls.
                     views = _weak_self._build_callback_views(array_name, iteration, combined_by_key)
                 else:
                     views = {}

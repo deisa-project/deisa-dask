@@ -228,10 +228,9 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
         raise
 
 
-# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold used in
-# Phase A of the axis combine: partials for a scalar axis reduction are plain
-# arrays (reduced axes already dropped by the chunk func) and combining the
-# red-level entries is a binary-ufunc fold over the identical shapes.
+# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for Phase A
+# of the axis combine: scalar-axis partials are plain arrays (reduced axes
+# already dropped), combined by binary-ufunc fold over identical shapes.
 _SCALAR_FOLDS = {
     "sum": lambda entries: np.sum(entries, axis=0),
     "prod": lambda entries: np.prod(entries, axis=0),
@@ -495,12 +494,11 @@ def _discover_partial_metadata(
 
 def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True) -> List[BranchSpec]:
     """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch."""
-    # Single AST walk: analyze_callback returns BOTH the reduction hints AND the
-    # walker's dask_arrays in one pass. (Calling the hints-extraction and the
-    # walker separately would parse + walk the callback's AST twice.) The
-    # dask_arrays are the dask expressions the walker built at each compute
-    # boundary (e.g. ``(arr*arr).sum()``). The registered placeholders' graphs
-    # only have the root layer, not the chain, so the chain walker needs these.
+    # Single AST walk: analyze_callback returns reduction hints AND the
+    # walker's dask_arrays in one pass. The dask_arrays are the walker's
+    # expressions at each compute boundary (e.g. ``(arr*arr).sum()``); the
+    # registered placeholders only have the root layer, so the chain walker
+    # needs these.
 
     try:
         hints, walker_dask_arrays = analyze_callback(callback, registered_arrays, precompute=precompute)
@@ -513,16 +511,10 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
     if not hints:
         return []
 
-    # The chain walker needs at least one dask expression to walk. The AST walker builds one dask_arrays entry per
-    # compute boundary. If there's nothing in the list, the registered placeholder is the only thing available,
-    # but its graph is the root layer (no chain). We fall back to the length-1 path in that case.
-    # Build a per-hint candidate map from ALL walker graphs: a callback with several reductions can produce
-    # several graphs (one per boundary, e.g. ``s=arr.sum(); m=arr.mean()``) or one graph with several aggregate
-    # layers (e.g. ``(arr*arr).sum() + arr.max()``). Each candidate maps the aggregate layer's canonical op name
-    # (matching the hint's ``op_name``) to the (layer_name, graph) pair it belongs to.
-    # Candidates are keyed by (array_name, op_name): two registered arrays each doing the same reduction
-    # (e.g. ``arr_a.sum()`` + ``arr_b.sum()``) contribute their OWN aggregate layers, so each folds its own
-    # chain instead of colliding on the bare op name.
+    # Candidate map keyed by (array_name, op_name): from ALL walker graphs,
+    # each aggregate layer maps its canonical op name to its (layer, graph).
+    # Keying by array avoids collisions when two arrays run the same
+    # reduction (each folds its own chain).
     aggregate_candidates: Dict[Tuple[str, str], List[Tuple[str, Any]]] = {}
     for arr_info in walker_dask_arrays:
         candidate = arr_info.get("array")
@@ -539,19 +531,18 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 continue
             aggregate_candidates.setdefault((candidates_array_name, op_name), []).append((layer_name, graph))
 
-    # The chain walker folds multi-layer pointwise chains into one branch_func. A chain is unique by its
-    # (agg-layer-name, length). Hints MUST be folded with their OWN aggregate layer (matched by op_name via the
-    # candidate map); folding a shared chain -- e.g. the first aggregate of the first walked graph -- into every
-    # hint is the multi-reduction bug this selection prevents. ``_seen_chains`` memoizes identical (agg-name,
-    # length) pairs so identical expressions reuse the same functools.partial object.
+    # Fold each hint with its OWN aggregate layer (matched by op_name via the
+    # candidate map) -- folding a shared chain into every hint corrupts
+    # multi-reduction callbacks. ``_seen_chains`` memoizes identical
+    # (agg-name, length) pairs so identical expressions reuse one partial.
     _seen_chains: Dict[Tuple[str, int], Any] = {}
 
     branches: List[BranchSpec] = []
     for branch_dict in hints:
-        # Cross-array expressions (descending from >1 registered array) cannot be rebuilt from a single array's
-        # chunk-local partials -- the bridge only owns its own array's chunk. Refuse them up front (precompute=True)
-        # or fall back to the legacy full-chunk path (precompute=False, where the callback runs on workers with the
-        # full chunk present, so dask can compute the cross-array expression correctly).
+        # Cross-array expressions cannot be rebuilt from one array's
+        # chunk-local partials (the bridge only owns its array's chunk):
+        # refuse them (precompute=True) or take the legacy full-chunk path
+        # (precompute=False).
         if branch_dict.get("multi_source"):
             if not precompute:
                 logger.warning(
@@ -579,33 +570,25 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 continue
             raise
 
-        # Resolve THIS hint's own registered-array stub: placeholder and ndim are per-array, so a multi-array
-        # callback (e.g. ``arr_a.sum()`` + ``arr_b.sum()``) builds each branch with its OWN array's placeholder and
-        # ndim instead of the first registered array's. The placeholder is the dask array's first chunk, materialized
-        # via .compute() so the numpy ops return numpy values (chunk_funcs are numpy ops, not callback code).
+        # Resolve THIS hint's own registered-array stub (placeholder and
+        # ndim are per-array in multi-array callbacks). The placeholder is
+        # the dask array's first chunk, materialized via .compute() so the
+        # numpy ops return numpy values.
         hint_arr = branch_dict.get("array_name") or next(iter(registered_arrays), None)
         array_stub = registered_arrays.get(hint_arr)
         array_ndim = int(getattr(array_stub, "ndim", 0)) if array_stub is not None else 0
         placeholder = array_stub
         if hasattr(placeholder, "compute") and array_stub is not None:
             try:
-                # Materialize the FIRST CHUNK of the registered-array stub, not
-                # the whole array. ``_discover_partial_metadata`` records the
-                # partial that the branch_func returns, and that metadata is
-                # shipped in the topic event as the shape/dtype of the REAL
-                # per-bridge chunk partial. Computing the branch func over
-                # the whole array records a whole-array partial (e.g. ``(1, 8)``
-                # for ``sum(axis=0)`` on an ``(8, 8)`` stub with ``(4, 4)``
-                # chunks) while every bridge actually ships ``(1, 4)`` chunk
-                # partials.
+                # Materialize the FIRST CHUNK of the stub, not the whole
+                # array: the registered partial metadata must describe the
+                # real per-bridge chunk partial (a whole-stub run would
+                # record ``(1, 8)`` where bridges ship ``(1, 4)``).
                 first_chunk_shape = tuple(int(c[0]) for c in array_stub.chunks)
                 placeholder = array_stub[tuple(slice(0, s) for s in first_chunk_shape)]
-                # Always compute on the synchronous scheduler. Analysis is pure
-                # graph/partial bookkeeping and must never touch an ambient
-                # distributed client: if another test (or the caller) left
-                # dask.config scheduler at "dask.distributed" with a stale or
-                # unreachable Client, a bare .compute() blocks in the client's
-                # reconnect loop instead of failing fast.
+                # Compute on the sync scheduler -- analysis must never touch
+                # an ambient distributed client (a stale config would block
+                # in its reconnect loop instead of failing fast).
                 placeholder = placeholder.compute(scheduler="sync")
             except Exception:
                 # If .compute() fails (e.g. no dask client in the CI worker process), fall back to a synthetic numpy
@@ -627,12 +610,10 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
             seen_chains=_seen_chains,
         )
         if branch is None:
-            # Chain walker refused (no candidates, ambiguous candidates, or the
-            # chain itself is not foldable); fall back to the length-1 path,
-            # passing the ORIGINAL branch dict (not the None result). The
-            # fallback's ``deliver_direct`` is conservative: the reduction is
-            # direct ONLY if every candidate aggregate's chunk stage reads
-            # directly from the registered root (see the deliver-direct gate in deisa.py).
+            # Chain walker refused; fall back to the length-1 path with the
+            # ORIGINAL branch dict. The fallback's ``deliver_direct`` is
+            # conservative: direct ONLY if every candidate's chunk stage
+            # reads from the registered root (see the gate in deisa.py).
             direct, window_read = _candidate_chain_classify(branch_dict, aggregate_candidates)
             branch = _try_length1_branch(
                 branch=branch_dict,
@@ -832,11 +813,8 @@ def _try_length1_branch(
             window_read=window_read,
         )
     except Exception as e:
-        # The length-1 path is the last-resort fallback. If it
-        # raises, log enough context to diagnose the failure --
-        # usually the chunk_func rejected the placeholder's shape or
-        # dtype, or the placeholder is itself a dask array (because
-        # .compute() silently failed upstream).
+        # Length-1 is the last-resort fallback; log context for diagnosis
+        # (usually a chunk_func/placeholder shape-dtype mismatch).
         logger.debug(
             "_try_length1_branch: build_branch raised for %s with chunk_kwargs=%r, array_ndim=%d, placeholder=%r: %s",
             branch.get("output_key"),

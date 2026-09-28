@@ -82,23 +82,17 @@ _OP_FROM_FUNC_NAME = {
 # Operations supported by ``_combine_reduction_partials`` on the bridge side.
 SUPPORTED_OPS = {"sum", "mean", "std", "var", "max", "min", "prod"}
 
-# Reduction kind classification -- controls how the bridge scatters the
-# partial and how the Deisa-side combine graph is built.
+# Reduction kinds -- how the bridge scatters the partial and how the
+# Deisa-side combine graph is built.
 #
-# - ``"scalar"``: the chunk_func returns a plain scalar (or numpy array for
-#   axis reductions). Per-bridge partials are summed via dask's natural
-#   ``da.stack`` + ``.sum(axis=0)`` -- no custom agg logic needed.
-#
-# - ``"mean"``: the chunk_func returns ``{"n": ..., "total": ...}`` (per
-#   dask's ``mean_chunk``). Per-bridge dicts are scattered as single
-#   pickled blobs; the Deisa-side dask graph builds a custom delayed task
-#   that resolves the dicts and calls ``dask.array.reductions.mean_agg``
-#   over them.
-#
-# - ``"moment"``: the chunk_func returns ``{"n": ..., "total": ..., "M": ...}``
-#   (per dask's ``moment_chunk``). Same scatter-then-delayed-agg pattern
-#   as ``"mean"`` but calls ``moment_agg``; ``std`` differs from ``var``
-#   only in the trailing ``sqrt`` (``finalize`` is set accordingly).
+# - ``"scalar"``: chunk_func returns a plain scalar/array. Partials combine
+#   via dask's natural ``da.stack`` + ``.sum(axis=0)``.
+# - ``"mean"``: chunk_func returns ``{"n", "total"}`` (per dask's
+#   ``mean_chunk``). Partials are scattered as pickled blobs; the Deisa-side
+#   graph calls ``mean_agg`` over them.
+# - ``"moment"``: chunk_func returns ``{"n", "total", "M"}`` (per
+#   ``moment_chunk``). Same pattern, calls ``moment_agg``; ``std`` adds a
+#   trailing ``sqrt`` via ``finalize``.
 _REDUCTION_KIND = {
     "sum": "scalar",
     "prod": "scalar",
@@ -155,18 +149,15 @@ def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
 # Window-read detection (the ``param[-1]`` idiom)
 # ---------------------------------------------------------------------------
 # At runtime every registered-array callback parameter is a list of
-# DeisaArrays (the sliding window). ``param[-1]`` is Python-level list
-# indexing that returns the CURRENT iteration's delivered array -- the
-# reduction then runs on the WHOLE delivered array. The analyzer models the
-# subscript as a dask getitem on the stub, but the delivered view is the
-# whole array: the branch machinery must treat such getitems as a WINDOW
-# READ, not as a real slice of the reduction input (``arr[2:5]`` /
-# ``arr[:, 0]`` are real slices and cannot be reconstructed on the callback
-# side -- they are refused at registration).
+# DeisaArrays (the sliding window), so ``param[-1]`` is Python list indexing
+# returning the CURRENT iteration's delivered array. The analyzer models the
+# subscript as a dask getitem, but the delivered view is the WHOLE array:
+# such getitems must be treated as a WINDOW READ, not a real slice
+# (``arr[2:5]`` / ``arr[:, 0]`` are real slices, refused at registration).
 #
-# A dask getitem layer produced by ``stub[-1]`` has tasks whose index is an
-# int in the first position and full slices elsewhere -- selecting a whole
-# row-plane of the array. That shape is the window-read signature.
+# A getitem layer produced by ``stub[-1]`` has tasks whose index is an int
+# in the first position and full slices elsewhere -- that shape is the
+# window-read signature.
 def _is_window_read_index(index) -> bool:
     """True when ``index`` selects a whole row-plane (the ``param[-1]`` idiom).
 
@@ -727,30 +718,23 @@ def extract_reduction_hints(
         logger.debug("extract_reduction_hints: failed to get graph: %s", e)
         return hints
 
-    # First pass: refuse any dask expression whose reductions' chunk
-    # stages depend on data from another reduction's aggregate. The
-    # only way to compute those correctly is to let dask run them
-    # end-to-end on the workers (with the full chunk present), NOT to
-    # precompute per-bridge partials. We do this once per dask array
-    # (not per aggregate layer) so a single cross-reduction expression
-    # produces zero hints rather than zero hints for the inner + a
-    # wrong branch for the outer.
+    # First pass: refuse expressions whose chunk stages depend on another
+    # reduction's aggregate -- those are only correct end-to-end on the
+    # workers (with the full chunk), never as per-bridge partials. Done once
+    # per dask array so a cross-reduction expression yields zero hints, not
+    # zero inner hints plus a wrong outer branch.
     for layer_name in list(graph.layers):
         if not _is_aggregate_layer(layer_name):
             continue
         # Resolve the chunk layer from THIS aggregate's own task references
-        # The positional base-name match could return the first same-op
-        # aggregate's chunk layer, making the guard below inspect the wrong
-        # subgraph and let a real cross-reduction expression emit hints.
+        # (a positional base-name match could hit a same-op aggregate's
+        # chunk layer and inspect the wrong subgraph).
         chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             continue
         reachable = _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name)
-        # ``reachable`` includes ``layer_name`` itself only if the
-        # chunk-stage IS the aggregate (shouldn't happen with standard
-        # dask reductions). What we actually care about is OTHER
-        # aggregates in the reachable set -- those are reductions
-        # whose output the chunk-stage depends on.
+        # OTHER aggregates in the reachable set = reductions whose output
+        # the chunk-stage depends on.
         other_aggregates = reachable - {layer_name}
         if other_aggregates:
             other_ops = sorted({_base_for_aggregate(a) for a in other_aggregates})

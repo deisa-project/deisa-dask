@@ -137,29 +137,26 @@ class Bridge(IBridge):
                 nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
             )
 
-            # The go-event wait is unconditional on the wait_for_go path.
-            # ``WAIT_FOR_EXECUTE_CB_EVENT`` is set only by
-            # ``Deisa.execute_callbacks()``; if the user asked to wait for the
-            # go signal we block until callbacks are registered, then prefetch
-            # branches. The wait_for_go=False path skips this wait and fetches
-            # branches lazily on the first send().
+            # The go-event wait is unconditional on the wait_for_go path:
+            # ``WAIT_FOR_EXECUTE_CB_EVENT`` is set by ``execute_callbacks()``
+            # only. wait_for_go=False skips the wait and fetches branches
+            # lazily on first send().
             if kwargs.get("wait_for_go", True):
                 Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait()
 
-        # World-wide barrier. Rank 0 waited on WAIT_FOR_EXECUTE_CB_EVENT (all callbacks
-        # have written their task-branches to the handshake actor by then); the other ranks
-        # skipped that wait and reach here immediately. The barrier brings every rank past
-        # the callback-registration point together so the prefetch below reads a consistent
-        # handshake state. MUST be unconditional (a world collective needs all ranks to
-        # participate); it is deliberately NOT gated on wait_for_go.
+        # World-wide barrier: rank 0 waited for the go event (all callbacks
+        # registered), the other ranks skipped that wait. The barrier aligns
+        # every rank past callback registration so the prefetch below reads a
+        # consistent handshake state. MUST be unconditional (it is a world
+        # collective); deliberately NOT gated on wait_for_go.
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
         if kwargs.get("wait_for_go", True) and self.id == 0:
-            # Prefetch static task-branches out of the send() latency path. Safe only on the
-            # wait_for_go path: the barrier guarantees branches exist in the handshake (rank 0
-            # confirmed via the event). On wait_for_go=False the branches may not be registered
-            # yet, so skip prefetch and keep the lazy first-send fetch in _get_task_branches.
+            # Prefetch static branches out of the send() path. Only safe here:
+            # the barrier guarantees branches exist in the handshake. On
+            # wait_for_go=False they may not be registered yet (--lazy
+            # first-send fetch in _get_task_branches).
             self._prefetch_task_branches()
 
     def _gather_global_metadata(self):
@@ -235,10 +232,8 @@ class Bridge(IBridge):
                 # Connect to existing handshake actor from analytics side (created by Deisa)
                 self.handshake = Handshake(self.client)
 
-            # Seed a "not fetched yet" sentinel. None is DISTINCT from a genuinely
-            # branch-less array ([]), which means "no precompute, full-chunk scatter".
-            # Branches are fetched once (prefetch in __init__ on the wait_for_go path,
-            # otherwise lazily on first send()) and then cached, empty lists included.
+            # Seed a "not fetched yet" sentinel: None != [] (a cached
+            # branch-less array). Fetched once and cached, [] included.
             self._task_branches[array_name] = None
 
             logger.debug(
@@ -373,22 +368,15 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
             return
 
-        # Fetch task hints and execute reduction operations locally on the bridge-process numpy chunk.
-        # The resulting partials are tiny (scalar / 1-d arrays) compared to the full chunk. The goal of precompute is
-        # to ship only the partials to the worker, never the full chunk.
-        # This runs only on participating ranks -- the ``_COMM_NULL`` early
-        # return above exits before any branch fetch/execution, so a rank that
-        # does not own the array never executes every branch func on the chunk
-        # just to discard the result (pure overhead; no collective is ordered by
-        # the branch execution).
+        # Execute branch funcs locally on the numpy chunk (running on
+        # participating ranks only -- the ``_COMM_NULL`` early return above
+        # exits first), then ship ONLY the tiny partials; the full chunk
+        # never enters worker memory.
         branches = self._get_task_branches(array_name)
         partials = self._execute_operations_on_chunk(chunk, branches)
 
-        # Decide what to ship to workers:
-        # - If precompute produced partials for this callback: scatter ONLY the partials (tiny).
-        #   The full chunk stays on the bridge process and never enters worker memory.
-        # - Otherwise (no reductions detected): fall back to the legacy path and scatter the full chunk, preserving
-        #   backward compatibility for callbacks that don't return lazy dask reductions.
+        # With partials: scatter them only. Without: legacy full-chunk
+        # scatter (backwards compatibility for non-reduction callbacks).
         precomputed_meta: Dict[str, Dict[str, Any]] = {}
         if partials:
             logger.debug(
@@ -430,16 +418,11 @@ class Bridge(IBridge):
             who_has = {}
             nbytes = {}
             keys = []
-            # Carry each partial set's own chunk_position with the entry.
-            # Indexing ``all_partials_meta`` with ``enumerate`` against
-            # ``gathered_data[i]`` misaligns when any bridge shipped no partials
-            # (its branch func raised and the ``continue`` above dropped it):
-            # partials would inherit another bridge's coordinates, the partial
-            # count would no longer cover the grid, and the combine would either
-            # raise (ValueError swallowed by the topic handler's outer except --
-            # the callback silently never fires) or sum fewer partials for
-            # scalar kinds. Pairing the metadata with its position at build time
-            # makes the mapping immune to filtering.
+            # Each partial set carries its OWN chunk_position: indexing
+            # filtered metadata with ``enumerate`` would misalign when a
+            # bridge shipped no partials, letting one bridge's partial
+            # inherit another bridge's coordinates (or under-count the
+            # grid) and corrupt the combine.
             all_partials_meta: List[Dict[str, Any]] = []
             for d in gathered_data:
                 who_has.update(d["future-info"]["who_has"])
@@ -459,20 +442,16 @@ class Bridge(IBridge):
             # TODO: id=0 can use a queue
             self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
-            # Build the topic event. When precompute is active, `futures` lists one entry per (bridge, reduction) pair.
-            # Each entry pointing to the partial's reduced shape and dtype. The Deisa side reconstructs the dask graph
-            # from these small partials. The full chunk never reaches the workers.
-            #
-            # Build a per-output_key chunk_axis lookup passed through the partial metadata
-            # (recorded by _scatter_partials from each BranchSpec).
+            # Topic event: with precompute, ``futures`` lists one entry per
+            # (bridge, reduction) pair with the partial's reduced shape/dtype;
+            # the Deisa side rebuilds the graph from these small partials.
             futures_payload: List[Dict[str, Any]]
             if all_partials_meta:
-                # Precompute path: emit one entry per (bridge, reduction). ``chunk_position`` here is the MPI coords of
-                # the bridge that contributed this partial, so the Deisa side can rebuild the nested list structure
-                # that ``mean_agg`` / ``moment_agg`` expect (matching the chunk-grid layout).
-                # ``chunk_axis`` is the chunk_func's reduction axes tuple (the chunk_kwargs ``axis``), used by the
-                # topic handler to compute the combine's output shape and pass the correct ``axis`` to
-                # ``mean_agg`` / ``moment_agg``.
+                # One entry per (bridge, reduction). ``chunk_position`` is the
+                # contributing bridge's MPI coords (matching the chunk-grid
+                # layout ``mean_agg``/``moment_agg`` expect); ``chunk_axis``
+                # is the reduction axis tuple used to compute the combine
+                # output shape.
                 futures_payload = []
                 for partial_meta in all_partials_meta:
                     futures_payload.extend(
@@ -482,8 +461,7 @@ class Bridge(IBridge):
                         )
                     )
             else:
-                # Legacy path: emit one entry per bridge with the full-chunk shape, same as before the precompute
-                # feature.
+                # Legacy path: one entry per bridge with the full-chunk shape.
                 futures_payload = [
                     {
                         "future": d["future-info"]["future"][0]
@@ -693,38 +671,29 @@ class Bridge(IBridge):
         - ``:return:`` List of reduction hints (each carrying a pickled chunk
             callable and the dask kwargs to apply).
         """
-        # Check cache first. Branches are fixed after registration. Once fetched (rank 0 reads from the handshake actor
-        # and broadcasts to all ranks in the sub_comm), subsequent sends hit the cache and never touch the handshake or
-        # broadcast, keeping the send() critical path fast.
+        # Cache hit first: after one fetch, sends never touch the handshake.
         cached = self._task_branches.get(array_name)
         if cached is not None:
             return cached
 
-        # Cache miss -> fetch via the shared per-array bcast protocol. On the wait_for_go path branches were
-        # already prefetched in __init__ (post-registration barrier + per-array bcast); this lazy path is the
-        # fallback for wait_for_go=False or a cache miss.
+        # Cache miss -> shared per-array bcast protocol (lazy path:
+        # wait_for_go=False or a cache miss).
         branches = self._fetch_branches_bcast(array_name)
         if branches is not None:
-            # Store unconditionally, including empty lists: a genuinely branch-less
-            # array ([]) is a valid cached result meaning "no precompute, full-chunk
-            # scatter" and must not be re-fetched on every send.
+            # Store unconditionally: [] is a valid cached result meaning
+            # "no precompute, full-chunk scatter" -- don't re-fetch per send.
             self._task_branches[array_name] = branches
         return branches or []
 
     def _prefetch_task_branches(self) -> None:
         """Prefetch static task-branches for every global array into the local cache.
 
-        Branches are written to the handshake actor by register_callback during
-        decoration and are static afterwards. On the wait_for_go path rank 0 has already
-        waited on WAIT_FOR_EXECUTE_CB_EVENT and the world-wide barrier guarantees every
-        bridge is past the callback-registration point, so the handshake is complete here.
-        Broadcasting per array now moves branch fetches out of the send() critical path.
-
-        The broadcast mirrors _get_task_branches: the array's sub-comm rank 0 reads from
-        the handshake actor and broadcasts to that sub-comm's members; every other
-        participating rank receives via bcast(None). A genuinely branch-less array ([]) is
-        cached as-is so it is not re-fetched on every send. Non-participating ranks skip
-        the array entirely (no bcast, cache left at the None sentinel).
+        On the wait_for_go path the handshake is complete by the time this
+        runs (go event + world barrier), so broadcasting per array removes
+        branch fetches from the send() critical path. The broadcast mirrors
+        ``_get_task_branches``: sub-comm rank 0 reads the handshake actor and
+        broadcasts; non-participating ranks leave the None sentinel. A
+        branch-less array ([]) is cached as-is.
         """
         for array_name in self._global_array_names:
             branches = self._fetch_branches_bcast(array_name)
@@ -764,9 +733,8 @@ class Bridge(IBridge):
         assert len(workers) == 1, "_scatter_partials expects a single target worker"
         target_worker = workers[0]
 
-        # Index branches by output_key for fast lookup. BranchSpec carries the per-reduction metadata directly
-        # (``partial_shape`` / ``partial_dtype`` / ``output_kind`` / ``finalize`` recorded by the analyzer), so the
-        # loop doesn't inspect the partial value. Cached per array (static after registration).
+        # Index branches by output_key (cached; BranchSpec carries the
+        # analyzer's per-reduction metadata directly).
         branch_by_key = self._get_branch_by_key(array_name, branches)
 
         payload: Dict[str, Any] = {}
@@ -795,9 +763,9 @@ class Bridge(IBridge):
         # Serialize for scatter (handles numpy arrays in dict values).
         payload2 = valmap(to_serialize, payload)
 
-        # Use scatter_to_workers directly so we get the (who_has, nbytes) pair.
-        # Mirrors the legacy ``_better_scatter`` pattern: client.sync when a Client is available, asyncio.run otherwise
-        # (rank-0 only has the Client; non-rank-0 bridges run the scatter from a fresh event loop).
+        # scatter_to_workers directly for the (who_has, nbytes) pair.
+        # client.sync when a Client is available, asyncio.run otherwise
+        # (only rank 0 has a Client).
         if self.client is not None:
             who_has, nbytes = self.client.sync(self._scatter_to_workers_async, target_worker, payload2)
         else:

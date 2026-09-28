@@ -174,17 +174,15 @@ def _analyze_callback(
         raise IncompatibleCallbackError(f"Could not locate FunctionDef for {callback.__name__!r} in callback source.")
 
     # 4. Build initial scope: callback params bound to registered arrays.
-    # The dict's first key is used as the FALLBACK array name for output keys when a boundary
-    # expression cannot be attributed to any registered array (e.g. a fresh da.zeros built
-    # inside the callback). Normal expressions are attributed to their exact source array.
+    # The dict's first key is the FALLBACK array name for output keys when
+    # a boundary expression has no exact registered-array attribution.
     primary_name: str = next(iter(registered_arrays)) if registered_arrays else "f"
     reg_values = list(registered_arrays.values())
     param_names = [a.arg for a in callback_def.args.args]
 
     scope = _Scope()
-    # Pre-bind standard library aliases that callbacks commonly use.
-    # These let callbacks reference ``da.sum(...)`` / ``np.array(...)`` without explicit imports; the dask/np operations
-    # are lazy and never execute.
+    # Pre-bind common aliases so callbacks can use ``da.sum(...)`` /
+    # ``np.array(...)`` without explicit imports (all lazy, never executed).
     scope.set("da", da)
     scope.set("dask_array", da)
     scope.set("dask", da)
@@ -226,12 +224,11 @@ def _analyze_callback(
     hints: List[Dict[str, Any]] = []
     for arr_info in dask_arrays:
         darr = arr_info["array"]
-        # Attribute each boundary expression to the exact registered array(s) it descends from.
-        # The stub layer-name tag (``deisa-stub-<name>``) makes graph-layer membership a reliable
-        # provenance signal even when two registered arrays share identical metadata. An expression
-        # that descends from MORE than one registered array (cross-array, e.g. ``(a - b).max()``)
-        # is attributed to the FIRST matched array and flagged ``multi_source`` so the branch
-        # builder can refuse it (a chunk-local branch cannot rebuild a cross-array expression).
+        # Attribute each boundary expression to its registered array(s): the
+        # stub layer tag (``deisa-stub-<name>``) is reliable provenance even
+        # when arrays share identical metadata. A cross-array expression is
+        # attributed to the FIRST match and flagged ``multi_source`` so the
+        # branch builder refuses it.
         matched = _match_source_arrays(darr, registered_arrays)
         array_name = matched[0] if matched else primary_name
         multi = len(matched) > 1
@@ -369,10 +366,9 @@ class _Missing:
         return False
 
     def __contains__(self, item: Any) -> bool:
-        # ``_Missing`` behaves like an empty container: ``x in _Missing`` is False and ``x not in _Missing`` is True.
-        # Without this, Python's ``in`` falls back to ``__getitem__`` with ever-increasing integer indices, which never
-        # raises IndexError on a ``_Missing`` and loops forever (RecursionError / hang) on callback code like
-        # ``if "key" not in state:`` where ``state`` is a closure dict that the analyzer treats as ``_Missing``.
+        # ``_Missing`` is an empty container. Without this, ``in`` falls back
+        # to ``__getitem__`` with ever-increasing indices which ``_Missing``
+        # never raises on -- an infinite loop on ``if "key" not in state:``.
         return False
 
     def __iter__(self):
@@ -406,14 +402,10 @@ class _Missing:
     def __invert__(self) -> "_Missing":
         return _Missing(self.name)
 
-    # Comparisons: an unknown operand must not crash the walker (previously
-    # ``_Missing("STATE") > 3`` raised ``TypeError``, which ``analyze_callback``
-    # does not catch). The decision logic lives in ``_BoundaryWalker._apply_compare``,
-    # which treats ``_Missing`` operands as UNKNOWN (``None``) so ``ast.If`` walks
-    # both branches instead of assuming an outcome. These dunders are the
-    # non-crash backstop for direct Python comparisons outside the walker; they
-    # return ``False`` so a raw ``if _Missing("x") > 3:`` degrades to the same
-    # falsy behavior as ``__bool__``.
+    # Comparisons must not crash: the walker's ``_apply_compare`` treats
+    # ``_Missing`` operands as UNKNOWN and walks both ``ast.If`` branches.
+    # These dunders are the backstop for direct comparisons outside the
+    # walker: return ``False`` (same falsy behavior as ``__bool__``).
     def _compare_op(self, other: Any) -> bool:
         return False
 
@@ -493,16 +485,15 @@ class _WindowProxy:
 # Functions we recognize as materialization (forbid precompute).
 _MATERIALIZING_FUNCS = {"array", "asarray", "save", "savetxt", "savez", "savez_compressed"}
 
-# Maximum iterations a ``for x in range(...)`` loop may statically unroll.
-# Unrolling is one AST walk per iteration, so an unbounded range (say
-# ``range(100000)``) builds 100k walks. Beyond the cap the loop is refused
-# loudly (IncompatibleCallbackError) instead of silently burning CPU.
+# Maximum iterations a ``for x in range(...)`` loop may statically unroll
+# (one AST walk per iteration); beyond the cap the loop is refused loudly
+# instead of silently burning CPU.
 _MAX_FOR_UNROLL = 1000
 
-# Module-level operator dispatch tables (data-driven, replacing hand-written if-chains). Each table maps an ``ast``
-# operator node type to the :mod:`operator` function that produces the same result as the corresponding Python operator.
-# Operator functions use the same dunder dispatch Python would (e.g. ``operator.add(a, b)`` == ``a + b``), so dask
-# arrays lazily build their graph, and ``_Missing`` / ``_UnboundParam`` placeholder propagation is unchanged.
+# Operator dispatch tables: each maps an ``ast`` operator node type to the
+# :mod:`operator` function Python would dispatch (same dunder semantics, so
+# dask arrays build their graph lazily and placeholder propagation is
+# unchanged).
 _BINOPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -548,16 +539,13 @@ _CMPOPS = {
 }
 
 # -----------------------------------------------------------------------
-# Effect-bearing bare names: calls that the analyzer MUST refuse because they would either hit the dask scheduler
-# (defeating precompute) or perform I/O / mutation (outside the analyzer's purview).
-# Anything not in this set is either resolved as a dask reduction (sum/min/max), a pure builtin, a registered helper,
-# or treated as opaque (_Missing) so analysis can continue.
-#
-# Note: bare-name ``compute()`` / ``persist()`` ARE refused via this set; the attribute-call branch handles
-# ``arr.compute()`` / method ``.persist()`` separately.
-# ``lambda`` expressions are NOT refused here (they are not a set entry): a lambda
-# inside the callback is an opaque expression the walker degrades to ``_Missing`` --
-# the open-world behavior. The user should extract it to a module-level helper.
+# Effect-bearing bare names: calls that hit the dask scheduler (defeating
+# precompute) or perform I/O / mutation. Anything NOT here resolves as a
+# dask reduction, a pure builtin, a registered helper, or opaque (_Missing).
+# Bare ``compute()``/``persist()`` are refused via this set; the
+# attribute-call branch handles ``arr.compute()`` separately. ``lambda``
+# is handled by the walker's open-world degradation (extract to a
+# module-level helper instead).
 _EFFECT_BEARING_NAMES = frozenset(
     {
         # Dask control flow that bypasses precompute.
@@ -577,16 +565,11 @@ _EFFECT_BEARING_NAMES = frozenset(
 )
 
 
-# Pure-Python builtins that are always safe to call: they cannot reach the dask scheduler and they do not mutate outer
-# state. They are resolved locally (no AST walk into their body) and the result is returned to the analysis as a plain
-# Python value.
-#
-# Each entry maps the builtin name to a callable that takes ``(args, kwargs)`` and returns the resolved value.
-# Missing keys fall through to a generic resolver for type-conversion builtins.
-#
-# Pure builtins are tolerant of ``_Missing`` arguments: an opaque argument propagates as ``_Missing`` so the surrounding
-# analysis can continue degrading to the full-chunk path. This is what makes the analyzer open-world: the user can call
-# any builtin on a sub-expression we couldn't resolve without breaking the analysis.
+# Pure-Python builtins: they cannot reach the dask scheduler and do not
+# mutate outer state. Resolved locally, result returned as a plain value.
+# Missing keys fall to a generic type-conversion resolver. They propagate
+# ``_Missing`` arguments (open-world: any builtin call on an unresolved
+# sub-expression keeps the analysis alive, degrading to the full-chunk path).
 def _safe_pure_call(fn, args, kwargs):
     """Apply ``fn`` to args/kwargs, propagating ``_Missing`` instead of raising when an argument is opaque.
     Any exception is caught and returns ``_Missing`` so the analyzer stays open-world."""
@@ -654,13 +637,10 @@ class _BoundaryWalker:
             self._eval(stmt.value, scope)
             return
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-            # Bind imported modules/names in the walker scope so aliased numpy
-            # (``import numpy as npy``) and aliased dask (``import dask.array as da2``)
-            # are recognized by the materialization / reduction dispatchers. The
-            # old behavior ignored import statements entirely, so every alias
-            # resolved to ``_Missing`` and e.g. ``npy.array(dask_arr)`` silently
-            # bypassed materialization detection (a full-gather callback analysed
-            # as if it were a chunk-local reduction).
+            # Bind imported modules/names so aliased numpy/dask are
+            # recognized by the materialization / reduction dispatchers
+            # (otherwise every alias resolves to ``_Missing`` and e.g.
+            # ``npy.array(dask_arr)`` bypasses materialization detection).
             self._bind_import(stmt, scope)
             return
         if isinstance(stmt, ast.If):
@@ -984,13 +964,11 @@ class _BoundaryWalker:
         return isinstance(node.func, ast.Attribute) and node.func.attr == "map_blocks"
 
     def _call_map_blocks(self, node: ast.Call, scope: _Scope) -> Any:
-        # ``arr.map_blocks(func, *args, **kwargs)`` must produce a placeholder
-        # for the MAPPED array, never the receiver: ``y = arr.map_blocks(lambda b: b*2);
-        # y.sum()`` analysed on the receiver would emit a branch whose chunk func sums the
-        # RAW chunk -- ``sum(arr)`` where the user asked for ``sum(2*arr)``.
-        # Build the real mapped placeholder when the mapping is symbolically evaluable
-        # (resolvable func/args); otherwise return ``_Missing`` so the downstream reduction
-        # is refused/falls back instead of being attributed to the pre-map array.
+        # Placeholder must be the MAPPED array, never the receiver
+        # (analysis on the receiver emits ``sum(arr)`` where the user
+        # asked for ``sum(2*arr)``). Build the mapped placeholder when
+        # symbolically evaluable; otherwise ``_Missing`` (refused, not
+        # mis-attributed).
         if not isinstance(node.func, ast.Attribute):
             return _Missing("map_blocks")
         obj = self._eval(node.func.value, scope)
@@ -998,13 +976,9 @@ class _BoundaryWalker:
             return _Missing("map_blocks")
         args = [self._eval(a, scope) for a in node.args]
         kwargs = self._eval_kwargs(node.keywords, scope)
-        # Refuse to build the map when ANY argument is opaque: a ``_Missing``-typed
-        # func is callable (``_Missing.__call__`` exists), so dask would happily
-        # build a graph whose per-chunk func is the placeholder -- and chain
-        # folding would then execute it on the bridge, shipping a garbage partial.
-        # Only genuinely resolvable funcs (pre-bound callables such as ``np.abs``)
-        # build the real mapped placeholder; anything else degrades to ``_Missing``
-        # so the downstream reduction is refused instead of mis-attributed.
+        # Refuse if ANY argument is opaque: a ``_Missing`` func is callable,
+        # so dask would build a graph executing it on the bridge -- a
+        # garbage partial. Only resolvable funcs build the placeholder.
         if any(isinstance(v, (_Missing, _UnboundParam)) for v in args) or any(
             isinstance(v, (_Missing, _UnboundParam)) for v in kwargs.values()
         ):
@@ -1024,12 +998,9 @@ class _BoundaryWalker:
 
         # ---- Materialization detection (np.array/asarray/save on dask arrays) ----
         # Resolve the receiver through the SCOPE, not a literal ``np`` name
-        # match: ``np`` is pre-bound, and ``import numpy as npy`` /
-        # ``npy = np`` in a helper bind the module under another name. A
-        # scope-based identity check catches aliased numpy, which the old
-        # ``recv.id == "np"`` check silently bypassed (materialization
-        # undetected -> the full gather is precomputed as if it were a
-        # chunk-local reduction).
+        # match: aliased numpy (``import numpy as npy``) binds under another
+        # name and a bare ``recv.id == "np"`` check would miss it (an
+        # undetected full gather analysed as a chunk-local reduction).
         if isinstance(func, ast.Attribute) and func.attr in _MATERIALIZING_FUNCS:
             recv = func.value
             if self._eval(recv, scope) is np:
