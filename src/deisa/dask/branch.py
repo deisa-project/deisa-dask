@@ -632,7 +632,7 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
             # passing the ORIGINAL branch dict (not the None result). The
             # fallback's ``deliver_direct`` is conservative: the reduction is
             # direct ONLY if every candidate aggregate's chunk stage reads
-            # directly from the registered root (see F1 gate in deisa.py).
+            # directly from the registered root (see the deliver-direct gate in deisa.py).
             direct, window_read = _candidate_chain_classify(branch_dict, aggregate_candidates)
             branch = _try_length1_branch(
                 branch=branch_dict,
@@ -672,8 +672,8 @@ def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict
     contains just the reduction chunk stage and/or window-read getitem
     layers (``root[-1].op()`` -- DataFrame.region Python-level list indexing).
     Zero candidates, an unwalkable chain, a pointwise chain (``arr*arr``), or
-    a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct (refused by the
-    F1 gate) so a chained reduction can never sneak past the gate as
+    a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct (refused at
+    registration) so a chained reduction can never sneak past the gate as
     "direct".
 
     ``window_read`` is True when every candidate is a window read (the
@@ -869,7 +869,7 @@ def _build_branch(
     ``deliver_direct`` records whether the reduction's chunk stage reads
     DIRECTLY from the registered array root (a plain ``arr.<op>()`` call,
     possibly via ``window[-1]``) rather than from a pointwise chain or slice
-    (``(arr*arr).sum()``, ``arr[2:5].sum()``). The F1 registration gate in
+    (``(arr*arr).sum()``, ``arr[2:5].sum()``). The registration gate in
     :mod:`deisa.dask.deisa` refuses non-direct reductions because the
     precompute delivery path cannot reconstruct a chain on the callback side.
     ``None`` defaults to ``len(chain) == 1`` (a single layer means the chunk

@@ -315,7 +315,7 @@ class Deisa(IDeisa):
         # method, only after the precompute analysis and topic subscription
         # succeed. Writing it before the analysis left a half-registered
         # callback behind when the analysis raised
-        # (``NoPrecomputableReductionError`` / F1 ``UnsupportedReductionError``):
+        # (``NoPrecomputableReductionError`` / ``UnsupportedReductionError``):
         # the id stayed in ``_callbacks`` (but not in ``_callbacks_by_array``, with
         # no topic handler), so it was a permanent leak unreachable via
         # ``unregister_callback``, and ``callback.callback_id`` was never set.
@@ -359,7 +359,7 @@ class Deisa(IDeisa):
                     f"full-chunk scatter path, redesign the callback to use a single dask reduction (sum, mean, var, "
                     f"std, min, max, prod) and avoid expressions whose reduction depends on another reduction's output."
                 )
-            # F1 gate: refuse non-direct reductions. A reduction whose input is
+            # Refuse non-direct reductions. A reduction whose input is
             # a pointwise chain or slice ((arr*arr).sum(), arr[2:5].sum()) cannot
             # be reconstructed on the callback side -- the precompute delivery
             # would silently compute the reduction of the WRONG input. The
@@ -647,7 +647,7 @@ class Deisa(IDeisa):
                         partial_dtype = partial_futures[0]["dtype"]
                         hint_axis = partial_futures[0].get("chunk_axis")
                         op_name = partial_futures[0].get("op_name")
-                        # F2: every bridge must ship its partial for every reduction. A missing partial silently
+                        # Every bridge must ship its partial for every reduction. A missing partial silently
                         # corrupts the combined result (stacks shrink, n-totals lose a bridge). Refuse loudly.
                         if grid_size is not None and len(partial_futures) != grid_size:
                             raise PrecomputeRuntimeError(

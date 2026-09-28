@@ -162,7 +162,7 @@ def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
 # whole array: the branch machinery must treat such getitems as a WINDOW
 # READ, not as a real slice of the reduction input (``arr[2:5]`` /
 # ``arr[:, 0]`` are real slices and cannot be reconstructed on the callback
-# side -- they are refused by the F1 gate).
+# side -- they are refused at registration).
 #
 # A dask getitem layer produced by ``stub[-1]`` has tasks whose index is an
 # int in the first position and full slices elsewhere -- selecting a whole
@@ -259,7 +259,7 @@ def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
     Walks upstream from ``chunk_layer_name``. Any layer that is neither the
     reduction chunk stage nor a window-read getitem layer (a pointwise op, a
     real slice, an unwalkable input, ...) makes the chain NOT a window read
-    (conservative: such chains are refused by the F1 gate anyway).
+    (conservative: such chains are refused at registration anyway).
 
     - ``:param graph:`` The dask graph containing the reduction.
     - ``:param chunk_layer_name:`` The reduction's chunk layer.

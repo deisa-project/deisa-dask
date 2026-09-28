@@ -26,24 +26,19 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-"""Regression tests for the precompute analyzer Fixes (registration path), cluster-free.
+"""Regression tests for the precompute analyzer (registration path), cluster-free.
 
-Every test here FAILS on the pre-fix source and PASSES on the fix:
+Contract coverage:
 
-- ``_call_map_blocks`` returned the pre-map receiver, so ``arr.map_blocks
-  (lambda...)`` was analysed as the raw ``arr`` (wrong partials). A resolvable
-  func (``np.abs``) analysed the mapped graph; an opaque func (``lambda``)
+- ``arr.map_blocks`` must be analysed as the MAPPED graph: a resolvable
+  func (``np.abs``) analyses the mapped graph; an opaque func (``lambda``)
   is refused at registration.
-- the cross-reduction guard resolved the chunk layer positionally, so the
-  ordering-dependent bypass ``arr.sum() + (arr - arr.mean()).sum()`` emitted
-  a wrong hint. It must be REFUSED.
-- ``_Missing`` had no comparison dunders (``TypeError`` crashed analysis);
-  unknown operands must be UNKNOWN, never an assumed branch. Subscripting an
-  unbound callback parameter must not crash either.
+- the cross-reduction guard rejects the ordering-dependent bypass
+  ``arr.sum() + (arr - arr.mean()).sum()``: it must be REFUSED.
+- ``_Missing`` degrades: unknown operands are UNKNOWN, never an assumed
+  branch. Subscripting an unbound callback parameter must not crash either.
 - ``register_callback`` must store the callback payload only after the
-  analysis succeeds (the payload write was removed entirely in the preserved
-  commit, so no callback could ever fire; a failed registration must leak
-  nothing).
+  analysis succeeds; a failed registration must leak nothing.
 """
 
 import textwrap
@@ -93,9 +88,8 @@ def _scalar(value: Any) -> float:
 def test_map_blocks_opaque_lambda_refused():
     """``arr.map_blocks(lambda ...)`` cannot be precomputed: registration refuses.
 
-    Pre-fix: ``_call_map_blocks`` returned the pre-map receiver, so this
-    produced a branch for ``sum(arr)`` instead of ``sum(2*arr)`` -- a silently
-    wrong hint (FAIL: no exception raised).
+    An opaque callable cannot be resolved, so the reduction is not
+    precomputable — refuse rather than analyse the unmapped receiver.
     """
     with pytest.raises(NoPrecomputableReductionError):
         _analyze("y = arr.map_blocks(lambda b: b * 2)\ns = y.sum()\nreturn s.compute()")
@@ -104,9 +98,8 @@ def test_map_blocks_opaque_lambda_refused():
 def test_map_blocks_resolvable_function_uses_mapped_array():
     """``arr.map_blocks(np.abs).sum()`` sums the MAPPED chunks (real value).
 
-    Pre-fix: analysis fell back to the pre-map receiver, so the branch summed
-    the RAW chunk -- ``branch_func(-2 chunk)`` returned ``-32.0`` instead of
-    ``32.0`` (FAIL: value mismatch).
+    The analyzed branch must run the resolvable func on each raw chunk;
+    ``branch_func`` of a ``-2`` chunk sums ``abs`` of it.
     """
     branches = _analyze("y = arr.map_blocks(np.abs)\ns = y.sum()\nreturn s.compute()")
     assert len(branches) == 1
@@ -132,10 +125,9 @@ def test_cross_reduction_with_added_mean_refused():
 def test_cross_reduction_ordering_dependent_bypass_refused():
     """``arr.sum() + (arr - arr.mean()).sum()`` is refused.
 
-    Pre-fix: the chunk-layer lookup was positional, so the SECOND ``sum``'s
-    guard inspected the FIRST ``sum``'s subgraph and the callback emitted
-    hints ``[f-sum, f-mean, f-sum]`` -- the second ``f-sum`` chunk depends on
-    ``mean_agg`` and must be refused (FAIL: no exception raised).
+    The second ``sum``'s guard must inspect ITS OWN subgraph (not the
+    first ``sum``'s, positionally): its chunk depends on ``mean_agg`` and
+    must be refused regardless of layer ordering.
     """
     with pytest.raises(UnsupportedReductionError):
         _analyze("s = arr.sum() + (arr - arr.mean()).sum()\nreturn s.compute()")
@@ -153,8 +145,8 @@ def test_sibling_reductions_still_emitted():
 def test_missing_comparison_walks_both_branches():
     """``if state > 3:`` (state unknown) walks BOTH branches.
 
-    Pre-fix: ``_Missing(\"STATE\") > 3`` raised ``TypeError``, uncaught by
-    ``analyze_callback`` (FAIL: analysis crashed instead of degrading).
+    Comparison on an unknown operand must degrade to UNKNOWN and walk both
+    branches, never crash the analysis.
     """
     branches = _analyze("if state > 3:\n    s = arr.sum()\nelse:\n    m = arr.mean()\nreturn s.compute(), m.compute()")
     assert sorted(b.output_key for b in branches) == ["f-mean", "f-sum"]
@@ -163,8 +155,8 @@ def test_missing_comparison_walks_both_branches():
 def test_unbound_param_subscript_does_not_crash():
     """Subscripting an unbound callback parameter is opaque, not a crash.
 
-    Pre-fix: ``_apply_subscript`` lacked the ``_UnboundParam`` branch and
-    raised ``TypeError`` (FAIL: analysis crashed instead of degrading).
+    ``_apply_subscript`` treats ``_UnboundParam`` as an opaque value;
+    the analysis degrades instead of raising ``TypeError``.
     """
     branches = _analyze(
         "x = p[0]\ns = arr.sum()\nreturn s.compute()",
@@ -180,9 +172,9 @@ def test_unbound_param_subscript_does_not_crash():
 def test_partial_metadata_is_chunk_not_whole_array():
     """``arr.sum(axis=0)`` on an (8, 8) array with (4, 4) chunks records (1, 4).
 
-    Pre-fix: ``_discover_partial_metadata`` ran the branch func over the WHOLE
-    stub, recording ``(1, 8)`` (FAIL: shape mismatch); the value is shipped in
-    the topic event and drives ``da.from_delayed``/combine ``out_shape``.
+    The partial metadata describes ONE chunk's partial, not the whole
+    array: the value is shipped in the topic event and drives
+    ``da.from_delayed``/combine ``out_shape``.
     """
     branches = _analyze("s = arr.sum(axis=0)\nreturn s.compute()")
     assert len(branches) == 1
@@ -242,10 +234,9 @@ def _make_deisa_stub() -> Deisa:
 def test_registration_success_stores_callback_payload():
     """A successful registration stores the payload in ``_callbacks``.
 
-    Pre-fix: the ``self._callbacks[callback_id] = {...}`` write had been
-    removed from ``_register_callback_impl``, so every successful registration
-    stored nothing and the topic handler could never fire a callback
-    (FAIL: ``callback_id not in _callbacks``).
+    The topic handler can only fire a callback whose payload lives in
+    ``_callbacks``; it must be stored once every step that can raise
+    has succeeded.
     """
     d = _make_deisa_stub()
     cb = _make_callback("reg_ok", "s = arr.sum()\nreturn s.compute()")
@@ -266,9 +257,9 @@ def test_registration_success_stores_callback_payload():
 def test_registration_failure_leaves_no_trace():
     """A registration whose analysis raises leaks nothing.
 
-    Pre-fix: ``_callbacks[callback_id]`` was written BEFORE
-    the analysis, so a raising analysis left a half-registered entry that
-    ``unregister_callback`` could never reach (FAIL: ``_callbacks != {}``).
+    ``_callbacks[callback_id]`` is written only AFTER the analysis; a
+    raising analysis must leave no half-registered entry that
+    ``unregister_callback`` could never reach.
     """
     d = _make_deisa_stub()
     cb = _make_callback("reg_fail", "s = (arr - arr.mean()).sum()\nreturn s.compute()")

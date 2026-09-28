@@ -146,9 +146,8 @@ class TestPrecomputeMemory:
 
         Parametrized over ``sum`` / ``mean`` / ``var`` / ``std``; the
         callback result is asserted against the true global value computed
-        from the same data ``generate_data`` returned (the pre-fix
-        ``var``/``std`` predicates were ``x >= 0.0``, which the buggy ``0.0``
-        result satisfied).
+        from the same data ``generate_data`` returned (a loose ``x >= 0.0``
+        predicate would satisfy a buggy ``0.0`` result).
         """
         client, cluster = env_setup_2workers
         # Use a chunk big enough that "big" vs "small" is unmistakable.
@@ -298,13 +297,11 @@ class TestPrecomputeMemory:
         Each array must get its OWN precompute branch (``x-sum`` for the reduction on
         ``x``, ``y-sum`` for the reduction on ``y``), so the callback receives
         per-bridge partial stacks -- shape ``(2,)`` with two bridges -- for BOTH
-        arrays. Regression: before per-array hints/branches, both reductions were
-        keyed ``x-sum`` and array ``y`` had NO branches, so its bridge fell back to
-        the legacy full-chunk scatter and the callback received the tiled full
-        ``(16, 16)`` chunk.
+        arrays.
 
-        The ``(2,)`` shape asserts are the pre-fix discriminator: value-only asserts
-        would pass pre-fix by accident (a full-chunk sum equals the global sum).
+        The ``(2,)`` shape asserts are the real discriminator: a value-only
+        assert would pass even if both arrays delivered a legacy tiled
+        full-chunk result (a full-chunk sum equals the global sum).
         """
         client, cluster = env_setup_2workers
         chunk_shape = (8, 16)
@@ -341,24 +338,23 @@ class TestPrecomputeMemory:
         # direct full-array sum, so compare with a loose relative tolerance.
         assert np.isclose(x_sum, float(np.sum(x_global)))
         assert np.isclose(y_sum, float(np.sum(y_global)))
-        # Post-fix both arrays go through precompute: the callback sees the stack of
+        # Both arrays go through precompute: the callback sees the stack of
         # per-bridge partials. The window[-1] subscript makes the analyzed reduction
         # axis-0 (the stub is sliced to its last row before .sum()), so each bridge
         # ships a (1, 16) row-sum partial and the stack over 2 bridges is (2, 1, 16).
-        # Pre-fix, array y had no branches and fell back to the legacy full-chunk
-        # scatter: the callback received the tiled full chunk ((16, 16)). The shape
-        # assert is the pre-fix discriminator (value-only asserts would pass pre-fix
-        # by accident -- a full-chunk sum equals the global sum).
+        # A legacy full-chunk delivery would hand the callback the tiled (16, 16)
+        # chunk; the shape assert is the real discriminator (a value-only assert
+        # would pass by accident -- a full-chunk sum equals the global sum).
         assert x_shape == (2, 1, 16)
         assert y_shape == (2, 1, 16)
 
     def test_multi_reduction_callback_receives_all_reductions(self, env_setup_2workers):
         """A 3-reduction callback receives all three true values.
 
-        Pre-fix only the FIRST reduction's partials were delivered to the
-        callback (`darr = darr_chunks[0]`); the mean/max callbacks then ran on
-        the sum-stack artifact and returned values ~4e6 relative error from
-        the truth.
+        Every reduction's partials must be delivered to the callback: if only
+        the FIRST reduction's were (`darr = darr_chunks[0]`), the other
+        reductions would run on the sum-stack artifact and return values far
+        from the truth.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -402,10 +398,11 @@ class TestPrecomputeMemory:
     def test_same_op_axis_pairs_survive_end_to_end(self, env_setup_2workers):
         """Precomputed delivery: ``arr.sum()`` + ``arr.sum(axis=0)`` both correct.
 
-        Pre-fix both hints carried output_key ``f-sum``; one branch
-        overwrote the other in the bridge's ``output_key`` index, and the
-        callback received a wrong shape (or an exception) for the axis
-        reduction.
+        Two ``sum`` hints on the same array MUST carry distinct output_keys
+        (``f-sum`` and ``f-sum-axis0``): if both shared ``f-sum``, one branch
+        would overwrite the other in the bridge's ``output_key`` index and
+        the callback would receive a wrong shape (or an exception) for the
+        axis reduction.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -452,8 +449,9 @@ class TestPrecomputeMemory:
 
         ``mean(axis=0)`` reduces over the 2 row-strips (red grid level 0,
         kept level extent 1); ``sum(axis=1)`` keeps grid level 0 (Phase B
-        concatenation over the 2 row-strips along data axis 0). Pre-fix these
-        crashed or silently returned wrong shapes/values.
+        concatenation over the 2 row-strips along data axis 0). A crash or
+        a silently wrong shape/value here means the red/kept-level
+        geometry was misread.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -499,9 +497,10 @@ class TestPrecomputeMemory:
     def test_multiple_callbacks_same_array_each_correct(self, env_setup_2workers):
         """Two callbacks on the same array each get their own result.
 
-        Pre-fix ``set_task_branches`` blindly overwrote the per-array branch
-        list, so only the LAST registered callback's branches were executed
-        and the first callback computed ``sum()`` of the other's mean blobs.
+        The per-array branch list must MERGE across callbacks: if
+        ``set_task_branches`` blindly overwrote it, only the LAST registered
+        callback's branches would be executed and the first callback would
+        compute ``sum()`` of the other's mean blobs.
         """
         client, cluster = env_setup_2workers
         chunk_shape = (2048, 2048)
@@ -545,9 +544,9 @@ class TestPrecomputeMemory:
 
         ``(arr * arr).sum()`` and ``arr[2:5].sum()`` cannot be reconstructed
         on the callback side (the unrewritten callback re-applies the chain on
-        the partials, e.g. ``(sum x)^2`` instead of ``sum x^2``). Pre-fix,
-        registration SUCCEEDED and the value was silently wrong end-to-end;
-        now it raises ``UnsupportedReductionError`` at registration time.
+        the partials, e.g. ``(sum x)^2`` instead of ``sum x^2``), so
+        registration raises ``UnsupportedReductionError`` instead of shipping
+        a silently wrong value end-to-end.
         """
         from deisa.dask.precompute_analyzer import UnsupportedReductionError
 

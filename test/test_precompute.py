@@ -212,10 +212,10 @@ def test_compute_multiple_reductions() -> None:
 def test_same_op_different_axes_distinct_output_keys() -> None:
     """``arr.sum()`` + ``arr.sum(axis=0)`` must produce distinct output keys.
 
-    On the pre-fix code both hints carried ``f-sum`` (the key was
-    ``f"{array_name}-{op_name}"``), so the topic handler grouped the two
-    reductions into one and one of them was silently overwritten
-    (``bridge.py`` indexed branches by ``output_key``). The full reduction
+    Both hints MUST carry distinct output keys: a bare
+    ``f"{array_name}-{op_name}"`` key would make the topic handler group
+    the two reductions into one and silently overwrite one of them
+    (``bridge.py`` indexes branches by ``output_key``). The full reduction
     keeps the stable ``f-sum`` key (existing tests pin it); the axis
     reduction gets a deterministic discriminator suffix.
     """

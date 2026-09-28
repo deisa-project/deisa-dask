@@ -182,13 +182,12 @@ class TestBridge:
         asyncio.run(_bridge_close())
 
     def test_execute_operations_on_chunk_raises_on_failing_branch(self, env_setup):
-        """F2 unit: a branch that raises must NOT be dropped silently.
+        """A branch that raises must NOT be dropped silently.
 
-        The pre-fix code caught every ``branch_func(chunk)`` exception,
-        logged it and continued, so the topic event carried FEWER partials
-        than bridges. The combine then silently produced a wrong reduction
-        (scalar stacks got smaller sums; mean/moment aggregators missed a
-        bridge's ``n``). The post-fix code raises a typed
+        A caught-and-continued ``branch_func(chunk)`` exception would ship
+        FEWER partials than bridges, and the combine would silently produce
+        a wrong reduction (scalar stacks get smaller sums; mean/moment
+        aggregators miss a bridge's ``n``). It raises a typed
         ``PrecomputeRuntimeError`` naming the branch.
         """
         from deisa.dask.branch import BranchSpec
@@ -217,10 +216,7 @@ class TestBridge:
 
 
 class TestPrecomputeRegressions:
-    """Regression tests for bridge delivery and interpreter-shutdown teardown.
-
-    Each test FAILS on the pre-fix source and PASSES on the fix.
-    """
+    """Regression tests for bridge delivery and interpreter-shutdown teardown."""
 
     def _meta(self, array_name, chunk_pos, global_shape=(8,), chunk_shape=(4,)):
         return {array_name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": chunk_pos}}
@@ -253,10 +249,9 @@ class TestPrecomputeRegressions:
     def test_del_skips_close_at_interpreter_shutdown(self, env_setup, monkeypatch):
         """Teardown: __del__ must not run the blocking close() at shutdown.
 
-        Pre-fix: ``Bridge.__del__`` -> ``close()`` -> world barrier, which
-        never completes once peer ranks are gone (a failing cluster test
-        HANGS at interpreter shutdown -- FAIL: close() was invoked). Post-fix:
-        ``__del__`` skips ``close()`` while ``sys.is_finalizing()``.
+        ``close()`` runs a world barrier which can never complete once peer
+        ranks are gone -- ``__del__`` skips ``close()`` while
+        ``sys.is_finalizing()``.
         """
         env_setup  # use fixture
         bridge, _ = self.get_plain_bridge()
@@ -275,9 +270,8 @@ class TestPrecomputeRegressions:
     def test_close_skips_collectives_at_interpreter_shutdown(self, env_setup, monkeypatch):
         """Teardown: close() skips the barrier / sub-comm Free() at shutdown.
 
-        Pre-fix: ``close()`` ran ``comm.barrier()`` unconditionally (FAIL:
-        barrier observed). Post-fix: at ``sys.is_finalizing()`` the blocking
-        collectives are skipped; a hang is worse than an exception.
+        At ``sys.is_finalizing()`` the blocking collectives are skipped;
+        a hang is worse than an exception.
         """
         env_setup  # use fixture
         bridge, _ = self.get_plain_bridge()
@@ -291,10 +285,9 @@ class TestPrecomputeRegressions:
     def test_send_non_participating_rank_skips_branch_work(self, env_setup):
         """A rank whose sub-comm for the array is _COMM_NULL does no branch work.
 
-        Pre-fix: ``send()`` fetched task branches and executed every branch
-        func on the chunk BEFORE the ``_COMM_NULL`` early return, then
-        discarded the result (FAIL: branch fetch/execution observed).
-        Post-fix: the early return comes first.
+        The ``_COMM_NULL`` early return comes FIRST: such a rank never
+        fetches task branches nor executes branch funcs on the chunk just
+        to discard the result.
         """
         client, cluster = env_setup
         state = FakeComm.State(2)
@@ -333,11 +326,11 @@ class TestPrecomputeRegressions:
 
         Two bridges share array ``temperature``: bridge 0 ships NO partials
         (legacy i.e. its branch cache is empty) and bridge 1 ships one
-        precomputed partial. Pre-fix: ``all_partials_meta`` was filtered and
-        then indexed with ``enumerate`` against ``gathered_data``, so the
-        single partial inherited bridge 0's position ``(0,)`` (FAIL:
-        position mismatch). Post-fix: the position travels with the entry and
-        the event carries bridge 1's ``(1,)``.
+        precomputed partial. The metadata travels with its own entry --
+        indexing filtered metadata with ``enumerate`` against
+        ``gathered_data`` would misalign and let one bridge's partial
+        inherit another bridge's coordinates. The event must carry bridge
+        1's ``(1,)`` for its partial.
         """
         from deisa.dask.branch import BranchSpec
 

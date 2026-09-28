@@ -447,10 +447,10 @@ class TestMultiReductionBranches:
 
     def test_axis_reduction_combine_correct(self):
         # The two-phase, data-axis-ordered combine must produce the
-        # TRUE axis reduction for per-bridge partials on a 2x2 grid. On the
-        # pre-fix code mean(axis=0)/sum(axis=*) raised and mean(axis=1)
-        # silently returned the wrong values ([7.5 9.5] vs truth
-        # [2.5 6.5 10.5 14.5]).
+        # TRUE axis reduction for per-bridge partials on a 2x2 grid.
+        # A crash here, or mean(axis=1) silently returning the wrong
+        # values ([7.5 9.5] vs truth [2.5 6.5 10.5 14.5]), means the
+        # red/kept-level geometry was misread.
         from deisa.dask.branch import _combine_array_from_partials
 
         real = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
