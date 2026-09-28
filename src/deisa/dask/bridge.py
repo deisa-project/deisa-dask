@@ -105,7 +105,7 @@ class Bridge(IBridge):
 
         # array_name -> branches for local execution (None = "not fetched yet")
         self._task_branches: Dict[str, Optional[List[BranchSpec]]] = {}
-        #  array_name -> output_key -> branch (BranchSpec)
+        # array_name -> output_key -> branch (BranchSpec)
         self._branch_by_key: Dict[str, Dict[str, Any]] = {}
 
         if self.id == 0:
@@ -120,8 +120,8 @@ class Bridge(IBridge):
         self.workers = self.comm.bcast(self.workers, root=0)
         logger.debug(f"[{self.id}] Bridge __init__(): post-bcast. workers={self.workers}")
 
-        # Gather each bridge's partial metadata → global view
-        # Each bridge declares only the arrays it sends; merge into a single dict.
+        # Gather each bridge's partial metadata -> global view: each bridge declares only the arrays it sends; merge
+        # into a single dict.
         self._gather_global_metadata()
 
         # Auto-discover array participation and create sub-communicators
@@ -137,26 +137,22 @@ class Bridge(IBridge):
                 nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
             )
 
-            # The go-event wait is unconditional on the wait_for_go path:
-            # ``WAIT_FOR_EXECUTE_CB_EVENT`` is set by ``execute_callbacks()``
-            # only. wait_for_go=False skips the wait and fetches branches
-            # lazily on first send().
+            # The go-event wait is unconditional on the wait_for_go path: ``WAIT_FOR_EXECUTE_CB_EVENT`` is set by
+            # ``execute_callbacks()`` only. wait_for_go=False skips the wait and fetches branches lazily on first
+            # send().
             if kwargs.get("wait_for_go", True):
                 Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait()
 
-        # World-wide barrier: rank 0 waited for the go event (all callbacks
-        # registered), the other ranks skipped that wait. The barrier aligns
-        # every rank past callback registration so the prefetch below reads a
-        # consistent handshake state. MUST be unconditional (it is a world
-        # collective); deliberately NOT gated on wait_for_go.
+        # World-wide barrier: rank 0 waited for the go event (all callbacks registered), the other ranks skipped that
+        # wait. The barrier aligns every rank past callback registration so the prefetch below reads a consistent
+        # handshake state. MUST be unconditional (it is a world collective); deliberately NOT gated on wait_for_go.
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
         if kwargs.get("wait_for_go", True) and self.id == 0:
-            # Prefetch static branches out of the send() path. Only safe here:
-            # the barrier guarantees branches exist in the handshake. On
-            # wait_for_go=False they may not be registered yet (--lazy
-            # first-send fetch in _get_task_branches).
+            # Prefetch static branches out of the send() path. Only safe here: the barrier guarantees branches exist in
+            # the handshake. On wait_for_go=False they may not be registered yet (--lazy first-send fetch in
+            # _get_task_branches).
             self._prefetch_task_branches()
 
     def _gather_global_metadata(self):
@@ -213,12 +209,11 @@ class Bridge(IBridge):
         """
         for array_name in self._global_array_names:
             participates = array_name in self._my_arrays
-            # Force into a positive 31-bit integer
-            # Reserve 0x7FFFFFFF as _UNDEFINED value.
+            # Force into a positive 31-bit integer Reserve 0x7FFFFFFF as _UNDEFINED value.
             color = (zlib.crc32(array_name.encode()) & 0x7FFFFFFE) if participates else _UNDEFINED
 
-            # sub_comm is either an instance of: mpi4py.MPI.Comm, mpi4py.MPI.CommNull or None (FakeComm)
-            # Split is a collective. All ranks of parent comm must call this.
+            # sub_comm is either an instance of: mpi4py.MPI.Comm, mpi4py.MPI.CommNull or None (FakeComm) Split is a
+            # collective. All ranks of parent comm must call this.
             sub_comm = self.comm.Split(color, self.id)
 
             # convert mpi4py.MPI.CommNull to _COMM_NULL
@@ -232,8 +227,8 @@ class Bridge(IBridge):
                 # Connect to existing handshake actor from analytics side (created by Deisa)
                 self.handshake = Handshake(self.client)
 
-            # Seed a "not fetched yet" sentinel: None != [] (a cached
-            # branch-less array). Fetched once and cached, [] included.
+            # Seed a "not fetched yet" sentinel: None != [] (a cached branch-less array). Fetched once and cached, []
+            # included.
             self._task_branches[array_name] = None
 
             logger.debug(
@@ -275,10 +270,9 @@ class Bridge(IBridge):
             if not self._has_close_been_called:
                 self._has_close_been_called = True
                 if sys.is_finalizing():
-                    # Interpreter shutdown: the world barrier and the sub-comm
-                    # Free() calls are collectives that can never complete once
-                    # peer ranks are gone. Skip the coordinated part; the client
-                    # (non-collective) is still closed below.
+                    # Interpreter shutdown: the world barrier and the sub-comm Free() calls are collectives that can
+                    # never complete once peer ranks are gone. Skip the coordinated part; the client (non-collective) is
+                    # still closed below.
                     logger.debug(f"[{self.id}] Bridge close() during interpreter shutdown: skipping collectives")
                 else:
                     # Barrier on communicator — all bridges must synchronize
@@ -368,15 +362,13 @@ class Bridge(IBridge):
             logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
             return
 
-        # Execute branch funcs locally on the numpy chunk (running on
-        # participating ranks only -- the ``_COMM_NULL`` early return above
-        # exits first), then ship ONLY the tiny partials; the full chunk
-        # never enters worker memory.
+        # Execute branch funcs locally on the numpy chunk (running on participating ranks only -- the ``_COMM_NULL``
+        # early return above exits first), then ship ONLY the tiny partials; the full chunk never enters worker memory.
         branches = self._get_task_branches(array_name)
         partials = self._execute_operations_on_chunk(chunk, branches)
 
-        # With partials: scatter them only. Without: legacy full-chunk
-        # scatter (backwards compatibility for non-reduction callbacks).
+        # With partials: scatter them only. Without: legacy full-chunk scatter (backwards compatibility for
+        # non-reduction callbacks).
         precomputed_meta: Dict[str, Dict[str, Any]] = {}
         if partials:
             logger.debug(
@@ -418,11 +410,9 @@ class Bridge(IBridge):
             who_has = {}
             nbytes = {}
             keys = []
-            # Each partial set carries its OWN chunk_position: indexing
-            # filtered metadata with ``enumerate`` would misalign when a
-            # bridge shipped no partials, letting one bridge's partial
-            # inherit another bridge's coordinates (or under-count the
-            # grid) and corrupt the combine.
+            # Each partial set carries its OWN chunk_position: indexing filtered metadata with ``enumerate`` would
+            # misalign when a bridge shipped no partials, letting one bridge's partial inherit another bridge's
+            # coordinates (or under-count the grid) and corrupt the combine.
             all_partials_meta: List[Dict[str, Any]] = []
             for d in gathered_data:
                 who_has.update(d["future-info"]["who_has"])
@@ -438,20 +428,17 @@ class Bridge(IBridge):
             # only update the scheduler with who has what and register the futures once
             self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
 
-            # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler.
-            # TODO: id=0 can use a queue
+            # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler. TODO: id=0 can use
+            # a queue
             self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
-            # Topic event: with precompute, ``futures`` lists one entry per
-            # (bridge, reduction) pair with the partial's reduced shape/dtype;
-            # the Deisa side rebuilds the graph from these small partials.
+            # Topic event: with precompute, ``futures`` lists one entry per (bridge, reduction) pair with the partial's
+            # reduced shape/dtype; the Deisa side rebuilds the graph from these small partials.
             futures_payload: List[Dict[str, Any]]
             if all_partials_meta:
-                # One entry per (bridge, reduction). ``chunk_position`` is the
-                # contributing bridge's MPI coords (matching the chunk-grid
-                # layout ``mean_agg``/``moment_agg`` expect); ``chunk_axis``
-                # is the reduction axis tuple used to compute the combine
-                # output shape.
+                # One entry per (bridge, reduction). ``chunk_position`` is the contributing bridge's MPI coords
+                # (matching the chunk-grid layout ``mean_agg``/``moment_agg`` expect); ``chunk_axis`` is the reduction
+                # axis tuple used to compute the combine output shape.
                 futures_payload = []
                 for partial_meta in all_partials_meta:
                     futures_payload.extend(
@@ -513,8 +500,8 @@ class Bridge(IBridge):
         """
         assert self.client is not None, "client cannot be None for single-bridge send."
 
-        # On the precompute path, ``res["future"]`` is a list of partial keys (one per reduction).
-        # On the non-precompute path, it's a single future key.
+        # On the precompute path, ``res["future"]`` is a list of partial keys (one per reduction). On the non-precompute
+        # path, it's a single future key.
         future_keys = res["future"] if isinstance(res["future"], list) else [res["future"]]
         who_has = res["who_has"]
         nbytes = res["nbytes"]
@@ -522,8 +509,8 @@ class Bridge(IBridge):
         self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
         self.client._send_to_scheduler({"op": "client-desires-keys", "keys": future_keys, "client": CLIENT_KEY})
 
-        # Build the topic event. On the precompute path, emit one entry per partial (with its reduced shape).
-        # On the non-precompute path, emit one entry pointing at the full chunk.
+        # Build the topic event. On the precompute path, emit one entry per partial (with its reduced shape). On the
+        # non-precompute path, emit one entry pointing at the full chunk.
         if precomputed_meta:
             futures_payload = _build_futures_payload(
                 precomputed_meta,
@@ -676,12 +663,11 @@ class Bridge(IBridge):
         if cached is not None:
             return cached
 
-        # Cache miss -> shared per-array bcast protocol (lazy path:
-        # wait_for_go=False or a cache miss).
+        # Cache miss -> shared per-array bcast protocol (lazy path: wait_for_go=False or a cache miss).
         branches = self._fetch_branches_bcast(array_name)
         if branches is not None:
-            # Store unconditionally: [] is a valid cached result meaning
-            # "no precompute, full-chunk scatter" -- don't re-fetch per send.
+            # Store unconditionally: [] is a valid cached result meaning "no precompute, full-chunk scatter" -- don't
+            # re-fetch per send.
             self._task_branches[array_name] = branches
         return branches or []
 
@@ -733,8 +719,7 @@ class Bridge(IBridge):
         assert len(workers) == 1, "_scatter_partials expects a single target worker"
         target_worker = workers[0]
 
-        # Index branches by output_key (cached; BranchSpec carries the
-        # analyzer's per-reduction metadata directly).
+        # Index branches by output_key (cached; BranchSpec carries the analyzer's per-reduction metadata directly).
         branch_by_key = self._get_branch_by_key(array_name, branches)
 
         payload: Dict[str, Any] = {}
@@ -763,9 +748,8 @@ class Bridge(IBridge):
         # Serialize for scatter (handles numpy arrays in dict values).
         payload2 = valmap(to_serialize, payload)
 
-        # scatter_to_workers directly for the (who_has, nbytes) pair.
-        # client.sync when a Client is available, asyncio.run otherwise
-        # (only rank 0 has a Client).
+        # scatter_to_workers directly for the (who_has, nbytes) pair. client.sync when a Client is available,
+        # asyncio.run otherwise (only rank 0 has a Client).
         if self.client is not None:
             who_has, nbytes = self.client.sync(self._scatter_to_workers_async, target_worker, payload2)
         else:
@@ -806,9 +790,8 @@ class Bridge(IBridge):
             try:
                 partial = branch.branch_func(chunk)
             except Exception as e:
-                # A dropped partial silently corrupts the combined reduction
-                # (scalar stacks get smaller sums, mean_agg/moment_agg miss a
-                # whole bridge's n). FAIL LOUDLY instead of skipping.
+                # A dropped partial silently corrupts the combined reduction (scalar stacks get smaller sums,
+                # mean_agg/moment_agg miss a whole bridge's n). FAIL LOUDLY instead of skipping.
                 raise PrecomputeRuntimeError(
                     f"[{self.id}] _execute_operations_on_chunk: branch {output_key!r} failed on the local "
                     f"chunk: {e!r}. Refusing to ship a partial set that would produce a wrong reduction."

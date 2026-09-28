@@ -74,8 +74,8 @@ from deisa.dask.task_branches import (
     _op_for_aggregate_layer,
 )
 from deisa.dask.task_branches import (
-    # Re-exported for the test suite (test_chain.py imports it from here); the
-    # ``as`` alias marks the re-export for ruff (F401).
+    # Re-exported for the test suite (test_chain.py imports it from here); the ``as`` alias marks the re-export for ruff
+    # (F401).
     _find_chunk_layer as _find_chunk_layer,
 )
 from deisa.dask.utils import build_deisa_array
@@ -83,8 +83,8 @@ from deisa.dask.utils import build_deisa_array
 logger = logging.getLogger(__name__)
 
 
-# Output kind values. "scalar" / "mean" / "moment" cover the per-reduction cases.
-# Later, may add "scalar-array" for chained pointwise + reduction outputs that are 1-d (e.g. ``arr.mean(axis=0)``).
+# Output kind values. "scalar" / "mean" / "moment" cover the per-reduction cases. Later, may add "scalar-array" for
+# chained pointwise + reduction outputs that are 1-d (e.g. ``arr.mean(axis=0)``).
 _BRANCH_KIND_SCALAR = "scalar"
 _BRANCH_KIND_MEAN = "mean"
 _BRANCH_KIND_MOMENT = "moment"
@@ -192,34 +192,34 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
     """
 
     # Build a dask array stub matching the registered array's shape/chunks so the symbolic AST walker has something
-    # concrete to operate on. The chunking does not matter for hint extraction. We only read the task graph
-    # structure, not the data.
+    # concrete to operate on. The chunking does not matter for hint extraction. We only read the task graph structure,
+    # not the data.
     stubs = {}
     for arr_name in registered_arrays:
-        # Get metadata for this array from registered_arrays (which is arrays_metadata), used for shape/chunks of
-        # the placeholder stub.
+        # Get metadata for this array from registered_arrays (which is arrays_metadata), used for shape/chunks of the
+        # placeholder stub.
         meta = registered_arrays.get(arr_name, {})
         global_shape = meta.get("global_shape")
-        # The metadata exposes ``chunk_shape`` (per-bridge chunk), not a ``chunks`` tuple. ``da.zeros`` tiles the
-        # global shape into uniform chunks of ``chunk_shape``.
+        # The metadata exposes ``chunk_shape`` (per-bridge chunk), not a ``chunks`` tuple. ``da.zeros`` tiles the global
+        # shape into uniform chunks of ``chunk_shape``.
         chunk_shape = meta.get("chunk_shape")
         if global_shape is not None and chunk_shape is not None:
             array_stub = da.zeros(global_shape, chunks=chunk_shape, dtype=np.float64, name=f"deisa-stub-{arr_name}")
         else:
-            # Fallback for arrays without full metadata (e.g. opaque helpers or dynamically constructed arrays).
-            # The stub's exact size doesn't matter. Only the graph structure matters for precompute analysis.
-            # Shape and chunks must be consistent (same dimensionality).
+            # Fallback for arrays without full metadata (e.g. opaque helpers or dynamically constructed arrays). The
+            # stub's exact size doesn't matter. Only the graph structure matters for precompute analysis. Shape and
+            # chunks must be consistent (same dimensionality).
             array_stub = da.zeros((10, 10), chunks=(5, 5), dtype=np.float64, name=f"deisa-stub-{arr_name}")
-        # Wrap in DeisaArray so the analyzer sees the full attribute surface (.t, .timestep, dask Array methods)
-        # that the callback uses at runtime.
+        # Wrap in DeisaArray so the analyzer sees the full attribute surface (.t, .timestep, dask Array methods) that
+        # the callback uses at runtime.
         stubs[arr_name] = build_deisa_array(array_stub, timestep=0)
 
     try:
         return _analyze_branch(callback, registered_arrays=stubs, precompute=precompute)
     except PrecomputeError:
-        # Cross-reduction, opaque parameter, etc. -- propagate so the caller learns the analysis was unable to
-        # deliver a hint. precompute=False cases are handled inside analyze_branch (which logs warnings instead of
-        # raising), so by the time we get here precompute=True was set, and we must propagate.
+        # Cross-reduction, opaque parameter, etc. -- propagate so the caller learns the analysis was unable to deliver a
+        # hint. precompute=False cases are handled inside analyze_branch (which logs warnings instead of raising), so by
+        # the time we get here precompute=True was set, and we must propagate.
         raise
     except Exception as e:
         if not precompute:
@@ -228,9 +228,8 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
         raise
 
 
-# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for Phase A
-# of the axis combine: scalar-axis partials are plain arrays (reduced axes
-# already dropped), combined by binary-ufunc fold over identical shapes.
+# Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for Phase A of the axis combine: scalar-axis partials
+# are plain arrays (reduced axes already dropped), combined by binary-ufunc fold over identical shapes.
 _SCALAR_FOLDS = {
     "sum": lambda entries: np.sum(entries, axis=0),
     "prod": lambda entries: np.prod(entries, axis=0),
@@ -371,10 +370,9 @@ def _combine_two_phase(
                 raise PrecomputeRuntimeError(f"_combine_two_phase: no scalar fold for op {op_name!r}")
             entries = np.stack([np.asarray(v) for v in _flatten_grid_entries(sub)])
             res = np.asarray(fold(entries))
-            # Scalar chunk funcs run with keepdims=True (dask's chunk stage),
-            # so the RED axes survive as size-1 dims at their data positions.
-            # Drop them so the combined result's shape matches the declared
-            # kept-extent out_shape (and Phase B concatenates cleanly).
+            # Scalar chunk funcs run with keepdims=True (dask's chunk stage), so the RED axes survive as size-1 dims at
+            # their data positions. Drop them so the combined result's shape matches the declared kept-extent out_shape
+            # (and Phase B concatenates cleanly).
             for ax in sorted(red_axes, reverse=True):
                 res = np.squeeze(res, axis=ax)
             phase_a[kept_coord] = res
@@ -415,16 +413,16 @@ def _combine_array_from_partials(
     nested, grid_shape = _nest_partial_dicts_by_grid(partials, grid_extent=grid_extent)
     out_dtype = str(partials[0]["dtype"])
 
-    # Grid <-> data axis mapping must be explicit: each grid level is one data
-    # axis (the harness's cart dims == array ndim invariant).
+    # Grid <-> data axis mapping must be explicit: each grid level is one data axis (the harness's cart dims == array
+    # ndim invariant).
     if len(grid_shape) != array_ndim:
         raise PrecomputeRuntimeError(
             f"_combine_array_from_partials: chunk grid {grid_shape} has {len(grid_shape)} levels but the "
             f"array has {array_ndim} data axes; cannot map grid axes to data axes. Refusing to combine."
         )
 
-    # Red axes = the data axes being reduced. ``hint_axis is None`` is the
-    # legacy no-axis form of a full reduction (reduce all data axes).
+    # Red axes = the data axes being reduced. ``hint_axis is None`` is the legacy no-axis form of a full reduction
+    # (reduce all data axes).
     if hint_axis is None:
         red_axes = tuple(range(array_ndim))
     else:
@@ -475,8 +473,8 @@ def _discover_partial_metadata(
     else:
         sample = branch_func(placeholder)
         if isinstance(sample, dict):
-            # mean / moment : the per-bridge partial is a dict with per-key shape.
-            # Pick ``total`` as the representative (it always has the reduction-output shape).
+            # mean / moment : the per-bridge partial is a dict with per-key shape. Pick ``total`` as the representative
+            # (it always has the reduction-output shape).
             if "total" in sample:
                 rep = np.asarray(sample["total"])
             elif "M" in sample:
@@ -494,11 +492,9 @@ def _discover_partial_metadata(
 
 def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True) -> List[BranchSpec]:
     """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch."""
-    # Single AST walk: analyze_callback returns reduction hints AND the
-    # walker's dask_arrays in one pass. The dask_arrays are the walker's
-    # expressions at each compute boundary (e.g. ``(arr*arr).sum()``); the
-    # registered placeholders only have the root layer, so the chain walker
-    # needs these.
+    # Single AST walk: analyze_callback returns reduction hints AND the walker's dask_arrays in one pass. The
+    # dask_arrays are the walker's expressions at each compute boundary (e.g. ``(arr*arr).sum()``); the registered
+    # placeholders only have the root layer, so the chain walker needs these.
 
     try:
         hints, walker_dask_arrays = analyze_callback(callback, registered_arrays, precompute=precompute)
@@ -511,10 +507,9 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
     if not hints:
         return []
 
-    # Candidate map keyed by (array_name, op_name): from ALL walker graphs,
-    # each aggregate layer maps its canonical op name to its (layer, graph).
-    # Keying by array avoids collisions when two arrays run the same
-    # reduction (each folds its own chain).
+    # Candidate map keyed by (array_name, op_name): from ALL walker graphs, each aggregate layer maps its canonical op
+    # name to its (layer, graph). Keying by array avoids collisions when two arrays run the same reduction (each folds
+    # its own chain).
     aggregate_candidates: Dict[Tuple[str, str], List[Tuple[str, Any]]] = {}
     for arr_info in walker_dask_arrays:
         candidate = arr_info.get("array")
@@ -531,18 +526,15 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 continue
             aggregate_candidates.setdefault((candidates_array_name, op_name), []).append((layer_name, graph))
 
-    # Fold each hint with its OWN aggregate layer (matched by op_name via the
-    # candidate map) -- folding a shared chain into every hint corrupts
-    # multi-reduction callbacks. ``_seen_chains`` memoizes identical
-    # (agg-name, length) pairs so identical expressions reuse one partial.
+    # Fold each hint with its OWN aggregate layer (matched by op_name via the candidate map) -- folding a shared chain
+    # into every hint corrupts multi-reduction callbacks. ``_seen_chains`` memoizes identical (agg-name, length) pairs
+    # so identical expressions reuse one partial.
     _seen_chains: Dict[Tuple[str, int], Any] = {}
 
     branches: List[BranchSpec] = []
     for branch_dict in hints:
-        # Cross-array expressions cannot be rebuilt from one array's
-        # chunk-local partials (the bridge only owns its array's chunk):
-        # refuse them (precompute=True) or take the legacy full-chunk path
-        # (precompute=False).
+        # Cross-array expressions cannot be rebuilt from one array's chunk-local partials (the bridge only owns its
+        # array's chunk): refuse them (precompute=True) or take the legacy full-chunk path (precompute=False).
         if branch_dict.get("multi_source"):
             if not precompute:
                 logger.warning(
@@ -570,25 +562,22 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 continue
             raise
 
-        # Resolve THIS hint's own registered-array stub (placeholder and
-        # ndim are per-array in multi-array callbacks). The placeholder is
-        # the dask array's first chunk, materialized via .compute() so the
-        # numpy ops return numpy values.
+        # Resolve THIS hint's own registered-array stub (placeholder and ndim are per-array in multi-array callbacks).
+        # The placeholder is the dask array's first chunk, materialized via .compute() so the numpy ops return numpy
+        # values.
         hint_arr = branch_dict.get("array_name") or next(iter(registered_arrays), None)
         array_stub = registered_arrays.get(hint_arr)
         array_ndim = int(getattr(array_stub, "ndim", 0)) if array_stub is not None else 0
         placeholder = array_stub
         if hasattr(placeholder, "compute") and array_stub is not None:
             try:
-                # Materialize the FIRST CHUNK of the stub, not the whole
-                # array: the registered partial metadata must describe the
-                # real per-bridge chunk partial (a whole-stub run would
-                # record ``(1, 8)`` where bridges ship ``(1, 4)``).
+                # Materialize the FIRST CHUNK of the stub, not the whole array: the registered partial metadata must
+                # describe the real per-bridge chunk partial (a whole-stub run would record ``(1, 8)`` where bridges
+                # ship ``(1, 4)``).
                 first_chunk_shape = tuple(int(c[0]) for c in array_stub.chunks)
                 placeholder = array_stub[tuple(slice(0, s) for s in first_chunk_shape)]
-                # Compute on the sync scheduler -- analysis must never touch
-                # an ambient distributed client (a stale config would block
-                # in its reconnect loop instead of failing fast).
+                # Compute on the sync scheduler -- analysis must never touch an ambient distributed client (a stale
+                # config would block in its reconnect loop instead of failing fast).
                 placeholder = placeholder.compute(scheduler="sync")
             except Exception:
                 # If .compute() fails (e.g. no dask client in the CI worker process), fall back to a synthetic numpy
@@ -610,10 +599,9 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
             seen_chains=_seen_chains,
         )
         if branch is None:
-            # Chain walker refused; fall back to the length-1 path with the
-            # ORIGINAL branch dict. The fallback's ``deliver_direct`` is
-            # conservative: direct ONLY if every candidate's chunk stage
-            # reads from the registered root (see the gate in deisa.py).
+            # Chain walker refused; fall back to the length-1 path with the ORIGINAL branch dict. The fallback's
+            # ``deliver_direct`` is conservative: direct ONLY if every candidate's chunk stage reads from the registered
+            # root (see the gate in deisa.py).
             direct, window_read = _candidate_chain_classify(branch_dict, aggregate_candidates)
             branch = _try_length1_branch(
                 branch=branch_dict,
@@ -631,8 +619,8 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                     branch_dict.get("output_key"),
                 )
                 continue
-            # Both paths returned None. This shouldn't happen for hints that came out of the analyzer (the length-1
-            # path is supposed to always succeed). Raise defensively.
+            # Both paths returned None. This shouldn't happen for hints that came out of the analyzer (the length-1 path
+            # is supposed to always succeed). Raise defensively.
             raise RuntimeError(
                 f"analyze_branch: cannot build branch for branch {branch_dict.get('output_key')!r}. "
                 f"The chain walker refused (likely cross-array or constant upstream) AND the length-1 fallback's "
@@ -750,9 +738,9 @@ def _try_chain_branch(
     chain = _walk_chain(graph, agg_name)
     if chain is None:
         return None
-    # The walker returns layers from root-to-chunk. The chain already covers the pointwise steps.
-    # The reduction's chunk_func is the last step. We build a single branch_func via ``_build_chain_branch_func``.
-    # If a memoized branch exists for this chain, reuse it.
+    # The walker returns layers from root-to-chunk. The chain already covers the pointwise steps. The reduction's
+    # chunk_func is the last step. We build a single branch_func via ``_build_chain_branch_func``. If a memoized branch
+    # exists for this chain, reuse it.
     chain_key = (agg_name, len(chain))
     chain_branch_func = seen_chains.get(chain_key)
     if chain_branch_func is None:
@@ -796,9 +784,9 @@ def _try_length1_branch(
     reduction even though the stub-side chunk axis is partial.
     """
     try:
-        # For ``mean`` and ``moment`` the bridge overrides ``keepdims=True``
-        # (see :meth:`Bridge._execute_operations_on_chunk`) so the per-bridge dict values are at least 1-D for
-        # ``mean_agg`` / ``moment_agg`` to walk with ``_concatenate2``. Mirror that here.
+        # For ``mean`` and ``moment`` the bridge overrides ``keepdims=True`` (see
+        # :meth:`Bridge._execute_operations_on_chunk`) so the per-bridge dict values are at least 1-D for ``mean_agg`` /
+        # ``moment_agg`` to walk with ``_concatenate2``. Mirror that here.
         chunk_kwargs = branch.get("chunk_kwargs") or {}
         effective_kwargs = dict(chunk_kwargs)
         if branch.get("kind") in (_BRANCH_KIND_MEAN, _BRANCH_KIND_MOMENT):
@@ -813,8 +801,8 @@ def _try_length1_branch(
             window_read=window_read,
         )
     except Exception as e:
-        # Length-1 is the last-resort fallback; log context for diagnosis
-        # (usually a chunk_func/placeholder shape-dtype mismatch).
+        # Length-1 is the last-resort fallback; log context for diagnosis (usually a chunk_func/placeholder shape-dtype
+        # mismatch).
         logger.debug(
             "_try_length1_branch: build_branch raised for %s with chunk_kwargs=%r, array_ndim=%d, placeholder=%r: %s",
             branch.get("output_key"),
@@ -875,10 +863,9 @@ def _build_branch(
 
     partial_shape, partial_dtype = _discover_partial_metadata(chain_branch_func, placeholder, branch)
 
-    # Runtime dispatch signature: what the callback's reduction call on the
-    # delivered view must match. A window read runs on the whole array (full
-    # reduction); any other direct reduction normalizes its chunk axis against
-    # the registered array's ndim.
+    # Runtime dispatch signature: what the callback's reduction call on the delivered view must match. A window read
+    # runs on the whole array (full reduction); any other direct reduction normalizes its chunk axis against the
+    # registered array's ndim.
     if window_read:
         dispatch_sig: Tuple[int, ...] = ()
     elif chunk_axis is None:
@@ -906,14 +893,14 @@ def _walk_chain(graph, agg_name: str) -> Optional[List[Tuple[Callable, dict, int
     """Walk from a chunk layer back to the placeholder root."""
     if not _is_aggregate_layer(agg_name):
         return None
-    # Match the chunk layer via the dedicated chunk/aggregate pairs (mean_chunk / mean_agg, chunk_max / max,
-    # chunk_min / min, moment_agg / var) instead of requiring an exact base name.
+    # Match the chunk layer via the dedicated chunk/aggregate pairs (mean_chunk / mean_agg, chunk_max / max, chunk_min /
+    # min, moment_agg / var) instead of requiring an exact base name.
     chunk_layer_name = _chunk_layer_for_aggregate(graph, agg_name)
     if chunk_layer_name is None:
         return None
-    # Refuse to fold an aggregate whose output feeds ANOTHER reduction's chunk stage (cross-reduction
-    # expression like ``(arr - arr.mean()).sum()``). Such an aggregate's global value is required downstream;
-    # folding it alone would produce a wrong local partial.
+    # Refuse to fold an aggregate whose output feeds ANOTHER reduction's chunk stage (cross-reduction expression like
+    # ``(arr - arr.mean()).sum()``). Such an aggregate's global value is required downstream; folding it alone would
+    # produce a wrong local partial.
     if _aggregate_output_feeds_other_reduction(graph, agg_name):
         return None
     chain: List[Tuple[Callable, dict, int]] = []
@@ -932,8 +919,8 @@ def _walk_chain(graph, agg_name: str) -> Optional[List[Tuple[Callable, dict, int
         if upstream is None:
             return None
         upstream_name, upstream_input_count = upstream
-        # If the upstream isn't a layer in the graph, we've hit the root (placeholder DataNode).
-        # The branch_func receives the actual chunk from the bridge, so we don't fold the root.
+        # If the upstream isn't a layer in the graph, we've hit the root (placeholder DataNode). The branch_func
+        # receives the actual chunk from the bridge, so we don't fold the root.
         if upstream_name not in graph.layers:
             break
         chain.append((func, kwargs, upstream_input_count))
@@ -960,8 +947,8 @@ def _find_single_upstream(layer) -> Optional[Tuple[str, int]]:
     if not upstream_names or len(upstream_names) > 1:
         return None
     if has_non_array_input:
-        # Refuse to fold chains with constants. The constant would need to be embedded into the branch_func call
-        # (e.g. ``add(chunk, 1)``) which requires extracting the constant value from the Blockwise task's args.
+        # Refuse to fold chains with constants. The constant would need to be embedded into the branch_func call (e.g.
+        # ``add(chunk, 1)``) which requires extracting the constant value from the Blockwise task's args.
         return None
     return next(iter(upstream_names)), array_input_count
 

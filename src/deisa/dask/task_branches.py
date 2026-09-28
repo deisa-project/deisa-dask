@@ -65,9 +65,8 @@ import dask.array as da
 
 logger = logging.getLogger(__name__)
 
-# Map an aggregator function name to a canonical op name.
-# sum/prod/max/min/amax/amin are simple; mean_agg and moment_agg are the
-# two-stage reducers used by mean/var/std.
+# Map an aggregator function name to a canonical op name. sum/prod/max/min/amax/amin are simple; mean_agg and moment_agg
+# are the two-stage reducers used by mean/var/std.
 _OP_FROM_FUNC_NAME = {
     "sum": "sum",
     "prod": "prod",
@@ -82,17 +81,14 @@ _OP_FROM_FUNC_NAME = {
 # Operations supported by ``_combine_reduction_partials`` on the bridge side.
 SUPPORTED_OPS = {"sum", "mean", "std", "var", "max", "min", "prod"}
 
-# Reduction kinds -- how the bridge scatters the partial and how the
-# Deisa-side combine graph is built.
+# Reduction kinds -- how the bridge scatters the partial and how the Deisa-side combine graph is built.
 #
-# - ``"scalar"``: chunk_func returns a plain scalar/array. Partials combine
-#   via dask's natural ``da.stack`` + ``.sum(axis=0)``.
-# - ``"mean"``: chunk_func returns ``{"n", "total"}`` (per dask's
-#   ``mean_chunk``). Partials are scattered as pickled blobs; the Deisa-side
-#   graph calls ``mean_agg`` over them.
-# - ``"moment"``: chunk_func returns ``{"n", "total", "M"}`` (per
-#   ``moment_chunk``). Same pattern, calls ``moment_agg``; ``std`` adds a
-#   trailing ``sqrt`` via ``finalize``.
+# - ``"scalar"``: chunk_func returns a plain scalar/array. Partials combine via dask's natural ``da.stack`` +
+#   ``.sum(axis=0)``.
+# - ``"mean"``: chunk_func returns ``{"n", "total"}`` (per dask's ``mean_chunk``). Partials are scattered as pickled
+#   blobs; the Deisa-side graph calls ``mean_agg`` over them.
+# - ``"moment"``: chunk_func returns ``{"n", "total", "M"}`` (per ``moment_chunk``). Same pattern, calls ``moment_agg``;
+#   ``std`` adds a trailing ``sqrt`` via ``finalize``.
 _REDUCTION_KIND = {
     "sum": "scalar",
     "prod": "scalar",
@@ -145,19 +141,15 @@ def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
     return axes
 
 
-# ---------------------------------------------------------------------------
-# Window-read detection (the ``param[-1]`` idiom)
-# ---------------------------------------------------------------------------
-# At runtime every registered-array callback parameter is a list of
-# DeisaArrays (the sliding window), so ``param[-1]`` is Python list indexing
-# returning the CURRENT iteration's delivered array. The analyzer models the
-# subscript as a dask getitem, but the delivered view is the WHOLE array:
-# such getitems must be treated as a WINDOW READ, not a real slice
-# (``arr[2:5]`` / ``arr[:, 0]`` are real slices, refused at registration).
+# --------------------------------------------------------------------------- Window-read detection (the ``param[-1]``
+# idiom) --------------------------------------------------------------------------- At runtime every registered-array
+# callback parameter is a list of DeisaArrays (the sliding window), so ``param[-1]`` is Python list indexing returning
+# the CURRENT iteration's delivered array. The analyzer models the subscript as a dask getitem, but the delivered view
+# is the WHOLE array: such getitems must be treated as a WINDOW READ, not a real slice (``arr[2:5]`` / ``arr[:, 0]`` are
+# real slices, refused at registration).
 #
-# A getitem layer produced by ``stub[-1]`` has tasks whose index is an int
-# in the first position and full slices elsewhere -- that shape is the
-# window-read signature.
+# A getitem layer produced by ``stub[-1]`` has tasks whose index is an int in the first position and full slices
+# elsewhere -- that shape is the window-read signature.
 def _is_window_read_index(index) -> bool:
     """True when ``index`` selects a whole row-plane (the ``param[-1]`` idiom).
 
@@ -233,8 +225,8 @@ def _window_read_upstream_name(layer) -> Optional[str]:
     return None
 
 
-# Root stub layers created by the analyzer (``_analyze_callback_for_branches``
-# names the placeholder ``deisa-stub-<array>``).
+# Root stub layers created by the analyzer (``_analyze_callback_for_branches`` names the placeholder
+# ``deisa-stub-<array>``).
 _STUB_LAYER_PREFIX = "deisa-stub-"
 
 
@@ -256,8 +248,8 @@ def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
     - ``:param chunk_layer_name:`` The reduction's chunk layer.
     - ``:return:`` True only for ``root[-1].op()``-style expressions.
     """
-    # Imported lazily to avoid a circular import at module load time
-    # (branch.py imports task_branches and defines _find_single_upstream).
+    # Imported lazily to avoid a circular import at module load time (branch.py imports task_branches and defines
+    # _find_single_upstream).
     from deisa.dask.branch import _find_single_upstream
 
     current = chunk_layer_name
@@ -320,8 +312,7 @@ def _assign_output_key(array_name: str, op_name: str, axes_sig: Tuple[int, ...],
     return key
 
 
-# ---------------------------------------------------------------------------
-# Layer name helpers
+# --------------------------------------------------------------------------- Layer name helpers
 # ---------------------------------------------------------------------------
 def _strip_hash(layer_name: str) -> str:
     """Drop the trailing ``-hash`` from a dask layer name."""
@@ -371,8 +362,7 @@ def _chunk_base_for_aggregate_base(agg_base: str) -> List[str]:
     return [direct, special] if special else [direct]
 
 
-# ---------------------------------------------------------------------------
-# Aggregate/Chunk layer introspection
+# --------------------------------------------------------------------------- Aggregate/Chunk layer introspection
 # ---------------------------------------------------------------------------
 def _is_task(value: Any) -> bool:
     """True if ``value`` is a dask ``Task`` (new task spec)."""
@@ -441,8 +431,7 @@ def _is_compose(func: Any) -> bool:
 def _op_from_func(func: Any) -> Optional[str]:
     """Identify the canonical op name from an aggregator callable."""
     if _is_compose(func):
-        # dask reductions like sum/prod/max/min are wrapped in
-        # ``Compose(partial(np_op), partial(_concatenate2))``.
+        # dask reductions like sum/prod/max/min are wrapped in ``Compose(partial(np_op), partial(_concatenate2))``.
         for f in func.funcs:
             inner = _unwrap_partial(f)
             if inner is not None:
@@ -512,8 +501,7 @@ def _chunk_func_and_kwargs(chunk_layer) -> Optional[tuple]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# branch extraction
+# --------------------------------------------------------------------------- branch extraction
 # ---------------------------------------------------------------------------
 def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
     """Locate the chunk-stage layer feeding ``layer_name`` from the
@@ -612,20 +600,16 @@ def _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name: str) -> set:
             continue
         visited.add(current)
         if current not in graph.layers:
-            # Upstream root -- not a layer in this graph (typically the
-            # registered placeholder). Stop here.
+            # Upstream root -- not a layer in this graph (typically the registered placeholder). Stop here.
             continue
         if "-aggregate-" in current:
             reachable_aggregates.add(current)
-            # Don't keep walking past an aggregate -- its output is
-            # already a fully-reduced value (e.g. the inner mean's
-            # output is a scalar per chunk, computed in its own
-            # aggregate layer). Reaching ANY aggregate is the
+            # Don't keep walking past an aggregate -- its output is already a fully-reduced value (e.g. the inner mean's
+            # output is a scalar per chunk, computed in its own aggregate layer). Reaching ANY aggregate is the
             # cross-reduction signal we care about.
             continue
         layer = graph.layers[current]
-        # Walk upstream via the Blockwise ``indices`` (new-style) or
-        # via the first task's args (legacy-style).
+        # Walk upstream via the Blockwise ``indices`` (new-style) or via the first task's args (legacy-style).
         upstream = _blockwise_upstream_layer_names(layer)
         queue.update(layer for layer in upstream if isinstance(layer, str))
     return reachable_aggregates
@@ -689,8 +673,7 @@ def _blockwise_upstream_layer_names(layer) -> List[str]:
                         names.append(name.split("(", 1)[0])
             return names
         if isinstance(value, tuple) and len(value) >= 2:
-            # legacy form: (func, deps, ...) where deps is nested
-            # list/tuple of layer-name strings
+            # legacy form: (func, deps, ...) where deps is nested list/tuple of layer-name strings
             deps = value[1]
             stack = [deps]
             while stack:
@@ -718,23 +701,19 @@ def extract_reduction_hints(
         logger.debug("extract_reduction_hints: failed to get graph: %s", e)
         return hints
 
-    # First pass: refuse expressions whose chunk stages depend on another
-    # reduction's aggregate -- those are only correct end-to-end on the
-    # workers (with the full chunk), never as per-bridge partials. Done once
-    # per dask array so a cross-reduction expression yields zero hints, not
-    # zero inner hints plus a wrong outer branch.
+    # First pass: refuse expressions whose chunk stages depend on another reduction's aggregate -- those are only
+    # correct end-to-end on the workers (with the full chunk), never as per-bridge partials. Done once per dask array so
+    # a cross-reduction expression yields zero hints, not zero inner hints plus a wrong outer branch.
     for layer_name in list(graph.layers):
         if not _is_aggregate_layer(layer_name):
             continue
-        # Resolve the chunk layer from THIS aggregate's own task references
-        # (a positional base-name match could hit a same-op aggregate's
-        # chunk layer and inspect the wrong subgraph).
+        # Resolve the chunk layer from THIS aggregate's own task references (a positional base-name match could hit a
+        # same-op aggregate's chunk layer and inspect the wrong subgraph).
         chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             continue
         reachable = _chunk_inputs_reach_other_aggregate(graph, chunk_layer_name)
-        # OTHER aggregates in the reachable set = reductions whose output
-        # the chunk-stage depends on.
+        # OTHER aggregates in the reachable set = reductions whose output the chunk-stage depends on.
         other_aggregates = reachable - {layer_name}
         if other_aggregates:
             other_ops = sorted({_base_for_aggregate(a) for a in other_aggregates})
@@ -760,16 +739,16 @@ def extract_reduction_hints(
         if op_name is None:
             continue
 
-        # ``moment_agg`` is shared by var and std; ``_op_for_aggregate_layer``
-        # disambiguates via the _sqrt poststep (std = var followed by sqrt).
+        # ``moment_agg`` is shared by var and std; ``_op_for_aggregate_layer`` disambiguates via the _sqrt poststep (std
+        # = var followed by sqrt).
         finalize: Optional[str] = "sqrt" if op_name == "std" else None
 
         if op_name not in SUPPORTED_OPS:
             logger.debug("extract_reduction_hints: unsupported op %s, skipping", op_name)
             continue
 
-        # Find the matching chunk layer via this aggregate's OWN upstream
-        # references (base-name matching is ordering-dependent).
+        # Find the matching chunk layer via this aggregate's OWN upstream references (base-name matching is
+        # ordering-dependent).
         chunk_layer_name = _chunk_layer_for_aggregate(graph, layer_name)
         if chunk_layer_name is None:
             logger.debug("extract_reduction_hints: no chunk layer for %s", layer_name)
@@ -787,10 +766,9 @@ def extract_reduction_hints(
             logger.debug("extract_reduction_hints: failed to pickle chunk func: %s", e)
             continue
 
-        # The window-read flag (``root[-1]``): the callback's reduction runs on
-        # the WHOLE delivered array, so the branch's runtime dispatch
-        # signature is the FULL reduction even though the stub-side chunk
-        # layer carries a partial axis (the getitem removed the other axes).
+        # The window-read flag (``root[-1]``): the callback's reduction runs on the WHOLE delivered array, so the
+        # branch's runtime dispatch signature is the FULL reduction even though the stub-side chunk layer carries a
+        # partial axis (the getitem removed the other axes).
         window_read = _chain_has_window_read(graph, chunk_layer_name)
         output_key = _assign_output_key(
             array_name,
@@ -798,8 +776,8 @@ def extract_reduction_hints(
             () if window_read else _axis_signature(chunk_kwargs.get("axis")),
             output_key_seen,
         )
-        # Unwrap single-element axis tuples (dask normalizes ``axis=0`` to
-        # ``axis=(0,)``) for the bridge's chunk execution path.
+        # Unwrap single-element axis tuples (dask normalizes ``axis=0`` to ``axis=(0,)``) for the bridge's chunk
+        # execution path.
         chunk_kwargs = dict(chunk_kwargs) if chunk_kwargs else {}
         if isinstance(chunk_kwargs.get("axis"), tuple) and len(chunk_kwargs["axis"]) == 1:
             chunk_kwargs["axis"] = chunk_kwargs["axis"][0]
