@@ -66,29 +66,6 @@ from deisa.dask.utils import _PrecomputedDeisaArray, build_deisa_array, get_clie
 logger = logging.getLogger(__name__)
 
 
-def _grid_extent_from_metadata(metadata: Dict[str, Any]) -> Optional[Tuple[int, ...]]:
-    """Per-data-axis chunk-grid extent from the array metadata.
-
-    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI chunks along data axis ``i`` -- the harness
-    invariant that the MPI cart dims map one-to-one onto the array's data axes. ``None`` when metadata is incomplete.
-    """
-    g = metadata.get("global_shape")
-    c = metadata.get("chunk_shape")
-    if not g or not c or len(g) != len(c):
-        return None
-    if any(ch <= 0 for ch in c):
-        return None
-    return tuple(max(1, int(gl // ch)) for gl, ch in zip(g, c))
-
-
-def _grid_size_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
-    """Total number of MPI chunks (bridges) the metadata implies for an array."""
-    extent = _grid_extent_from_metadata(metadata)
-    if extent is None:
-        return None
-    return int(np.prod(extent))
-
-
 class Deisa(IDeisa):
     Callback_id = str
 
@@ -881,3 +858,26 @@ class Deisa(IDeisa):
     @staticmethod
     def make_topic(arrays, when) -> str:
         return f"{when}|" + "|".join(sorted(arrays))
+
+
+def _grid_extent_from_metadata(metadata: Dict[str, Any]) -> Optional[Tuple[int, ...]]:
+    """Per-data-axis chunk-grid extent from the array metadata.
+
+    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI chunks along data axis ``i`` -- the harness
+    invariant that the MPI cart dims map one-to-one onto the array's data axes. ``None`` when metadata is incomplete.
+    """
+    g = metadata.get("global_shape")
+    c = metadata.get("chunk_shape")
+    if not g or not c or len(g) != len(c):
+        return None
+    if any(ch <= 0 for ch in c):
+        return None
+    return tuple(max(1, int(gl // ch)) for gl, ch in zip(g, c))
+
+
+def _grid_size_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
+    """Total number of MPI chunks (bridges) the metadata implies for an array."""
+    extent = _grid_extent_from_metadata(metadata)
+    if extent is None:
+        return None
+    return int(np.prod(extent))

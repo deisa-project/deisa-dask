@@ -128,12 +128,11 @@ def _normalize_reduction_axis(axis, ndim: int) -> Tuple[int, ...]:
     return axes
 
 
-# --------------------------------------------------------------------------- Window-read detection (the ``param[-1]``
-# idiom) --------------------------------------------------------------------------- At runtime every registered-array
-# callback parameter is a list of DeisaArrays (the sliding window), so ``param[-1]`` is Python list indexing returning
-# the CURRENT iteration's delivered array. The analyzer models the subscript as a dask getitem, but the delivered view
-# is the WHOLE array: such getitems must be treated as a WINDOW READ, not a real slice (``arr[2:5]`` / ``arr[:, 0]`` are
-# real slices, refused at registration).
+# Window-read detection (the ``param[-1]`` idiom). At runtime every registered-array callback parameter is a list of
+# DeisaArrays (the sliding window), so ``param[-1]`` is Python list indexing returning the CURRENT iteration's delivered
+# array. The analyzer models the subscript as a dask getitem, but the delivered view is the WHOLE array: such getitems
+# must be treated as a WINDOW READ, not a real slice (``arr[2:5]`` / ``arr[:, 0]`` are real slices, refused at
+# registration).
 #
 # A getitem layer produced by ``stub[-1]`` has tasks whose index is an int in the first position and full slices
 # elsewhere -- that shape is the window-read signature.
@@ -291,8 +290,7 @@ def _assign_output_key(array_name: str, op_name: str, axes_sig: Tuple[int, ...],
     return key
 
 
-# --------------------------------------------------------------------------- Layer name helpers
-# ---------------------------------------------------------------------------
+# Layer name helpers
 def _strip_hash(layer_name: str) -> str:
     """Drop the trailing ``-hash`` from a dask layer name."""
     return layer_name.rsplit("-", 1)[0] if "-" in layer_name else layer_name
@@ -339,8 +337,7 @@ def _chunk_base_for_aggregate_base(agg_base: str) -> List[str]:
     return [direct, special] if special else [direct]
 
 
-# --------------------------------------------------------------------------- Aggregate/Chunk layer introspection
-# ---------------------------------------------------------------------------
+#  Aggregate/Chunk layer introspection
 def _is_task(value: Any) -> bool:
     """True if ``value`` is a dask ``Task`` (new task spec)."""
     if isinstance(value, tuple):
@@ -470,8 +467,7 @@ def _chunk_func_and_kwargs(chunk_layer) -> Optional[tuple]:
     return None
 
 
-# --------------------------------------------------------------------------- branch extraction
-# ---------------------------------------------------------------------------
+# branch extraction
 def _chunk_layer_for_aggregate(graph, layer_name: str) -> Optional[str]:
     """Locate the chunk-stage layer feeding ``layer_name`` from the
     aggregate layer's OWN task references (Blockwise ``indices`` / first-task args).

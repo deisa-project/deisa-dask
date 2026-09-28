@@ -886,11 +886,11 @@ def _build_chain_branch_func(chain: List[Tuple[Callable, dict, int]]) -> Callabl
     """Compose a list of ``(func, kwargs, input_count)`` into a single branch_func(chunk).
     Layers reading from a single upstream twice (e.g. ``arr * arr``) get the chunk passed twice.
 
-        Returns a module-level callable (``_chain_branch_func``) bound to the chain tuple via :func:`functools.partial`.
-        The closure is on a top-level function so pickle can find it across processes. Building a fresh ``def
-        branch_func(chunk, _chain=...)`` inside this helper would produce an unpicklable local function (AttributeError:
-        Can't get local object). The ``functools.partial`` + module-level target recipe is the only shape that pickles
-        cleanly.
+    Returns a module-level callable (``_chain_branch_func``) bound to the chain tuple via :func:`functools.partial`.
+    The closure is on a top-level function so pickle can find it across processes. Building a fresh ``def
+    branch_func(chunk, _chain=...)`` inside this helper would produce an unpicklable local function (AttributeError:
+    Can't get local object). The ``functools.partial`` + module-level target recipe is the only shape that pickles
+    cleanly.
     """
     chain_tuple = tuple(chain)
     return functools.partial(_chain_branch_func, _chain=chain_tuple)
@@ -900,8 +900,8 @@ def _chain_branch_func(chunk, _chain=None):
     """Module-level branch callable: apply each (func, kwargs, input_count) in the chain to the chunk,
     threading the result through.
 
-        Pair with :func:`_build_chain_branch_func` which binds ``_chain`` via :func:`functools.partial`. Defined at
-        module level so pickle can find it across the bridge process boundary.
+    Pair with :func:`_build_chain_branch_func` which binds ``_chain`` via :func:`functools.partial`. Defined at module
+    level so pickle can find it across the bridge process boundary.
     """
     if _chain is None:
         raise RuntimeError("_chain_branch_func called without bound _chain")

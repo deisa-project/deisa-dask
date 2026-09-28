@@ -729,18 +729,14 @@ class Bridge(IBridge):
             if branch is None:
                 # Every partial comes from a branch (they are built together in _execute_operations_on_chunk).
                 raise KeyError(f"no branch found for precomputed output_key {output_key!r}")
-            kind = branch.output_kind
-            finalize = branch.finalize
-            red_shape = branch.partial_shape
-            red_dtype = branch.partial_dtype
             key = f"{KEY_PREFIX}{array_name}-partial-{output_key}-{uuid.uuid4().hex}"
             payload[key] = value
             shape_dtype[output_key] = {
                 "future": key,
-                "kind": kind,
-                "shape": red_shape,
-                "dtype": red_dtype,
-                "finalize": finalize,
+                "kind": branch.output_kind,
+                "shape": branch.partial_shape,
+                "dtype": branch.partial_dtype,
+                "finalize": branch.finalize,
                 "chunk_axis": branch.chunk_axis,
                 "op_name": branch.op_name,
             }
@@ -802,10 +798,7 @@ class Bridge(IBridge):
         return partials
 
 
-def _build_futures_payload(
-    meta: Mapping[str, Mapping[str, Any]],
-    chunk_position: Any,
-) -> List[Dict[str, Any]]:
+def _build_futures_payload(meta: Mapping[str, Mapping[str, Any]], chunk_position: Any) -> List[Dict[str, Any]]:
     """Build per-reduction ``futures`` entries for a precompute topic event.
 
     One entry per reduction in ``meta``, carrying the partial's reduced
