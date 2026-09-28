@@ -145,11 +145,6 @@ class Bridge(IBridge):
             # branches lazily on the first send().
             if kwargs.get("wait_for_go", True):
                 Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait()
-                go_received = True
-            else:
-                go_received = False
-        else:
-            go_received = False
 
         # World-wide barrier. Rank 0 waited on WAIT_FOR_EXECUTE_CB_EVENT (all callbacks
         # have written their task-branches to the handshake actor by then); the other ranks
@@ -160,7 +155,7 @@ class Bridge(IBridge):
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
-        if kwargs.get("wait_for_go", True) and go_received:
+        if kwargs.get("wait_for_go", True) and self.id == 0:
             # Prefetch static task-branches out of the send() latency path. Safe only on the
             # wait_for_go path: the barrier guarantees branches exist in the handshake (rank 0
             # confirmed via the event). On wait_for_go=False the branches may not be registered
