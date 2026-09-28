@@ -80,7 +80,7 @@ Registration time, callback NEVER executed. Zero-based numbers = source steps in
                                         │ hints
                                         v
         +================== STAGE 4: hints -> BranchSpecs =================+
-        |  _analyze_branch loop (branch.py:532..612)                       |
+        |  _analyze_branch loop (branch.py)                                |
         |                                                                  |
         |  candidate map (array_name, op_name) -> [(agg_layer, graph)]     |
         |                                                                  |
@@ -98,7 +98,7 @@ Registration time, callback NEVER executed. Zero-based numbers = source steps in
         |                                                                  |
         |   b) _try_length1_branch (fallback)                              |
         |      raw chunk_func + kwargs; deliver_direct                     |
-        |      from _candidate_chain_classify (conservative)               |
+        |      from _candidate_chain_classify / _classify_chain (conserv.) |
         |                                                                  |
         |   both fail -> RuntimeError (defensive)                          |
         |                                                                  |
