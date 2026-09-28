@@ -562,9 +562,9 @@ class Deisa(IDeisa):
                 if precomputed:
                     # Precompute path: one ``futures`` entry per (bridge, reduction); group by ``output_key`` and
                     # dispatch on kind:
-                    # - scalar FULL: ``da.stack`` partials; the callback's reduction combines them via dask's graph.
-                    # - scalar AXIS: two-phase combine folds red grid levels, concatenates kept levels.
-                    # - mean/moment: ``{n, total[, M]}`` dict blobs; two-phase combine calls ``mean_agg``/``moment_agg``
+                    # scalar FULL: ``da.stack`` partials; the callback's reduction combines them via dask's graph.
+                    # scalar AXIS: two-phase combine folds red grid levels, concatenates kept levels.
+                    # mean/moment: ``{n, total[, M]}`` dict blobs; two-phase combine calls ``mean_agg``/``moment_agg``
                     # and delivers the FINAL value (not a re-.var()-able (1,1) array).
                     by_reduction: Dict[str, List[Any]] = {}
                     for f in futures:

@@ -83,12 +83,9 @@ SUPPORTED_OPS = {"sum", "mean", "std", "var", "max", "min", "prod"}
 
 # Reduction kinds -- how the bridge scatters the partial and how the Deisa-side combine graph is built.
 #
-# - ``"scalar"``: chunk_func returns a plain scalar/array. Partials combine via dask's natural ``da.stack`` +
-#   ``.sum(axis=0)``.
-# - ``"mean"``: chunk_func returns ``{"n", "total"}`` (per dask's ``mean_chunk``). Partials are scattered as pickled
-#   blobs; the Deisa-side graph calls ``mean_agg`` over them.
-# - ``"moment"``: chunk_func returns ``{"n", "total", "M"}`` (per ``moment_chunk``). Same pattern, calls ``moment_agg``;
-#   ``std`` adds a trailing ``sqrt`` via ``finalize``.
+# "scalar": plain scalar/array partials, combined via dask's natural da.stack + .sum(axis=0);
+# "mean": {"n", "total"} dict blobs, the Deisa-side graph calls mean_agg over them;
+# "moment": {"n", "total", "M"} blobs, calls moment_agg; "std" adds a trailing sqrt via finalize.
 _REDUCTION_KIND = {
     "sum": "scalar",
     "prod": "scalar",
