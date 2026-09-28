@@ -270,8 +270,7 @@ def test_compute_helper_same_file() -> None:
             return da.sum(f, axis=(0, 1)) * dvx
         """
     cb = _make_function("callback", src)
-    helpers = {"density": _make_function("density", src)}
-    hints, _ = analyze_callback(cb, {"f": arr}, helpers=helpers)
+    hints, _ = analyze_callback(cb, {"f": arr})
     assert _hint_keys(hints) == ["f-sum"]
 
 
@@ -362,8 +361,7 @@ def test_client_compute_inside_helper() -> None:
             client.compute(da.sum(f))
         """
     cb = _make_function("callback", src)
-    helpers = {"measure": _make_function("measure", src)}
-    hints, _ = analyze_callback(cb, {"f": arr, "client": client_stub}, helpers=helpers)
+    hints, _ = analyze_callback(cb, {"f": arr, "client": client_stub})
     assert _hint_keys(hints) == ["f-sum"]
 
 
@@ -477,10 +475,10 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
 
 
 # ---------------------------------------------------------------------------
-# precompute=False
+# Analysis is strict (no opt-out at the analyzer level)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    "source,arr_factory,check_warning",
+    "source,arr_factory,expected_exc",
     [
         pytest.param(
             """\
@@ -488,7 +486,7 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
             phi = da.fft.fft2(arr)
             phi.compute()""",
             lambda: da.zeros((10, 10), chunks=(10, 10), dtype=np.float64),
-            True,
+            NoPrecomputableReductionError,
             id="fft_no_reductions",
         ),
         pytest.param(
@@ -498,7 +496,7 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
             result = getattr(arr, op)()
             result.compute()""",
             _simple_stub,
-            False,
+            IncompatibleCallbackError,
             id="incompatible_getattr",
         ),
         pytest.param(
@@ -506,30 +504,23 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
         def callback(arr):
             return (arr - arr.mean()).sum().compute()""",
             _simple_stub,
-            True,
+            UnsupportedReductionError,
             id="cross_reduction_refusal",
         ),
     ],
 )
-def test_precompute_false_returns_empty(source, arr_factory, caplog, check_warning) -> None:
-    """``precompute=False`` returns [] and logs a warning instead of raising.
+def test_analyze_strict_raises(source, arr_factory, expected_exc) -> None:
+    """``analyze_callback`` never swallows a refusal: it raises.
 
-    The user is explicitly opting out of the precompute safety net: the
-    analyzer swallows the refusal and returns zero hints, which the
-    registration layer turns into a legacy full-chunk scatter (or raises,
-    depending on the registration-time policy).
+    Opting out of precompute is a REGISTRATION-time decision
+    (``register(..., precompute=False)`` skips the analysis entirely);
+    the analyzer itself has no lenient mode.
     """
     arr = arr_factory()
     src = textwrap.dedent(source)
     cb = _make_function("callback", src)
-    with caplog.at_level("WARNING"):
-        hints, _ = analyze_callback(cb, {"f": arr}, precompute=False)
-    assert hints == []
-    if check_warning:
-        # At least one warning emitted about the refusal.
-        assert any(
-            "precompute" in str(rec.message).lower() or "reduc" in str(rec.message).lower() for rec in caplog.records
-        )
+    with pytest.raises(expected_exc):
+        analyze_callback(cb, {"f": arr})
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +540,7 @@ def test_gysela_density_helper() -> None:
             return da.sum(f, axis=(0, 3, 4)) * grid.dvx * grid.dvy
         """
     cb = _make_function("callback", src)
-    helpers = {"density": _make_function("density", src)}
-    hints, _ = analyze_callback(cb, {"f": arr, "grid": grid_obj, "client": client_stub}, helpers=helpers)
+    hints, _ = analyze_callback(cb, {"f": arr, "grid": grid_obj, "client": client_stub})
     assert _hint_keys(hints) == ["f-sum"]
 
 
@@ -585,11 +575,9 @@ def test_gysela_measure_helper_loop() -> None:
             client.compute([ek, l2, ms, mx, my])
         """
     cb = _make_function("callback", src)
-    helpers = {"measure": _make_function("measure", src)}
     hints, _ = analyze_callback(
         cb,
         {"fdistribu": fdistribu, "grid": grid_obj, "Nsp": 4, "client": client_stub},
-        helpers=helpers,
     )
     op_names = sorted(h["op_name"] for h in hints)
     # We expect 5 unique reductions per call site, possibly repeated per species loop iteration
@@ -642,18 +630,13 @@ def test_unsupported_reduction_error(source, helper_src, check_msg) -> None:
     The naive per-reduction hint extraction would emit both an ``f-mean`` and
     an ``f-sum`` hint, but ``f-sum`` is WRONG in multi-bridge setups: the
     bridge would compute ``(chunk - chunk.mean()).sum()`` locally, which is
-    always 0. We refuse the whole expression (or with ``precompute=False`` the
-    analyzer swallows it and returns no hints, so the user gets the legacy
-    full-chunk scatter path if they explicitly opt out).
+    always 0. We refuse the whole expression.
     """
     arr = _simple_stub()
     src = textwrap.dedent(source)
     cb = _make_function("callback", src)
-    helpers = None
-    if helper_src is not None:
-        helpers = {"drift": _make_function("drift", textwrap.dedent(helper_src))}
     with pytest.raises(UnsupportedReductionError) as exc:
-        analyze_callback(cb, {"f": arr}, helpers=helpers)
+        analyze_callback(cb, {"f": arr})
     if check_msg:
         # The error message must name the offending reduction and the
         # cross-reduction dependency so the user can fix the callback.

@@ -11,7 +11,7 @@ array's bridge executed BOTH reduction functions on its own data.
 
 Single-array behavior must stay unchanged (``f-sum``, ``input_name == 'f'``), and
 cross-array expressions (``(arr_a - arr_b).max()``) are refused at branch build
-under ``precompute=True`` because a chunk-local branch cannot rebuild them.
+under this design because a chunk-local branch cannot rebuild them.
 """
 
 import textwrap
@@ -107,9 +107,7 @@ def test_multiarray_mixed_callback_uses_one_array():
 
 
 def test_cross_array_expression_refused():
-    """``(arr_a - arr_b).max()`` descends from two arrays -> refused under precompute=True."""
+    """``(arr_a - arr_b).max()`` descends from two arrays -> refused."""
     cb = _make_callback("cross_cb", "r = (arr_a - arr_b).max()\nreturn r.compute()", params="arr_a, arr_b")
     with pytest.raises(UnsupportedReductionError):
-        _analyze_callback_for_branches(cb, META, precompute=True)
-    # precompute=False falls back to the legacy full-chunk path (no cross-array branch).
-    assert _analyze_callback_for_branches(cb, META, precompute=False) == []
+        _analyze_callback_for_branches(cb, META)

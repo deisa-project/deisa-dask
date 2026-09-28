@@ -324,7 +324,7 @@ class Deisa(IDeisa):
             # Single analysis pass for all arrays (cross-array callbacks work because the method takes the full {name:
             # stub} dict). Each BranchSpec carries its source array (``input_name``); branches are grouped per array in
             # memory, so each bridge fetches only its own array's branches (filed per cycle by ``execute_callbacks``).
-            branches = _analyze_callback_for_branches(callback, self.arrays_metadata, precompute=True)
+            branches = _analyze_callback_for_branches(callback, self.arrays_metadata)
             if not branches:
                 logger.debug(
                     f"_register_callback_impl: callback {callback.__name__!r} produced no precomputable branches "

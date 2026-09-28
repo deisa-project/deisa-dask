@@ -723,9 +723,10 @@ def extract_reduction_hints(
                 f"requires data from ALL bridges (not just this bridge's chunk). "
                 f"Redesign the callback to use a single reduction (e.g. split the "
                 f"expression into two callbacks, or pre-compute the inner reduction "
-                f"in a separate step). With ``precompute=False``, the legacy full-chunk "
-                f"scatter path runs and dask computes the expression correctly on "
-                f"the workers (at the cost of placing the full chunk on workers)."
+                f"in a separate step). Alternatively register with ``precompute=False`` "
+                f"to run the legacy full-chunk scatter path (dask computes the "
+                f"expression correctly on the workers, at the cost of placing the "
+                f"full chunk on workers)."
             )
 
     for layer_name, layer in graph.layers.items():

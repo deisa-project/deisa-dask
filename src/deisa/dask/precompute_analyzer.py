@@ -126,21 +126,13 @@ def _match_source_arrays(darr: Any, registered_arrays: Dict[str, Any]) -> List[s
 def analyze_callback(
     callback: Callable,
     registered_arrays: Dict[str, Any],
-    helpers: Optional[Dict[str, Callable]] = None,
-    precompute: bool = True,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Analyze the callback's source to find all reducible operations."""
     try:
-        hints, err, dask_arrays = _analyze_callback(callback, registered_arrays, helpers)
-    except PrecomputeError as e:
-        if not precompute:
-            logger.warning("analyze_callback: %s (precompute=False, skipping)", e)
-            return [], []
+        hints, err, dask_arrays = _analyze_callback(callback, registered_arrays)
+    except PrecomputeError:
         raise
     if err is not None:
-        if not precompute:
-            logger.warning("analyze_callback: %s (precompute=False, skipping)", err)
-            return [], dask_arrays
         raise err
     return hints, dask_arrays
 
@@ -148,7 +140,6 @@ def analyze_callback(
 def _analyze_callback(
     callback: Callable,
     registered_arrays: Dict[str, Any],
-    helpers: Optional[Dict[str, Callable]],
 ) -> tuple[List[Dict[str, Any]], Optional[PrecomputeError], List[Dict[str, Any]]]:
     """Internal worker for :func:`analyze_callback` that never swallows errors."""
     # 1. Parse callback source
@@ -156,21 +147,12 @@ def _analyze_callback(
     callback_tree = ast.parse(callback_src)
     source_file = _SourceFile.from_tree(callback_tree)
 
-    # 2. Merge helpers (same-file helpers are also auto-discovered)
-    for name, fn in (helpers or {}).items():
-        try:
-            helper_src = _get_source(fn)
-        except IncompatibleCallbackError:
-            continue
-        helper_tree = ast.parse(helper_src)
-        source_file.merge(_SourceFile.from_tree(helper_tree))
-
-    # 3. Locate the callback's FunctionDef
+    # 2. Locate the callback's FunctionDef
     callback_def = source_file.find_function(callback.__name__)
     if callback_def is None:
         raise IncompatibleCallbackError(f"Could not locate FunctionDef for {callback.__name__!r} in callback source.")
 
-    # 4. Build initial scope: callback params bound to registered arrays. The dict's first key is the FALLBACK array
+    # 3. Build initial scope: callback params bound to registered arrays. The dict's first key is the FALLBACK array
     # name for output keys when a boundary expression has no exact registered-array attribution.
     primary_name: str = next(iter(registered_arrays)) if registered_arrays else "f"
     reg_values = list(registered_arrays.values())
@@ -192,7 +174,7 @@ def _analyze_callback(
         else:
             scope.set(pname, _UnboundParam(pname))
 
-    # 5. Walk the callback body and collect compute boundaries.
+    # 4. Walk the callback body and collect compute boundaries.
     walker = _BoundaryWalker(source_file=source_file, primary_name=primary_name)
     walker.walk_body(callback_def.body, scope)
     dask_arrays_snapshot = list(walker.dask_arrays)
@@ -277,12 +259,6 @@ class _SourceFile:
     @classmethod
     def from_tree(cls, tree: ast.AST) -> "_SourceFile":
         return cls(tree)
-
-    def merge(self, other: "_SourceFile") -> None:
-        """Merge another source file's functions into this one."""
-        for name, fn in other._functions.items():
-            if name not in self._functions:
-                self._functions[name] = fn
 
     def _index_body(self, body: List[ast.stmt]) -> None:
         for node in body:
@@ -1067,7 +1043,7 @@ class _BoundaryWalker:
                 kwargs = self._eval_kwargs(node.keywords, scope)
                 return _PURE_BUILTINS[name](args, kwargs)
 
-            # 4. User-defined helper (same file or registered). The walker descends into the helper's body recursively.
+            # 4. User-defined helper (same source file). The walker descends into the helper's body recursively.
             helper_def = self.source_file.find_function(name)
             if helper_def is not None:
                 return self._call_helper(helper_def, node, scope)

@@ -58,7 +58,6 @@ import dask.array as da
 from dask import delayed
 from dask.array.reductions import mean_agg, moment_agg
 from deisa.dask.precompute_analyzer import (
-    PrecomputeError,
     PrecomputeRuntimeError,
     UnsupportedReductionError,
     _match_source_arrays,
@@ -182,7 +181,7 @@ def merge_branches(existing: List[BranchSpec], new: List[BranchSpec]) -> List[Br
     return merged
 
 
-def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True):
+def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[str, Any]):
     """Analyze the callback's source and build a list of :class:`BranchSpec` objects.
 
     Each spec describes a chunk-local sub-expression the bridge can
@@ -190,12 +189,10 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
     symbolically to find compute boundaries (``.compute()``,
     ``client.compute()``, ...) and the dask arrays they reference.
 
-    ``precompute`` is a passthrough toggle for the fallback machinery that
-    registration never needs removed: the only production caller is
-    ``Deisa._register_callback_impl``, which calls this with
-    ``precompute=True`` from the sole branch where the analysis runs at all
-    (``precompute=False`` short-circuits the analysis there). Tests exercise
-    the explicit fallback behavior with ``precompute=False``.
+    Analysis is strict: any analysis failure (a ``PrecomputeError``
+    subclass or an unexpected exception) propagates to the caller. The
+    caller decides the fallback policy (skip analysis entirely for
+    ``precompute=False`` callbacks, raise otherwise).
     """
 
     # Build a dask array stub matching the registered array's shape/chunks so the symbolic AST walker has something
@@ -221,18 +218,7 @@ def _analyze_callback_for_branches(callback: Callable, registered_arrays: Dict[s
         # the callback uses at runtime.
         stubs[arr_name] = build_deisa_array(array_stub, timestep=0)
 
-    try:
-        return _analyze_branch(callback, registered_arrays=stubs, precompute=precompute)
-    except PrecomputeError:
-        # Cross-reduction, opaque parameter, etc. -- propagate so the caller learns the analysis was unable to deliver a
-        # hint. precompute=False cases are handled inside analyze_branch (which logs warnings instead of raising), so by
-        # the time we get here precompute=True was set, and we must propagate.
-        raise
-    except Exception as e:
-        if not precompute:
-            logger.debug(f"_analyze_callback_for_branches: Analysis failed: {e}")
-            return []
-        raise
+    return _analyze_branch(callback, registered_arrays=stubs)
 
 
 # Scalar-kind (``sum``/``prod``/``max``/``min``) elementwise fold for Phase A of the axis combine: scalar-axis partials
@@ -497,24 +483,12 @@ def _discover_partial_metadata(
     return partial_shape, partial_dtype
 
 
-def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], precompute: bool = True) -> List[BranchSpec]:
-    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch.
-
-    ``precompute=False`` is the permissive fallback mode and is exercised
-    directly by tests only; production analysis is registration-strict
-    (``precompute=True``).
-    """
+def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any]) -> List[BranchSpec]:
+    """Walk the callback's dask graph and emit a :class:`BranchSpec` per branch."""
     # Single AST walk: analyze_callback returns reduction hints AND the walker's dask_arrays in one pass. The
     # dask_arrays are the walker's expressions at each compute boundary (e.g. ``(arr*arr).sum()``); the registered
     # placeholders only have the root layer, so the chain walker needs these.
-
-    try:
-        hints, walker_dask_arrays = analyze_callback(callback, registered_arrays, precompute=precompute)
-    except Exception:
-        if precompute:
-            raise
-        # precompute=False: fall through with empty hints/dask_arrays. Length-1 fallback still works.
-        hints, walker_dask_arrays = [], []
+    hints, walker_dask_arrays = analyze_callback(callback, registered_arrays)
 
     if not hints:
         return []
@@ -546,17 +520,8 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
     branches: List[BranchSpec] = []
     for branch_dict in hints:
         # Cross-array expressions cannot be rebuilt from one array's chunk-local partials (the bridge only owns its
-        # array's chunk): refuse them (precompute=True) or take the legacy full-chunk path (precompute=False).
+        # array's chunk): refuse them.
         if branch_dict.get("multi_source"):
-            if not precompute:
-                logger.warning(
-                    "analyze_branch: skipping cross-array reduction %s: the expression descends from registered "
-                    "array %r AND at least one other registered array; a chunk-local branch cannot compute it. "
-                    "Falling back to the full-chunk scatter path.",
-                    branch_dict.get("output_key"),
-                    branch_dict.get("array_name"),
-                )
-                continue
             raise UnsupportedReductionError(
                 f"Cannot precompute reduction {branch_dict.get('output_key')!r} "
                 f"(op {branch_dict.get('op_name')!r}): the expression descends from registered array "
@@ -568,10 +533,7 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
 
         try:
             chunk_func = pickle.loads(branch_dict["chunk_func_pickle"])
-        except Exception as e:  # pragma: no cover - safety net
-            if not precompute:
-                logger.warning("analyze_branch: unpickle failed for %s: %s", branch_dict.get("output_key"), e)
-                continue
+        except Exception:  # pragma: no cover - safety net
             raise
 
         # Resolve THIS hint's own registered-array stub (placeholder and ndim are per-array in multi-array callbacks).
@@ -624,13 +586,6 @@ def _analyze_branch(callback: Callable, registered_arrays: Dict[str, Any], preco
                 window_read=window_read,
             )
         if branch is None:
-            if not precompute:
-                logger.debug(
-                    "analyze_branch: build failed for %s. The length-1 build raised "
-                    "(most likely the placeholder couldn't be computed or the chunk_func rejected the chunk shape).",
-                    branch_dict.get("output_key"),
-                )
-                continue
             # Both paths returned None. This shouldn't happen for hints that came out of the analyzer (the length-1 path
             # is supposed to always succeed). Raise defensively.
             raise RuntimeError(
