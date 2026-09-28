@@ -225,37 +225,29 @@ class TestPrecomputeRegressions:
     def _meta(self, array_name, chunk_pos, global_shape=(8,), chunk_shape=(4,)):
         return {array_name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": chunk_pos}}
 
-    def test_go_wait_is_bounded(self, env_setup):
-        """Bridge.__init__ must not hang when the callback go event never fires.
+    def test_wait_for_go_false_skips_go_wait(self, env_setup):
+        """Bridge.__init__ with wait_for_go=False must not block on the go event.
 
-        Pre-fix: after the handshake go event was set (analytics ready, the
-        normal ``execute_callbacks()``-preceding state), rank 0 blocked
-        indefinitely on ``WAIT_FOR_EXECUTE_CB_EVENT`` (set only by
-        ``Deisa.execute_callbacks()``); constructing a bridge and doing
-        anything else hung every rank (FAIL: construction hangs / times
-        out). Post-fix: a ``wait_timeout`` bounds the wait and construction
-        returns in ~1s without prefetching.
+        The go event is set only by ``Deisa.execute_callbacks()``; when the
+        bridge is constructed before callbacks are executed (e.g. a simulation
+        that registers callbacks lazily or not at all), ``wait_for_go=False``
+        skips the wait and leaves branch fetching to the first ``send()``.
         """
         from distributed import Event
 
         from deisa.dask.handshake import Handshake
 
         client, cluster = env_setup
-        # The handshake go event is part of the normal pre-execute state
-        # (``deisa_ready()``); set it so ``all_bridges_ready(wait_for_go=True)``
-        # completes and the only remaining unbounded wait is the go-event
-        # ``WAIT_FOR_EXECUTE_CB_EVENT`` one under test.
         Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
         start = time.monotonic()
         bridge = Bridge(
             comm=FakeComm(FakeComm.State(1), 0),
             arrays_metadata=self._meta("temperature", (0,)),
-            wait_for_go=True,
-            wait_timeout=1,
+            wait_for_go=False,
         )
         elapsed = time.monotonic() - start
-        assert elapsed < 30, f"Bridge.__init__ blocked for {elapsed:.1f}s on the go event"
-        # The go signal never arrived: nothing was prefetched (lazy fetch remains correct).
+        assert elapsed < 5, f"Bridge.__init__ blocked for {elapsed:.1f}s despite wait_for_go=False"
+        # No go signal arrived and no prefetch happened; lazy fetch remains correct.
         bridge.close(timestep=0)
 
     def test_del_skips_close_at_interpreter_shutdown(self, env_setup, monkeypatch):

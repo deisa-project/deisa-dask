@@ -91,9 +91,6 @@ class Bridge(IBridge):
             configuration parameters like timeout used during client setup.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
-        # Consumed by this constructor only; must NOT leak into
-        # ``handshake.all_bridges_ready(**kwargs)`` below.
-        wait_timeout = kwargs.pop("wait_timeout", 300)
         self.comm: ICommunicator = comm
         self.id = self.comm.Get_rank()
         self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
@@ -140,24 +137,17 @@ class Bridge(IBridge):
                 nb_bridge=self.comm.Get_size(), arrays_metadata=metadata_for_handshake, **kwargs
             )
 
-            # The go-event wait is bounded. ``WAIT_FOR_EXECUTE_CB_EVENT`` is
-            # set only by ``Deisa.execute_callbacks()``; an unbounded wait would
-            # hang every rank (rank 0 here, the others at the world barrier
-            # below) whenever bridges are constructed without immediately
-            # reaching ``execute_callbacks()``. On timeout we proceed WITHOUT
-            # the go signal: the prefetch stays off (the handshake may not be
-            # complete, and caching an empty branch list would permanently
-            # disable precompute for the array), and the lazy first-send fetch
-            # in ``_get_task_branches`` keeps correctness.
-            go_received = True
+            # The go-event wait is unconditional on the wait_for_go path.
+            # ``WAIT_FOR_EXECUTE_CB_EVENT`` is set only by
+            # ``Deisa.execute_callbacks()``; if the user asked to wait for the
+            # go signal we block until callbacks are registered, then prefetch
+            # branches. The wait_for_go=False path skips this wait and fetches
+            # branches lazily on the first send().
             if kwargs.get("wait_for_go", True):
-                go_received = Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait(timeout=wait_timeout)
-                if not go_received:
-                    logger.warning(
-                        f"[{self.id}] Bridge __init__(): WAIT_FOR_EXECUTE_CB_EVENT not received within "
-                        f"{wait_timeout}s. Proceeding without prefetching task branches; "
-                        f"branches will be fetched lazily on the first send() (full-chunk scatter until then)."
-                    )
+                Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).wait()
+                go_received = True
+            else:
+                go_received = False
         else:
             go_received = False
 

@@ -105,7 +105,8 @@ class BranchSpec:
         Registered array name the branch is rooted at (e.g. ``"a"``).
         The Deisa side groups branches per array using this field
         (never by parsing ``output_key``) and files each group with
-        ``set_task_branches`` under its own array name.
+        ``set_task_branches`` under its own array name via
+        ``execute_callbacks`` -> ``_flush_branches_to_handshake``.
     output_kind : str
         One of ``"scalar"`` / ``"mean"`` / ``"moment"``. Drives the
         Deisa-side combine graph: ``scalar`` -> ``da.stack`` + dask sum,

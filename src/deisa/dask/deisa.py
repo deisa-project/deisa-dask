@@ -133,10 +133,15 @@ class Deisa(IDeisa):
         self._topic_handlers: Dict[str, Callable] = {}
         self._callback_seq = 0  # unique counter
         self._tasks = set()
-        # Per-array merged branch groups (static after registration). The
-        # actor API (``set_task_branches``) is unchanged; only the CALLER now
-        # passes the full merged list so several callbacks on the same array
-        # all get their branches.
+        # True once execute_callbacks() has run; no new callbacks may be
+        # registered after the cycle has started.
+        self._execute_callbacks_called = False
+        # Per-array merged branch groups. Merged AND filed with the handshake
+        # actor at registration; pruned at unregistration in memory only
+        # (an actor call from inside the async topic handler stalls the
+        # handler loop), with the pruned set re-filed at the per-cycle
+        # boundary by ``execute_callbacks`` -> ``_flush_branches_to_handshake``.
+        # The actor API (``set_task_branches``) itself is unchanged.
         self._branch_groups: Dict[str, List[Any]] = {}
         # callback_id -> array_name -> ordered [(output_key, op_name, axis_sig, kind)]
         # recorded at registration; the topic handler builds the per-callback
@@ -189,6 +194,15 @@ class Deisa(IDeisa):
         is always attempted (the default), and any callback that cannot be precomputed (no reductions, or a reduction
         that depends on another reduction's output) raises at registration time. Use ``precompute=False`` to skip
         the analysis with a warning and fall back to the legacy full-chunk scatter path.
+
+        Branch filing contract: registration merges branches in memory and
+        files them with the handshake actor immediately (required: a bridge on
+        the wait_for_go=False path fetches lazily on its first send()).
+        ``unregister_callback`` prunes memory only; the pruned set is re-filed
+        at the per-cycle boundary by ``execute_callbacks()`` (which always
+        flushes before unblocking the bridges). Callbacks registered without a
+        subsequent ``execute_callbacks()`` still reach the bridges via the
+        immediate registration-time filing.
 
         - ``:param callback_args:`` Variable-length arguments representing callback-specific parameters.
         - ``:param exception_handler:`` Optional exception handler to manage errors during callback execution.
@@ -285,6 +299,12 @@ class Deisa(IDeisa):
 
         logger.debug(f"_register_callback_impl: register callback_id={callback_id}")
 
+        if self._execute_callbacks_called:
+            raise PrecomputeRuntimeError(
+                "Cannot register new callbacks after execute_callbacks() has been called. "
+                "All callbacks must be registered before the computation cycle starts."
+            )
+
         # per-callback state
         callback_state = {
             arr_name: {"window": collections.deque(maxlen=ws), "changed": False, "last_iteration": None}
@@ -318,8 +338,9 @@ class Deisa(IDeisa):
             # Single analysis call for all arrays. No loop overhead.
             # The method takes the full registered_arrays dict, and we pass arrays_metadata here.
             # Each BranchSpec carries the registered array it descends from (``input_name``); branches
-            # are grouped per array and filed with set_task_branches ONCE PER ARRAY, so each bridge
-            # fetches only the branches that belong to its own array. Arrays with no branches simply
+            # are grouped per array in memory, so each bridge fetches only the
+            # branches that belong to its own array (filed once per cycle by
+            # ``execute_callbacks``). Arrays with no branches simply
             # fall back to the legacy full-chunk scatter path.
             branches = _analyze_callback_for_branches(callback, self.arrays_metadata, precompute=True)
             if not branches:
@@ -354,17 +375,25 @@ class Deisa(IDeisa):
                         f"reconstruct correctly on the callback side. Register a plain arr.<op>() reduction "
                         f"or use precompute=False."
                     )
-            # Group branches by their source registered array and file each array's set under its own name.
-            # Merge with the branches of previously registered callbacks on the same array: every
-            # callback's array gets its OWN set (identical signature -> identical output_key -> shared
-            # single branch; distinct reductions coexist).
+            # Group branches by their source registered array. Merge with the
+            # branches of previously registered callbacks on the same array:
+            # every callback's array gets its OWN set (identical signature ->
+            # identical output_key -> shared single branch; distinct reductions
+            # coexist). Merging/pruning is in-memory only; the merged sets are
+            # filed with the handshake actor once per cycle by
+            # ``execute_callbacks`` -> ``_flush_branches_to_handshake``, just
+            # before the bridges are unblocked (never from inside a running
+            # event handler: an actor call there stalls the handler loop).
             by_array: Dict[str, List[Any]] = {}
             for b in branches:
                 by_array.setdefault(b.input_name, []).append(b)
             for arr_name, group in by_array.items():
                 merged = merge_branches(self._branch_groups.get(arr_name, []), group)
                 self._branch_groups[arr_name] = merged
-                self.handshake.set_task_branches(arr_name, merged)
+            # File the merged set with the handshake actor right away: a bridge
+            # on the wait_for_go=False path fetches lazily on its FIRST send(),
+            # which can happen long before the next execute_callbacks() cycle.
+            self._flush_branches_to_handshake()
             # Record the per-callback reduction descriptors (output_key, op,
             # normalized axis signature, kind). The topic handler builds the
             # callback's dispatch view from these. ``dispatch_sig`` is the
@@ -407,6 +436,35 @@ class Deisa(IDeisa):
 
         return callback_id
 
+    def _prune_branches(self, array_name: str) -> None:
+        # Recompute the in-memory per-array branch set from the descriptors of
+        # the callbacks that remain registered on this array. Branches exist
+        # only because some registered callback's reduction needs them; without
+        # pruning, a later valid registration on the same array collides with
+        # the stale (output_key, signature) at merge_branches and is permanently
+        # refused.
+        #
+        # NOTE: this deliberately does NOT re-file the handshake actor
+        # (``set_task_branches``). Unregistering also runs when a callback's
+        # exception handler unregisters it mid-dispatch, i.e. from INSIDE the
+        # async topic handler; an actor call there stalls the handler and drops
+        # the next iteration's event (test_callback_throws regressed exactly
+        # that way). The pruned set is filed with the actor by the next
+        # ``execute_callbacks`` -> ``_flush_branches_to_handshake``, which is
+        # the single filing point for both registration and unregistration.
+        descriptors: Dict[str, List[Tuple[str, str, Tuple[int, ...], str]]] = {}
+        for cid in self._callbacks_by_array.get(array_name, ()):
+            for arr, descs in self._callback_reductions.get(cid, {}).items():
+                if arr == array_name:
+                    descriptors.setdefault(arr, []).extend(descs)
+
+        wanted_keys = {d[0] for d in descriptors.get(array_name, [])}
+        if not wanted_keys:
+            self._branch_groups.pop(array_name, None)
+            return
+        remaining = [b for b in self._branch_groups.get(array_name, []) if b.output_key in wanted_keys]
+        self._branch_groups[array_name] = remaining
+
     def unregister_callback(self, callback_id: Callback_id) -> None:
         # also accept a decorated callback function, which stores its id in .callback_id
         callback_id = getattr(callback_id, "callback_id", callback_id)
@@ -422,6 +480,10 @@ class Deisa(IDeisa):
                 s.discard(callback_id)
                 if not s:
                     del self._callbacks_by_array[array_name]
+            # Prune unconditionally for every array the callback touched: the
+            # dead callback's branch must leave _branch_groups and the
+            # handshake actor even if other callbacks remain registered.
+            self._prune_branches(array_name)
 
     def set(self, key: str, value: Any, timestep: int) -> None:
         """
@@ -452,6 +514,21 @@ class Deisa(IDeisa):
         value = (timestep, value)
         q.put(value)
 
+    def _flush_branches_to_handshake(self) -> None:
+        """File every array's current branch set with the handshake actor.
+
+        Called at the end of every successful ``register_callback`` and once
+        per cycle by ``execute_callbacks`` (the latter BEFORE the bridges are
+        unblocked, so lazy first-send fetchers also read complete state).
+        ``unregister_callback`` never files: it can run from inside the async
+        topic handler (exception-handler auto-unregister) and an actor call
+        there stalls the handler loop, dropping the next iteration's event.
+        Filing the pruned state is deferred to the next flush point — the
+        next registration or the next ``execute_callbacks()``.
+        """
+        for arr_name, branches in self._branch_groups.items():
+            self.handshake.set_task_branches(arr_name, branches)
+
     def execute_callbacks(self) -> None:
         """
         Executes a series of callbacks and waits for necessary processes to finish.
@@ -460,10 +537,24 @@ class Deisa(IDeisa):
         orchestration of subsequent tasks. It is responsible for unblocking bridges and waiting for dependencies to
         signal completion.
 
+        This is also the branch-filing boundary for unregistration: the pruned
+        branch sets (pruned in memory by ``unregister_callback``) are re-filed
+        to the handshake actor here, once per cycle, before the bridges see
+        them.
+
         - ``:param self:`` The instance of the class invoking this method.
         - ``:return:`` None
         """
         logger.info("execute_callbacks()")
+
+        # Snapshot the pruned/merged branch sets into the handshake actor
+        # before unblocking the bridges: from their point of view the branch
+        # state is static for the whole cycle.
+        self._flush_branches_to_handshake()
+
+        # From this point on the bridge contract is sealed: no new callbacks
+        # may be registered and no new branches will be filed.
+        self._execute_callbacks_called = True
 
         logger.info("Bridges are ready, unblock bridges")
         Event(WAIT_FOR_EXECUTE_CB_EVENT, client=self.client).set()

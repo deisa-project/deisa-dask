@@ -235,6 +235,7 @@ def _make_deisa_stub() -> Deisa:
     d._callback_seq = 0
     d._branch_groups = {}
     d._tasks = set()
+    d._execute_callbacks_called = False
     return d
 
 
@@ -255,6 +256,10 @@ def test_registration_success_stores_callback_payload():
     assert cid in d._callbacks_by_array["a"]
     # Topic subscription happened for the registered array.
     assert "a" in d.client.subscribed
+    # Branches are merged in memory at registration; the handshake actor is
+    # filed only by execute_callbacks (the per-cycle filing boundary).
+    assert d._branch_groups["a"]
+    d._flush_branches_to_handshake()
     assert d.handshake.branches["a"]
 
 
