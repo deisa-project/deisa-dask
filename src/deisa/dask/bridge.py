@@ -583,26 +583,26 @@ class Bridge(IBridge):
         return default
 
     def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
+        """Scatter data to workers and return the legacy ``{"future", "who_has", "nbytes"}`` result."""
         logger.debug(f"[{self.id}] scatter to {workers}")
 
         if workers is None:
             workers = self.workers
 
         if self.client:
-            return self.client.sync(self.__scatter, data, workers=workers, hash=hash)
+            return self.client.sync(self._scatter_blocking, workers, data, hash=hash)
         else:
-            return asyncio.run(self.__scatter(data, workers=workers, hash=hash))
+            return asyncio.run(self._scatter_blocking(workers, data, hash=hash))
 
-    async def __scatter(self, data, workers=None, hash=False):
+    async def _scatter_blocking(self, workers, data, hash=False):
+        """Scatter ``data`` to ``workers`` and return the legacy per-key result (one future key per element)."""
         if isinstance(workers, (str, Number)):
             workers = [workers]
-        if isinstance(data, type(range(0))):
-            data = list(data)
 
         input_type = type(data)
-        names = False
+        names: List[str] = []
         unpack = False
-        if isinstance(data, Iterator):
+        if isinstance(data, Iterator) or isinstance(data, type(range(0))):
             data = list(data)
         if isinstance(data, (set, frozenset)):
             data = list(data)
@@ -620,7 +620,7 @@ class Bridge(IBridge):
 
         data2 = valmap(to_serialize, data)
 
-        _, who_has, nbytes = await scatter_to_workers(workers, data2)
+        _, who_has, nbytes = await scatter_to_workers(list(workers), data2)
 
         out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
@@ -631,6 +631,14 @@ class Bridge(IBridge):
             assert len(out) == 1
             out = list(out.values())[0]
         return out
+
+    async def _scatter_to_workers_async(self, workers: List[str], data: Dict[str, Any]):
+        """Scatter an already-keyed payload dict to ``workers``; returns ``(who_has, nbytes)``.
+
+        Used on the precompute path, which builds its own payload keys and only needs the scheduling pair.
+        """
+        _, who_has, nbytes = await scatter_to_workers(list(workers), data)
+        return who_has, nbytes
 
     def _fetch_branches_bcast(self, array_name: str) -> Optional[List[BranchSpec]]:
         """Mirror of the per-array bcast protocol: sub-comm rank 0 reads from the
@@ -747,9 +755,9 @@ class Bridge(IBridge):
         # scatter_to_workers directly for the (who_has, nbytes) pair. client.sync when a Client is available,
         # asyncio.run otherwise (only rank 0 has a Client).
         if self.client is not None:
-            who_has, nbytes = self.client.sync(self._scatter_to_workers_async, target_worker, payload2)
+            who_has, nbytes = self.client.sync(self._scatter_to_workers_async, [target_worker], payload2)
         else:
-            who_has, nbytes = asyncio.run(self._scatter_to_workers_async(target_worker, payload2))
+            who_has, nbytes = asyncio.run(self._scatter_to_workers_async([target_worker], payload2))
 
         future_keys = list(payload.keys())
         return {
@@ -760,11 +768,6 @@ class Bridge(IBridge):
             },
             "precomputed": shape_dtype,
         }
-
-    async def _scatter_to_workers_async(self, worker: str, data: Dict[str, Any]):
-        """Async helper: scatter ``data`` to a single worker. Returns (who_has, nbytes)."""
-        _, who_has, nbytes = await scatter_to_workers([worker], data)
-        return who_has, nbytes
 
     def _execute_operations_on_chunk(self, chunk: np.ndarray, branches: List["BranchSpec"]) -> Dict[str, Any]:
         """

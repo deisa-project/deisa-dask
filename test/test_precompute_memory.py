@@ -50,14 +50,6 @@ def _worker_bytes_per_key(client: Client) -> Dict[str, Dict[str, Any]]:
     return client.run(inspect)
 
 
-def _total_bytes_per_worker(per_worker: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
-    """Sum nbytes per worker (None entries contribute 0)."""
-    out = {}
-    for worker, keymap in per_worker.items():
-        out[worker] = sum((v or 0) for v in keymap.values())
-    return out
-
-
 def _largest_key_per_worker(per_worker: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
     """Max nbytes per worker (None entries contribute 0)."""
     out = {}

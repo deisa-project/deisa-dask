@@ -433,7 +433,7 @@ class TestMultiReductionBranches:
                 partials,
                 kind=branch.output_kind,
                 finalize=branch.finalize,
-                hint_axis=(0, 1),
+                reduction_axes_hint=(0, 1),
                 array_ndim=2,
             )
             # Compute on an explicit scheduler. Earlier tests in the same worker
@@ -475,7 +475,7 @@ class TestMultiReductionBranches:
                     partials,
                     kind=branch.output_kind,
                     finalize=branch.finalize,
-                    hint_axis=(ax,),
+                    reduction_axes_hint=(ax,),
                     array_ndim=2,
                     op_name=branch.op_name,
                 )

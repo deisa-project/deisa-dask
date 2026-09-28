@@ -218,48 +218,51 @@ def _is_stub_layer_name(layer_name: str) -> bool:
     return layer_name.startswith(_STUB_LAYER_PREFIX)
 
 
-def _chain_has_window_read(graph, chunk_layer_name: str) -> bool:
-    """True when the reduction's chunk stage reads the root through ONLY
-    whole-row-plane getitem layers (the window-read idiom).
+def _classify_chain(graph, chunk_layer_name: str, _find_single_upstream) -> Tuple[bool, bool]:
+    """Classify ONE chain from the reduction's chunk stage toward the registered root.
 
-        Walks upstream from ``chunk_layer_name``. Any layer that is neither the reduction chunk stage nor a window-read
-        getitem layer (a pointwise op, a real slice, an unwalkable input, ...) makes the chain NOT a window read
-        (conservative: such chains are refused at registration anyway).
+    Returns ``(direct, window_read)``:
 
-        - ``:param graph:`` The dask graph containing the reduction. - ``:param chunk_layer_name:`` The reduction's
-        chunk layer. - ``:return:`` True only for ``root[-1].op()``-style expressions.
+        - ``direct`` is True when every layer between the chunk stage and the root is the chunk stage itself or a
+        window-read getitem layer; ANY other layer (pointwise blockwise like ``mul``, a real slice, an unwalkable
+        input) makes the chain non-direct.
+        - ``window_read`` is True when the chain contains a window-read getitem (``root[-1].op()`` style).
+
+    The single shared walk behind
+    :func:`deisa.dask.branch._candidate_chain_classify` (the length-1 fallback's conservative gate) and
+    :func:`extract_reduction_hints` (the window-read flag); one loop, so the two call sites can never disagree.
+    ``_find_single_upstream`` is injected (it lives in :mod:`deisa.dask.branch`, which imports this module --
+    parameter passing avoids the circular import at load time).
     """
-    # Imported lazily to avoid a circular import at module load time (branch.py imports task_branches and defines
-    # _find_single_upstream).
-    from deisa.dask.branch import _find_single_upstream
-
     current = chunk_layer_name
-    seen = set()
+    seen: set = set()
     found_window_getitem = False
     while current is not None and current not in seen:
         seen.add(current)
         layer = graph.layers[current]
         if _is_stub_layer_name(current):
             # Reached the registered-array root stub.
-            return found_window_getitem
+            break
         if _is_window_read_layer(layer):
             found_window_getitem = True
             upstream = _window_read_upstream_name(layer)
             if upstream is None:
-                return False
+                return False, found_window_getitem
             if upstream not in graph.layers:
-                return found_window_getitem  # root data node
+                break  # root data node
             current = upstream
             continue
-        # Ordinary layer: only the reduction chunk stage itself is allowed.
+        # Ordinary layer: only the reduction chunk stage itself is allowed between it and the root.
+        if current != chunk_layer_name:
+            return False, found_window_getitem
         upstream = _find_single_upstream(layer)
         if upstream is None:
-            return False
+            return False, found_window_getitem
         upstream_name, _ = upstream
         if upstream_name not in graph.layers:
-            return found_window_getitem  # root data node
+            break  # root data node
         current = upstream_name
-    return False
+    return True, found_window_getitem
 
 
 def _assign_output_key(array_name: str, op_name: str, reduction_axes: Tuple[int, ...], seen: Dict) -> str:
@@ -716,8 +719,11 @@ def extract_reduction_hints(
 
         # The window-read flag (``root[-1]``): the callback's reduction runs on the WHOLE delivered array, so the
         # branch's runtime dispatch signature is the FULL reduction even though the stub-side chunk layer carries a
-        # partial axis (the getitem removed the other axes).
-        window_read = _chain_has_window_read(graph, chunk_layer_name)
+        # partial axis (the getitem removed the other axes). The shared classifier is imported lazily (it needs
+        # ``_find_single_upstream``, defined in deisa.dask.branch which imports this module).
+        from deisa.dask.branch import _find_single_upstream
+
+        _direct, window_read = _classify_chain(graph, chunk_layer_name, _find_single_upstream)
         output_key = _assign_output_key(
             array_name,
             op_name,

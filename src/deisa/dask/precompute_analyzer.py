@@ -122,21 +122,13 @@ def analyze_callback(
     callback: Callable,
     registered_arrays: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Analyze the callback's source to find all reducible operations."""
-    try:
-        hints, err, dask_arrays = _analyze_callback(callback, registered_arrays)
-    except PrecomputeError:
-        raise
-    if err is not None:
-        raise err
-    return hints, dask_arrays
+    """Analyze the callback's source and return ``(reduction_hints, dask_arrays)``.
 
-
-def _analyze_callback(
-    callback: Callable,
-    registered_arrays: Dict[str, Any],
-) -> tuple[List[Dict[str, Any]], Optional[PrecomputeError], List[Dict[str, Any]]]:
-    """Internal worker for :func:`analyze_callback` that never swallows errors."""
+    Strict: every condition that makes the callback unanalyzable raises its own :class:`PrecomputeError`
+    subclass directly (there is no leniency left in the precompute path to defer an error to). ``dask_arrays``
+    carries the walker's boundary expressions (e.g. ``(arr*arr).sum()``) so
+    :func:`deisa.dask.branch._analyze_branch` can walk their graphs without a second AST pass.
+    """
     # 1. Parse callback source
     callback_src = _get_source(callback)
     callback_tree = ast.parse(callback_src)
@@ -172,17 +164,12 @@ def _analyze_callback(
     # 4. Walk the callback body and collect compute boundaries.
     walker = _BoundaryWalker(source_file=source_file, primary_name=primary_name)
     walker.walk_body(callback_def.body, scope)
-    dask_arrays_snapshot = list(walker.dask_arrays)
 
     # 6. Materialization takes priority: if any np.array/asarray on a dask array was found, the callback can't be
     # precomputed at all.
     if walker.had_materialization:
-        return (
-            [],
-            MaterializationError(
-                "Callback contains a full materialization (e.g. np.array(dask_array)) that defeats precomputation."
-            ),
-            dask_arrays_snapshot,
+        raise MaterializationError(
+            "Callback contains a full materialization (e.g. np.array(dask_array)) that defeats precomputation."
         )
 
     dask_arrays = walker.dask_arrays
@@ -218,27 +205,19 @@ def _analyze_callback(
             hint["multi_source"] = multi
         hints.extend(new_hints)
 
-    # 8. Decide what (if anything) to raise.
+    # 8. No hints means the callback is unanalyzable: raise the specific reason.
     if not hints:
         if not had_boundaries:
-            return (
-                [],
-                NoComputeBoundaryError(
-                    f"Callback {callback.__name__!r} contains dask operations but no compute boundaries "
-                    f"(.compute(), client.compute(), client.submit(), etc.). "
-                    f"Cannot determine which arrays to precompute."
-                ),
-                dask_arrays_snapshot,
+            raise NoComputeBoundaryError(
+                f"Callback {callback.__name__!r} contains dask operations but no compute boundaries "
+                f"(.compute(), client.compute(), client.submit(), etc.). "
+                f"Cannot determine which arrays to precompute."
             )
-        return (
-            [],
-            NoPrecomputableReductionError(
-                f"Callback {callback.__name__!r} contains compute boundaries but no reductions we can precompute."
-            ),
-            dask_arrays_snapshot,
+        raise NoPrecomputableReductionError(
+            f"Callback {callback.__name__!r} contains compute boundaries but no reductions we can precompute."
         )
 
-    return hints, None, dask_arrays_snapshot
+    return hints, dask_arrays
 
 
 # --------------------------------------------------------------------------- Source file: AST cache + helper lookup

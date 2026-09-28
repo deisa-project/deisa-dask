@@ -66,6 +66,7 @@ from deisa.dask.task_branches import (
     _blockwise_indices_inputs,
     _chunk_func_and_kwargs,
     _chunk_layer_for_aggregate,
+    _classify_chain,
     _is_aggregate_layer,
     _normalize_reduction_axis,
     _op_for_aggregate_layer,
@@ -289,7 +290,7 @@ def _flatten_grid_entries(nested: Any) -> List[Any]:
 def _concat_kept_grid(grid: Any, depth: int) -> np.ndarray:
     """np.concatenate a kept-grid (nested over kept axes) along the result axes.
 
-    The Phase-A result for kept-coordinate ``(i0, i1, ...)`` has axes ``(kept data axes in ascending data order)``;
+    The first-stage result for kept-coordinate ``(i0, i1, ...)`` has axes ``(kept data axes in ascending data order)``;
     nesting level ``depth`` of the grid corresponds to result axis ``depth``, so concatenating level by level
     reproduces the full-kept-extent array.
     """
@@ -372,7 +373,7 @@ def _combine_array_from_partials(
     partials: List[Dict[str, Any]],
     kind: str,
     finalize: Optional[str],
-    hint_axis: Optional[Tuple[int, ...]],
+    reduction_axes_hint: Optional[Tuple[int, ...]],
     array_ndim: int,
     op_name: Optional[str] = None,
     global_shape: Optional[Tuple[int, ...]] = None,
@@ -392,12 +393,12 @@ def _combine_array_from_partials(
             f"array has {array_ndim} data axes; cannot map grid axes to data axes. Refusing to combine."
         )
 
-    # Red axes = the data axes being reduced. ``hint_axis is None`` is the legacy no-axis form of a full reduction
-    # (reduce all data axes).
-    if hint_axis is None:
+    # Red axes = the data axes being reduced. ``reduction_axes_hint is None`` is the legacy no-axis form of a
+    # full reduction (reduce all data axes).
+    if reduction_axes_hint is None:
         red_axes = tuple(range(array_ndim))
     else:
-        red_axes = tuple(int(a) for a in hint_axis)
+        red_axes = tuple(int(a) for a in reduction_axes_hint)
         for ax in red_axes:
             if not 0 <= ax < array_ndim:
                 raise PrecomputeRuntimeError(
@@ -410,7 +411,7 @@ def _combine_array_from_partials(
         out_shape = tuple(int(global_shape[ax]) for ax in kept_axes)
     else:
         # Legacy fallback (no metadata): derive from the per-bridge partial.
-        if hint_axis is None:
+        if reduction_axes_hint is None:
             out_shape = tuple(partials[0]["shape"])
         else:
             out_shape = tuple(partials[0]["shape"][ax] for ax in kept_axes)
@@ -582,12 +583,14 @@ def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict
     The chain walker can't tell which candidate aggregate belongs to THIS hint when several reductions share
     ``(array_name, op_name)`` (e.g. ``arr.sum()`` + ``arr.sum(axis=0)``). The reduction is deemed DIRECT only when
     EVERY candidate's chain from the chunk stage to the registered root contains just the reduction chunk stage and/or
-    window-read getitem layers (``root[-1].op()`` -- DataFrame.region Python-level list indexing). Zero candidates, an
-    unwalkable chain, a pointwise chain (``arr*arr``), or a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct
-    (refused at registration) so a chained reduction can never sneak past the gate as "direct".
+    window-read getitem layers (``root[-1].op()``). Zero candidates, an unwalkable chain, a pointwise chain
+    (``arr*arr``), or a real slice (``arr[2:5]`` / ``arr[:, 0]``) -> not direct (refused at registration) so a
+    chained reduction can never sneak past the gate as "direct".
 
     ``window_read`` is True when every candidate is a window read (the callback's runtime reduction runs on the WHOLE
     delivered array, so its ``reduction_axes`` is the FULL reduction (``()``) regardless of the stub-side chunk axis).
+    Delegates the per-chain classification to the shared walker
+    :func:`deisa.dask.task_branches._classify_chain`.
     """
     op_name = branch.get("op_name")
     array_name = branch.get("array_name")
@@ -599,61 +602,17 @@ def _candidate_chain_classify(branch: Dict[str, Any], aggregate_candidates: Dict
     direct = True
     window_read = True
     for agg_name, graph in candidates:
-        d, w = _chain_direct_and_window_read(graph, agg_name)
+        chunk_layer = _chunk_layer_for_aggregate(graph, agg_name)
+        if chunk_layer is None:
+            # An aggregate without a resolvable chunk layer can't be classified: treat as not-direct.
+            direct = False
+            continue
+        d, w = _classify_chain(graph, chunk_layer, _find_single_upstream)
         if not d:
             direct = False
         if not w:
             window_read = False
     return direct, window_read
-
-
-def _chain_direct_and_window_read(graph, agg_name: str) -> Tuple[bool, bool]:
-    """Classify one aggregate's reduction-input chain.
-
-    Walks from the reduction's chunk stage toward the registered root. The chain is DIRECT when every layer between the
-    chunk stage and the root is either the chunk stage itself or a window-read getitem layer; ANY other layer
-    (pointwise blockwise like ``mul``, a real slice, an unwalkable input) makes it non-direct (``(False, ...)``).
-    Returns ``(direct, window_read)`` where ``window_read`` is True when the chain contains a window-read getitem (and
-    is otherwise direct).
-    """
-    from deisa.dask.task_branches import (
-        _chain_has_window_read,
-        _chunk_layer_for_aggregate,
-        _is_stub_layer_name,
-        _is_window_read_layer,
-        _window_read_upstream_name,
-    )
-
-    chunk_layer_name = _chunk_layer_for_aggregate(graph, agg_name)
-    if chunk_layer_name is None:
-        return False, False
-    window_read = _chain_has_window_read(graph, chunk_layer_name)
-    current = chunk_layer_name
-    seen = set()
-    while current is not None and current not in seen:
-        seen.add(current)
-        layer = graph.layers[current]
-        if _is_stub_layer_name(current):
-            break  # reached the registered-array root stub
-        if _is_window_read_layer(layer):
-            upstream = _window_read_upstream_name(layer)
-            if upstream is None:
-                return False, window_read
-            if upstream not in graph.layers:
-                break
-            current = upstream
-            continue
-        # Ordinary layer: the reduction chunk stage is the ONLY allowed one.
-        if current != chunk_layer_name:
-            return False, window_read
-        upstream = _find_single_upstream(layer)
-        if upstream is None:
-            return False, window_read
-        upstream_name, _ = upstream
-        if upstream_name not in graph.layers:
-            break  # root data node
-        current = upstream_name
-    return True, window_read
 
 
 def _try_chain_branch(

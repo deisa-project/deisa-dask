@@ -527,7 +527,7 @@ class Deisa(IDeisa):
                         finalize = partial_futures[0].get("finalize")
                         partial_shape = partial_futures[0]["shape"]
                         partial_dtype = partial_futures[0]["dtype"]
-                        hint_axis = partial_futures[0].get("chunk_axis")
+                        reduction_axes_hint = partial_futures[0].get("chunk_axis")
                         op_name = partial_futures[0].get("op_name")
                         # Every bridge must ship its partial for every reduction. A missing partial silently corrupts
                         # the combined result (stacks shrink, n-totals lose a bridge). Refuse loudly.
@@ -557,7 +557,7 @@ class Deisa(IDeisa):
                                 partial_futures,
                                 kind=kind,
                                 finalize=finalize,
-                                hint_axis=hint_axis,
+                                reduction_axes_hint=reduction_axes_hint,
                                 array_ndim=(
                                     array_ndim if array_ndim is not None else len(partial_futures[0]["chunk_position"])
                                 ),

@@ -88,28 +88,6 @@ def async_close_bridges(bridges: List[Bridge], timestep: int):
     asyncio.run(_close_bridges())
 
 
-def infer_parallelism_auto(global_size: Sequence[int], max_splits: int = 1) -> tuple[int, ...]:
-    ndim = len(global_size)
-
-    # start with 1 split per dimension
-    parallelism = [1] * ndim
-
-    # distribute splits as evenly as possible
-    base = max_splits // ndim
-    remainder = max_splits % ndim
-
-    for i in range(ndim):
-        parallelism[i] += base
-
-    # distribute leftover splits to largest dimensions first
-    dims = sorted(range(ndim), key=lambda i: global_size[i], reverse=True)
-
-    for i in range(remainder):
-        parallelism[dims[i]] += 1
-
-    return tuple(parallelism)
-
-
 def run_on_all_ranks(comm_builder, fn):
     """
     MPI-style:
@@ -399,20 +377,3 @@ class FakeCartComm(FakeComm):
             coords[i] = r % dim
             r //= dim
         return coords
-
-    def Get_cart_rank(self, coords: Sequence[int]) -> int:
-        """
-        Reverse mapping: Cartesian coordinates -> rank.
-        """
-        if len(coords) != len(self._dims):
-            raise ValueError(f"Expected {len(self._dims)} coordinates, got {len(coords)}")
-
-        rank = 0
-        for coord, dim, periodic in zip(coords, self._dims, self._periods):
-            c = coord
-            if periodic:
-                c %= dim
-            elif not (0 <= c < dim):
-                raise ValueError(f"Coordinate {coord} out of bounds for dim {dim}")
-            rank = rank * dim + c
-        return rank
