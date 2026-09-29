@@ -6,7 +6,7 @@ from deisa.dask import Deisa
 deisa = Deisa()
 
 
-@deisa.register("temperature")
+@deisa.register("temperature", precompute=False)
 def callback(temperatures):
 
     latest_temperature = temperatures[-1]
