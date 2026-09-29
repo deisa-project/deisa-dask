@@ -286,6 +286,13 @@ class TestAnalyzeBranchLength1:
             # The reduction's chunk-stage layer is itself a partial
             # wrapping numpy.sum (carrying dtype); unwrap it for the name.
             if isinstance(func, functools.partial):
+                # A full-fold compositor partial carries the tier func in its keywords; surface the tier (the
+                # compositor itself is operator-agnostic, so the op's identity lives on the tier layer).
+                tier = getattr(func, "keywords", {}).get("tier_func")
+                if tier is not None:
+                    if isinstance(tier, functools.partial):
+                        tier = tier.func
+                    return getattr(tier, "__name__", repr(tier))
                 return getattr(func.func, "__name__", repr(func))
             return getattr(func, "__name__", repr(func))
 
@@ -318,6 +325,13 @@ class TestMultiReductionBranches:
             func = layer[0]
             if isinstance(func, functools.partial):
                 names.append(getattr(func.func, "__name__", repr(func)))
+                # A full-fold compositor partial carries the tier func in its keywords: surface it so tests can
+                # assert WHICH tier was folded (the compositor itself is operator-agnostic by design).
+                tier = getattr(func, "keywords", {}).get("tier_func")
+                if tier is not None:
+                    if isinstance(tier, functools.partial):
+                        tier = tier.func
+                    names.append(getattr(tier, "__name__", repr(tier)))
             else:
                 names.append(getattr(func, "__name__", repr(func)))
         return names

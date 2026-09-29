@@ -63,7 +63,6 @@ from deisa.dask.precompute_analyzer import (
 )
 from deisa.dask.task_branches import (
     _aggregate_output_feeds_other_reduction,
-    _axis_signature,
     _blockwise_indices_inputs,
     _chunk_func_and_kwargs,
     _chunk_layer_for_aggregate,
@@ -213,6 +212,75 @@ _SCALAR_FOLDS = {
     "max": lambda entries: np.max(entries, axis=0),
     "min": lambda entries: np.min(entries, axis=0),
 }
+
+# Bridge-local finishing step for a FULL local fold (see :func:`_apply_full_local_fold`): reduce dask's tier-shaped
+# chunk-stage output down to the minimal per-bridge partial the operator's combine can consume. Generic by design --
+# the table is keyed by op name and no build path special-cases an operator. ``mean``/``moment`` never reach here:
+# their tier-shaped dict partials are REQUIRED by ``mean_agg`` / ``moment_agg`` (a bare scalar cannot carry
+# ``(n, total[, M])``), which is a mathematical property, not a chunk-func signature accident. The finalizers are
+# module-level functions (NOT lambdas): the composed ``branch_func`` carries them across the bridge process
+# boundary via pickle, and lambdas cannot be pickled by reference.
+
+
+def _final_full_sum(x):
+    return np.sum(x)
+
+
+def _final_full_prod(x):
+    return np.prod(x)
+
+
+def _final_full_max(x):
+    return np.max(x)
+
+
+def _final_full_min(x):
+    return np.min(x)
+
+
+_FULL_FOLD_FINALIZERS = {
+    "sum": _final_full_sum,
+    "prod": _final_full_prod,
+    "max": _final_full_max,
+    "min": _final_full_min,
+}
+
+
+def _full_fold_layer(x, tier_func, tier_kwargs, finalizer):
+    """Second chain stage of a full local fold: finish the tier output down to the minimal partial.
+
+    Defined at module level so the composed ``branch_func`` pickles cleanly across the bridge process boundary (the
+    same constraint that shaped :func:`_chain_branch_func`).
+    """
+    return finalizer(tier_func(x, **tier_kwargs))
+
+
+def _apply_full_local_fold(
+    op_name: Optional[str],
+    full_local_fold: bool,
+    chain: List[Tuple[Callable, dict, int]],
+) -> List[Tuple[Callable, dict, int]]:
+    """Append the op's full-fold finalizer to ``chain`` (the last layer) when ``full_local_fold`` holds.
+
+    The single site of the minimal-scalar-partial rule: the bridge-local ``branch_func`` becomes
+    ``tier -> finalizer`` so the bridge folds its whole chunk before sending (smallest payload, shortest critical
+    path), while the recorded signature stays the tier's own ``chunk_axis``-derived value. No builder rebinds dask's
+    chunk kwargs and no operator is special-cased outside this table.
+    """
+    if not full_local_fold:
+        return chain
+    finalizer = _FULL_FOLD_FINALIZERS.get(op_name or "")
+    if finalizer is None:
+        # A kind that is scalar-flagged but has no finalizer cannot fold eagerly: keep the tier partial (the delivery
+        # contract still holds -- only the payload is larger than minimal).
+        return chain
+    tier_func, tier_kwargs, input_count = chain[-1]
+    layer = (
+        functools.partial(_full_fold_layer, tier_func=tier_func, tier_kwargs=tier_kwargs, finalizer=finalizer),
+        {},
+        input_count,
+    )
+    return list(chain[:-1]) + [layer]
 
 
 def _nest_partial_dicts_by_grid(
@@ -632,28 +700,14 @@ def _try_chain_branch(
     if chain is None:
         return None
     # MINIMAL-SCALAR-PARTIAL (see :func:`deisa.dask.task_branches.extract_reduction_hints`): a scalar-op reduction
-    # folding ALL data axes computes per bridge as ONE scalar. The chain's last (reduce) layer carries dask's baked
-    # tier kwargs (e.g. ``sum(axis=(0, 1), keepdims=True)`` whose partial is ``(1, 1)``); rebind it to the full
-    # local fold (``axis=None``, no keepdims) so ``branch_func(chunk)`` returns the scalar. Two-stage kinds
-    # (mean/moment) need their tier-shaped partials, and max/min chunk funcs cannot fold eagerly, so both stay tiered.
-    if op_name in ("sum", "prod"):
-        # max/min are EXCLUDED: their chunk funcs (``chunk_max``/``chunk_min``) cannot take ``axis=None`` (they index
-        # axes internally), so a full local fold would raise. A one-axis tier (0,) partial for max/min can also be a
-        # LEGITIMATE plane axis reduction through a getitem, not a full fold, so no safe rebind exists there yet.
-        axis = (branch.get("chunk_kwargs") or {}).get("axis")
-        axis_sig = _axis_signature(axis)
-        # Fire when dask's tier already folds every axis (``axis=None`` or an axis tuple covering the registered
-        # array's ndim), OR when the reduction is a window read (``param[-1].op()``): the analyzer records the FULL
-        # reduction (``red == ()``) for that callback regardless of the stub tier's internal axis, so the bridge must
-        # ship the minimal scalar partial to match (otherwise the delivered stack grows a phantom axis, e.g.
-        # ``(bridges, 1, 32)``).
-        if axis_sig == () or len(axis_sig) == array_ndim or branch.get("window_read"):
-            func, kwargs, count = chain[-1]
-            kwargs = dict(kwargs)
-            kwargs["axis"] = None
-            kwargs.pop("keepdims", None)
-            if branch.get("kind") not in (_BRANCH_KIND_MEAN, _BRANCH_KIND_MOMENT):
-                chain = chain[:-1] + [(func, kwargs, count)]
+    # computed as a FULL fold over the bridge's whole chunk ships ONE scalar (``tier -> finalizer`` chain layer).
+    # Dask's tier kwargs are never rebound; ``max``/``min`` come along for free via the finalizer table. Mean/moment
+    # are excluded by ``full_local_fold``'s kind gate (their dict partials must stay tier-shaped).
+    chain = _apply_full_local_fold(
+        branch.get("op_name"),
+        bool(branch.get("full_local_fold")),
+        chain,
+    )
     # The walker returns layers from root-to-chunk. The chain already covers the pointwise steps. The reduction's
     # chunk_func is the last step. We build a single branch_func via ``_build_chain_branch_func``. If a memoized branch
     # exists for this chain, reuse it.
@@ -702,17 +756,12 @@ def _try_length1_branch(
         # ``moment_agg`` to walk with ``_concatenate2``. Mirror that here.
         chunk_kwargs = branch.get("chunk_kwargs") or {}
         effective_kwargs = dict(chunk_kwargs)
-        # MINIMAL-SCALAR-PARTIAL (mirrors the chain path in :func:`_try_chain_branch`): a sum/prod window read is
-        # recorded as a FULL reduction (``red == ()``), so the bridge ships one scalar, not the stub tier's sliced
-        # partial (whose stack would grow a phantom ``(bridges, 1, kept)`` axis on the delivered view).
-        if branch.get("op_name") in ("sum", "prod") and (
-            window_read or _axis_signature(chunk_kwargs.get("axis")) == ()
-        ):
-            effective_kwargs["axis"] = None
-            effective_kwargs.pop("keepdims", None)
         if branch.get("kind") in (_BRANCH_KIND_MEAN, _BRANCH_KIND_MOMENT):
             effective_kwargs["keepdims"] = True
         chain = [(chunk_func, effective_kwargs, 1)]
+        # MINIMAL-SCALAR-PARTIAL (mirrors :func:`_try_chain_branch` via the shared :func:`_apply_full_local_fold`):
+        # a full local fold ships one scalar (``tier -> finalizer``); the tier kwargs stay dask's own.
+        chain = _apply_full_local_fold(branch.get("op_name"), bool(branch.get("full_local_fold")), chain)
         return _build_branch(
             branch=branch,
             chain=chain,

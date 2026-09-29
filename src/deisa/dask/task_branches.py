@@ -736,40 +736,43 @@ def extract_reduction_hints(
         from deisa.dask.branch import _find_single_upstream
 
         _direct, window_read = _classify_chain(graph, chunk_layer_name, _find_single_upstream)
-        # MINIMAL-SCALAR-PARTIAL rule: a scalar-op reduction that folds ALL data axes (``axis=None`` full or an
-        # explicit axis tuple covering every input axis -- dask lowers both to the same tier) is computed per bridge
-        # as ONE scalar: fold the bridge's whole chunk on the spot instead of shipping dask's first chunk-tier slice
-        # (``axis=(0,) keepdims`` would ship a ``(1, kept)`` row and force the Deisa-side stack into a
-        # ``(bridges, 1, kept)`` artifact). The runtime dispatch signature (``red == ()``) is unchanged -- only the
-        # partial's shape shrinks. Dict-blob kinds (mean/moment, and ``np.mean``-style two-stage scalars) keep their
-        # tiered kwargs: ``mean_agg`` / ``moment_agg`` walk per-key arrays with ``_concatenate2`` and NEED the
-        # tier-shaped partials, so the override is gated on sum/prod only and on the reduction covering all axes.
+        # MINIMAL-SCALAR-PARTIAL rule (operator-generic): dask's chunk stage tiers the partial one axis at a time
+        # (``axis=(0,) keepdims`` on a 2-D chunk ships a ``(1, kept)`` row), which forces the Deisa-side stack into a
+        # ``(bridges, 1, kept)`` artifact. When the recorded reduction is a FULL fold over the whole local chunk, the
+        # bridge must instead ship the minimal scalar: the tier output is finished with the op's own finalizer
+        # (``:data:`_FULL_FOLD_FINALIZERS``), so the bridge-local branch_func is ``tier -> finalizer`` and folds the
+        # whole chunk on the spot. The recorded signature (``chunk_axis=None`` -> ``reduction_axes == ()``) is
+        # unchanged -- only the partial's shape shrinks to ``()``. Two-stage dict-blob kinds (mean/moment) are
+        # excluded by construction: their ``mean_agg`` / ``moment_agg`` combine walks per-key arrays with
+        # ``_concatenate2`` and NEED the tier-shaped partials -- a bare scalar cannot carry ``(n, total[, M])``.
+        kind = _REDUCTION_KIND.get(op_name, "scalar")
         axis_sig = _axis_signature(chunk_kwargs.get("axis"))
-        full_local_fold = axis_sig == () or (array_ndim is not None and len(axis_sig) == array_ndim)
-        if op_name in ("sum", "prod") and full_local_fold:
-            chunk_kwargs = dict(chunk_kwargs)
-            chunk_kwargs["axis"] = None
-            chunk_kwargs.pop("keepdims", None)
+        full_local_fold = kind == "scalar" and (
+            window_read or axis_sig == () or (array_ndim is not None and len(axis_sig) == array_ndim)
+        )
         output_key = _assign_output_key(
             array_name,
             op_name,
-            () if window_read else _axis_signature(chunk_kwargs.get("axis")),
+            () if full_local_fold else axis_sig,
             output_key_seen,
         )
         # Unwrap single-element axis tuples (dask normalizes ``axis=0`` to ``axis=(0,)``) for the bridge's chunk
-        # execution path.
+        # execution path. A full local fold keeps the ORIGINAL tier kwargs (the finalizer consumes whatever the tier
+        # returns, so dask's chunk func runs exactly as dask built it).
         chunk_kwargs = dict(chunk_kwargs) if chunk_kwargs else {}
         if isinstance(chunk_kwargs.get("axis"), tuple) and len(chunk_kwargs["axis"]) == 1:
-            chunk_kwargs["axis"] = chunk_kwargs["axis"][0]
+            if not full_local_fold:
+                chunk_kwargs["axis"] = chunk_kwargs["axis"][0]
         hints.append(
             {
                 "output_key": output_key,
                 "op_name": op_name,
-                "kind": _REDUCTION_KIND.get(op_name, "scalar"),
+                "kind": kind,
                 "chunk_func_pickle": chunk_func_pickle,
                 "chunk_kwargs": chunk_kwargs,
                 "finalize": finalize,
                 "window_read": window_read,
+                "full_local_fold": full_local_fold,
             }
         )
 
