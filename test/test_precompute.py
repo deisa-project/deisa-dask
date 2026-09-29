@@ -147,7 +147,8 @@ def test_compute_direct_reduction(op_name: str) -> None:
             result = arr.sum(axis=(0, 1))
             result.compute()""",
             ["f-sum"],
-            (0, 1),
+            # Full local fold: axis rebonded to ``None`` (one scalar per bridge; see extract_reduction_hints).
+            None,
             id="axis_kwarg_tuple",
         ),
     ],

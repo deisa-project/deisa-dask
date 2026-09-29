@@ -182,7 +182,8 @@ def test_partial_metadata_scalar_full_reduction():
     """A full reduction records the chunk partial shape (keepdims=True)."""
     branches = _analyze("s = arr.sum()\nreturn s.compute()")
     assert len(branches) == 1
-    assert branches[0].partial_shape == (1, 1)
+    # Full local fold: one scalar per bridge (sum/prod rebind the axis to ``None``, see extract_reduction_hints).
+    assert branches[0].partial_shape == ()
 
 
 # ---------------------------------------------------------------------------

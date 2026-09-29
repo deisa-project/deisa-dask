@@ -322,14 +322,14 @@ class TestPrecomputeMemory:
         assert np.isclose(x_sum, float(np.sum(x_global)))
         assert np.isclose(y_sum, float(np.sum(y_global)))
         # Both arrays go through precompute: the callback sees the stack of
-        # per-bridge partials. The window[-1] subscript makes the analyzed reduction
-        # axis-0 (the stub is sliced to its last row before .sum()), so each bridge
-        # ships a (1, 16) row-sum partial and the stack over 2 bridges is (2, 1, 16).
-        # A legacy full-chunk delivery would hand the callback the tiled (16, 16)
-        # chunk; the shape assert is the real discriminator (a value-only assert
-        # would pass by accident -- a full-chunk sum equals the global sum).
-        assert x_shape == (2, 1, 16)
-        assert y_shape == (2, 1, 16)
+        # per-bridge partials. A window[-1] read is a FULL reduction on the whole
+        # delivered array, so each bridge now ships one scalar (the local sum over
+        # its chunk) and the stack over 2 bridges is (2,). A legacy full-chunk
+        # delivery would hand the callback the tiled (16, 16) chunk; the shape
+        # assert is the real discriminator (a value-only assert would pass by
+        # accident -- a full-chunk sum equals the global sum).
+        assert x_shape == (2,)
+        assert y_shape == (2,)
 
     def test_multi_reduction_callback_receives_all_reductions(self, env_setup_2workers):
         """A 3-reduction callback receives all three true values.

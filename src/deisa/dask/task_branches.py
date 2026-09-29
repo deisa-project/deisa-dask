@@ -76,6 +76,10 @@ _OP_FROM_FUNC_NAME = {
 # Operations supported by ``_combine_reduction_partials`` on the bridge side.
 SUPPORTED_OPS = {"sum", "mean", "std", "var", "max", "min", "prod"}
 
+# Simple scalar-op names whose full local reduction produces one scalar per bridge (used by the window-read partial
+# override; mean/var/std are excluded -- their two-stage reducers need the tiered partials).
+_SCALAR_OPS = {"sum", "prod", "max", "min"}
+
 # Reduction kinds -- how the bridge scatters the partial and how the Deisa-side combine graph is built.
 #
 # "scalar": plain scalar/array partials, combined via dask's natural da.stack + .sum(axis=0);
@@ -640,8 +644,14 @@ def extract_reduction_hints(
     darr: da.Array,
     array_name: str = "f",
     output_key_seen: Optional[Dict] = None,
+    array_ndim: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Inspect ``darr``'s task graph and return a branch dict per reduction."""
+    """Inspect ``darr``'s task graph and return a branch dict per reduction.
+
+    ``array_ndim`` is the registered array's ndim (when known, e.g. from its ``global_shape``): it lets the
+    minimal-scalar-partial rule below recognize an axis tuple that covers every data axis. ``None`` keeps the
+    axis-``None``-only heuristic.
+    """
     hints: List[Dict[str, Any]] = []
     if output_key_seen is None:
         output_key_seen = {}  # fresh per-call seen map
@@ -726,6 +736,20 @@ def extract_reduction_hints(
         from deisa.dask.branch import _find_single_upstream
 
         _direct, window_read = _classify_chain(graph, chunk_layer_name, _find_single_upstream)
+        # MINIMAL-SCALAR-PARTIAL rule: a scalar-op reduction that folds ALL data axes (``axis=None`` full or an
+        # explicit axis tuple covering every input axis -- dask lowers both to the same tier) is computed per bridge
+        # as ONE scalar: fold the bridge's whole chunk on the spot instead of shipping dask's first chunk-tier slice
+        # (``axis=(0,) keepdims`` would ship a ``(1, kept)`` row and force the Deisa-side stack into a
+        # ``(bridges, 1, kept)`` artifact). The runtime dispatch signature (``red == ()``) is unchanged -- only the
+        # partial's shape shrinks. Dict-blob kinds (mean/moment, and ``np.mean``-style two-stage scalars) keep their
+        # tiered kwargs: ``mean_agg`` / ``moment_agg`` walk per-key arrays with ``_concatenate2`` and NEED the
+        # tier-shaped partials, so the override is gated on sum/prod only and on the reduction covering all axes.
+        axis_sig = _axis_signature(chunk_kwargs.get("axis"))
+        full_local_fold = axis_sig == () or (array_ndim is not None and len(axis_sig) == array_ndim)
+        if op_name in ("sum", "prod") and full_local_fold:
+            chunk_kwargs = dict(chunk_kwargs)
+            chunk_kwargs["axis"] = None
+            chunk_kwargs.pop("keepdims", None)
         output_key = _assign_output_key(
             array_name,
             op_name,

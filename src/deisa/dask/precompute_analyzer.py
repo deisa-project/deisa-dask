@@ -180,6 +180,14 @@ def analyze_callback(
     output_key_seen: Dict = {}
 
     # 7. Walk the dask graphs to find reductions.
+    def _registered_ndim(name: str) -> Optional[int]:
+        value = registered_arrays.get(name)
+        if isinstance(value, dict):
+            shape = value.get("global_shape")
+            return len(tuple(shape)) if shape else None
+        ndim = getattr(value, "ndim", None) if value is not None else None
+        return int(ndim) if ndim is not None else None
+
     hints: List[Dict[str, Any]] = []
     for arr_info in dask_arrays:
         darr = arr_info["array"]
@@ -190,7 +198,9 @@ def analyze_callback(
         array_name = matched[0] if matched else primary_name
         multi = len(matched) > 1
         try:
-            new_hints = extract_reduction_hints(darr, array_name, output_key_seen=output_key_seen)
+            new_hints = extract_reduction_hints(
+                darr, array_name, output_key_seen=output_key_seen, array_ndim=_registered_ndim(array_name)
+            )
         except UnsupportedReductionError:
             # Cross-reduction dependency detected. This is the signal we MUST propagate to the caller. The precompute
             # path cannot produce correct per-bridge partials for an expression whose reduction depends on another

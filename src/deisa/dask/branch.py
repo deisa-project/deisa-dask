@@ -63,6 +63,7 @@ from deisa.dask.precompute_analyzer import (
 )
 from deisa.dask.task_branches import (
     _aggregate_output_feeds_other_reduction,
+    _axis_signature,
     _blockwise_indices_inputs,
     _chunk_func_and_kwargs,
     _chunk_layer_for_aggregate,
@@ -630,6 +631,29 @@ def _try_chain_branch(
     chain = _walk_chain(graph, agg_name)
     if chain is None:
         return None
+    # MINIMAL-SCALAR-PARTIAL (see :func:`deisa.dask.task_branches.extract_reduction_hints`): a scalar-op reduction
+    # folding ALL data axes computes per bridge as ONE scalar. The chain's last (reduce) layer carries dask's baked
+    # tier kwargs (e.g. ``sum(axis=(0, 1), keepdims=True)`` whose partial is ``(1, 1)``); rebind it to the full
+    # local fold (``axis=None``, no keepdims) so ``branch_func(chunk)`` returns the scalar. Two-stage kinds
+    # (mean/moment) need their tier-shaped partials, and max/min chunk funcs cannot fold eagerly, so both stay tiered.
+    if op_name in ("sum", "prod"):
+        # max/min are EXCLUDED: their chunk funcs (``chunk_max``/``chunk_min``) cannot take ``axis=None`` (they index
+        # axes internally), so a full local fold would raise. A one-axis tier (0,) partial for max/min can also be a
+        # LEGITIMATE plane axis reduction through a getitem, not a full fold, so no safe rebind exists there yet.
+        axis = (branch.get("chunk_kwargs") or {}).get("axis")
+        axis_sig = _axis_signature(axis)
+        # Fire when dask's tier already folds every axis (``axis=None`` or an axis tuple covering the registered
+        # array's ndim), OR when the reduction is a window read (``param[-1].op()``): the analyzer records the FULL
+        # reduction (``red == ()``) for that callback regardless of the stub tier's internal axis, so the bridge must
+        # ship the minimal scalar partial to match (otherwise the delivered stack grows a phantom axis, e.g.
+        # ``(bridges, 1, 32)``).
+        if axis_sig == () or len(axis_sig) == array_ndim or branch.get("window_read"):
+            func, kwargs, count = chain[-1]
+            kwargs = dict(kwargs)
+            kwargs["axis"] = None
+            kwargs.pop("keepdims", None)
+            if branch.get("kind") not in (_BRANCH_KIND_MEAN, _BRANCH_KIND_MOMENT):
+                chain = chain[:-1] + [(func, kwargs, count)]
     # The walker returns layers from root-to-chunk. The chain already covers the pointwise steps. The reduction's
     # chunk_func is the last step. We build a single branch_func via ``_build_chain_branch_func``. If a memoized branch
     # exists for this chain, reuse it.
@@ -678,6 +702,14 @@ def _try_length1_branch(
         # ``moment_agg`` to walk with ``_concatenate2``. Mirror that here.
         chunk_kwargs = branch.get("chunk_kwargs") or {}
         effective_kwargs = dict(chunk_kwargs)
+        # MINIMAL-SCALAR-PARTIAL (mirrors the chain path in :func:`_try_chain_branch`): a sum/prod window read is
+        # recorded as a FULL reduction (``red == ()``), so the bridge ships one scalar, not the stub tier's sliced
+        # partial (whose stack would grow a phantom ``(bridges, 1, kept)`` axis on the delivered view).
+        if branch.get("op_name") in ("sum", "prod") and (
+            window_read or _axis_signature(chunk_kwargs.get("axis")) == ()
+        ):
+            effective_kwargs["axis"] = None
+            effective_kwargs.pop("keepdims", None)
         if branch.get("kind") in (_BRANCH_KIND_MEAN, _BRANCH_KIND_MOMENT):
             effective_kwargs["keepdims"] = True
         chain = [(chunk_func, effective_kwargs, 1)]
