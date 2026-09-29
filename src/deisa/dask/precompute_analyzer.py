@@ -83,6 +83,17 @@ class MaterializationError(PrecomputeError):
     """
 
 
+class RawFieldReadError(PrecomputeError):
+    """The callback reads the registered array's raw data, which precompute does not deliver.
+
+    The precompute path only ships per-bridge reduction partials -- never the full chunk. Any callback that consumes
+    the raw data (binds it as a value, indexes it, plots it, or computes something that is not a recorded
+    chunk-local reduction) breaks the precompute contract: the data it needs is not on the network. Raised at
+    REGISTRATION time -- never mid-iteration. Remedy: register the callback with ``precompute=False``, which
+    switches it to the legacy full-chunk scatter path.
+    """
+
+
 class IncompatibleCallbackError(PrecomputeError):
     """The callback pattern is not supported by the precompute system.
 
@@ -118,6 +129,21 @@ def _match_source_arrays(darr: Any, registered_arrays: Dict[str, Any]) -> List[s
 
 # --------------------------------------------------------------------------- Public API
 # ---------------------------------------------------------------------------
+def _is_stub_derived(value: Any, registered_arrays: Dict[str, Any]) -> bool:
+    """True when ``value``'s task graph still contains a registered array's stub layer.
+
+    Reuses the provenance rule of :func:`_match_source_arrays`: every registered stub is built with the unique layer
+    tag ``deisa-stub-<name>``, so graph-layer membership attributes an expression to its source array. A value that
+    is stub-derived at a NON-reduction consumption point carries the raw chunk data (the partials thrown over the
+    network cannot reconstruct it) and must break the precompute contract -- see :class:`RawFieldReadError`.
+    """
+    try:
+        layers = set(value.__dask_graph__().layers)  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - safety net
+        return False
+    return any(isinstance(v, da.Array) and v.name in layers for v in registered_arrays.values())
+
+
 def analyze_callback(
     callback: Callable,
     registered_arrays: Dict[str, Any],
@@ -162,7 +188,7 @@ def analyze_callback(
             scope.set(pname, _UnboundParam(pname))
 
     # 4. Walk the callback body and collect compute boundaries.
-    walker = _BoundaryWalker(source_file=source_file, primary_name=primary_name)
+    walker = _BoundaryWalker(source_file=source_file, primary_name=primary_name, registered_arrays=registered_arrays)
     walker.walk_body(callback_def.body, scope)
 
     # 6. Materialization takes priority: if any np.array/asarray on a dask array was found, the callback can't be
@@ -189,6 +215,7 @@ def analyze_callback(
         return int(ndim) if ndim is not None else None
 
     hints: List[Dict[str, Any]] = []
+    covered_boundaries: set = set()
     for arr_info in dask_arrays:
         darr = arr_info["array"]
         # Attribute each boundary expression to its registered array(s): the stub layer tag (``deisa-stub-<name>``) is
@@ -210,10 +237,31 @@ def analyze_callback(
         except Exception as e:  # pragma: no cover - safety net
             logger.debug("extract_reduction_hints failed: %s", e)
             new_hints = []
+        if new_hints:
+            covered_boundaries.add(id(arr_info))
         for hint in new_hints:
             hint["array_name"] = array_name
             hint["multi_source"] = multi
         hints.extend(new_hints)
+
+    # Raw-data boundary check: a compute boundary on stub-derived data that produced NO reduction hint for its OWN
+    # expression means the callback reads (or computes) the raw chunk data without a chunk-local reduction --
+    # ``darr[0, 0].compute()`` alongside ``darr.sum().compute()``, a bare ``darr.compute()``, ``da.fft.fft2(darr)
+    # .compute()`` when dask built the FFT. The precompute path cannot serve it -- refuse loudly. Per-boundary (not
+    # per-callback): other reductions in the same callback do not excuse the raw read.
+    for arr_info in dask_arrays:
+        candidate = arr_info.get("array")
+        if (
+            id(arr_info) not in covered_boundaries
+            and isinstance(candidate, da.Array)
+            and _is_stub_derived(candidate, registered_arrays)
+        ):
+            raise RawFieldReadError(
+                f"Callback {callback.__name__!r} consumes the registered array's raw data without a chunk-local "
+                f"reduction (compute boundary at line {arr_info.get('lineno', '?')}). The precompute path only "
+                f"delivers per-bridge reduction partials, never the full chunk. Register it with precompute=False "
+                f"to switch it to the legacy full-chunk scatter path."
+            )
 
     # 8. No hints means the callback is unanalyzable: raise the specific reason.
     if not hints:
@@ -531,6 +579,10 @@ _PURE_BUILTINS: dict = {
     "slice": lambda args, kwargs: _safe_pure_call(slice, args, kwargs),
     "tuple": lambda args, kwargs: _safe_pure_call(lambda x: tuple(x) if x is not None else (), args, kwargs),
     "list": lambda args, kwargs: _safe_pure_call(lambda x: list(x) if x is not None else [], args, kwargs),
+    # Predicate builtins: they inspect a value's type/attrs, never its data, so a raw array may reach them (e.g.
+    # ``assert isinstance(darr, DeisaArray)`` in a precompute callback) without breaking the raw-data contract.
+    "isinstance": lambda args, kwargs: _safe_pure_call(isinstance, args, kwargs),
+    "hasattr": lambda args, kwargs: _safe_pure_call(hasattr, args, kwargs),
 }
 
 
@@ -545,12 +597,35 @@ class _BoundaryWalker:
     and the array is queued for graph extraction. For lists, every element is queued.
     """
 
-    def __init__(self, source_file: _SourceFile, primary_name: str = "f"):
+    def __init__(
+        self, source_file: _SourceFile, primary_name: str = "f", registered_arrays: Optional[Dict[str, Any]] = None
+    ):
         self.source_file = source_file
         self.primary_name = primary_name
+        # Registered-array metadata: the raw-data provenance map for the taint check
+        # (:func:`_is_stub_derived`). ``None`` (unit-test walkers) disables the check.
+        self.registered_arrays = registered_arrays or {}
         self.dask_arrays: List[Dict[str, Any]] = []
         self.boundaries: List[Dict[str, Any]] = []
         self.had_materialization: bool = False
+
+    def _check_taint(self, args: List[Any], node: ast.AST, ctx: str) -> None:
+        """Raise :class:`RawFieldReadError` when a raw-data value reaches a non-reduction consumer.
+
+        ``ctx`` names the consumer (the call form) for the error message. Conservative by design: any stub-derived
+        argument means the callback consumes the chunk's raw values, which the precompute path does not ship.
+        """
+        if not self.registered_arrays:
+            return
+        for a in args:
+            for item in a if isinstance(a, (list, tuple)) else (a,):
+                if isinstance(item, da.Array) and _is_stub_derived(item, self.registered_arrays):
+                    raise RawFieldReadError(
+                        f"Callback passes the registered array's raw data (line {getattr(node, 'lineno', -1)}) to "
+                        f"{ctx!r}. The precompute path only delivers per-bridge reduction partials, never the full "
+                        f"chunk, so this callback cannot run under precompute. Register it with precompute=False "
+                        f"to switch it to the legacy full-chunk scatter path."
+                    )
 
     # -- Statement walking -------------------------------------------------
     def walk_body(self, body: List[ast.stmt], scope: _Scope) -> None:
@@ -982,6 +1057,11 @@ class _BoundaryWalker:
             # raise on stub arrays (e.g. multi-chunk axes); we catch and degrade to _Missing so analysis can continue.
             kwargs = self._eval_kwargs(node.keywords, scope)
             args = [self._eval(a, scope) for a in node.args]
+            if isinstance(recv_value, _Missing):
+                # Opaque receiver consuming the callback's arguments: if a raw-data value reaches it (e.g.
+                # ``plt.imshow(darr)`` or ``np.linalg.norm(darr)``), that is a raw-field read -- refuse loudly
+                # instead of returning ``_Missing`` and silently registering nothing.
+                self._check_taint(args, node, f"{getattr(recv_value, 'name', '<unknown>')}.{func.attr}")
             try:
                 return getattr(recv_value, func.attr)(*args, **kwargs)
             except Exception as e:
@@ -1030,6 +1110,10 @@ class _BoundaryWalker:
             #    anything the analyzer doesn't recognize: logging calls, custom modules, etc. The callback may still
             #    produce a result (the bridge falls back to the full chunk scatter path for that callback), but it does
             #    not fail the registration.
+            args = [self._eval(a, scope) for a in node.args]
+            # A raw-data value passed to an unrecognized call (e.g. ``helper(darr)``, ``custom(darr)``) is a raw-field
+            # read: refuse loudly rather than swallowing the argument into ``_Missing``.
+            self._check_taint(args, node, name)
             logger.debug(
                 "bare-name %r at line %d is opaque to the analyzer; "
                 "the surrounding call is treated as a non-precompute "

@@ -49,7 +49,7 @@ from deisa.dask.precompute_analyzer import (
     IncompatibleCallbackError,
     MaterializationError,
     NoComputeBoundaryError,
-    NoPrecomputableReductionError,
+    RawFieldReadError,
     UnsupportedReductionError,
     analyze_callback,
 )
@@ -405,7 +405,12 @@ def test_materialization_error(source, arg_key) -> None:
 # Non-reduction compute boundaries
 # ---------------------------------------------------------------------------
 def test_compute_fft_only_raises_no_precomputable_reduction() -> None:
-    """A callback with .compute() but no reductions should raise NoPrecomputableReductionError."""
+    """A callback with .compute() but no reductions should raise RawFieldReadError.
+
+    The FFT consumes the raw chunk data with no chunk-local reduction: under the precompute contract that is a
+    raw-field read (the analyzer's earlier ``NoPrecomputableReductionError`` became the more precise
+    ``RawFieldReadError`` when the raw-read check landed).
+    """
     arr = da.zeros((10, 10), chunks=(10, 10), dtype=np.float64)  # single chunk so FFT works
     src = """
         def callback(arr):
@@ -413,7 +418,7 @@ def test_compute_fft_only_raises_no_precomputable_reduction() -> None:
             phi.compute()
         """
     cb = _make_function("callback", src)
-    with pytest.raises(NoPrecomputableReductionError):
+    with pytest.raises(RawFieldReadError):
         analyze_callback(cb, {"f": arr})
 
 
@@ -484,7 +489,7 @@ def test_dynamic_loop_raises_incompatible_callback() -> None:
             phi = da.fft.fft2(arr)
             phi.compute()""",
             lambda: da.zeros((10, 10), chunks=(10, 10), dtype=np.float64),
-            NoPrecomputableReductionError,
+            RawFieldReadError,
             id="fft_no_reductions",
         ),
         pytest.param(

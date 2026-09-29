@@ -52,6 +52,7 @@ from deisa.dask.branch import _analyze_callback_for_branches
 from deisa.dask.deisa import Deisa
 from deisa.dask.precompute_analyzer import (
     NoPrecomputableReductionError,
+    RawFieldReadError,
     UnsupportedReductionError,
 )
 
@@ -264,3 +265,49 @@ def test_registration_failure_leaves_no_trace():
     assert d._callbacks == {}
     assert d._callbacks_by_array == {}
     assert d.client.subscribed == []
+
+
+# ---------------------------------------------------------------------------
+# raw-field reads break the precompute contract and must refuse at registration
+# ---------------------------------------------------------------------------
+def test_raw_field_read_via_opaque_call_refused():
+    """``plot(arr)`` (unknown callee with a stub-derived arg) raises ``RawFieldReadError``.
+
+    The precompute path ships only reduction partials, never the chunk: any raw-data value handed to an
+    unrecognized call is undeliverable.
+    """
+    with pytest.raises(RawFieldReadError):
+        _analyze("plot(arr)\ns = arr.sum()\nreturn s.compute()")
+
+
+def test_raw_field_read_via_helper_call_refused():
+    """An unrecognized bare-name call consuming the raw array is refused."""
+    with pytest.raises(RawFieldReadError):
+        _analyze("custom(arr)\ns = arr.sum()\nreturn s.compute()")
+
+
+def test_raw_field_compute_boundary_without_reduction_refused():
+    """A compute boundary on the raw array with no reduction of its own is refused."""
+    with pytest.raises(RawFieldReadError):
+        _analyze("plot(arr)\nv = arr.compute()\ns = arr.sum()\nreturn s.compute(), v")
+
+
+def test_raw_field_index_read_refused_alongside_reduction():
+    """``arr[0, 0]`` read + ``arr.sum()`` is refused: the index read is raw data.
+
+    Per-boundary check: the callback's other reductions do not excuse a raw read.
+    """
+    with pytest.raises(RawFieldReadError):
+        _analyze("v = arr[0, 0]\ns = arr.sum()\nreturn s.compute() + v.compute()")
+
+
+def test_precompute_false_allows_raw_reads_with_warning(caplog):
+    """``precompute=False`` skips the analysis entirely: raw reads are allowed with a warning."""
+    d = _make_deisa_stub()
+    cb = _make_callback("reg_raw_ok", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        cid = d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=False)
+    assert cid in d._callbacks
+    assert "full-chunk scatter path" in caplog.text
