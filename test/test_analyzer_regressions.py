@@ -270,26 +270,62 @@ def test_registration_failure_leaves_no_trace():
 # ---------------------------------------------------------------------------
 # raw-field reads break the precompute contract and must refuse at registration
 # ---------------------------------------------------------------------------
+_ERROR_REMEDY = "precompute=False"
+
+
 def test_raw_field_read_via_opaque_call_refused():
     """``plot(arr)`` (unknown callee with a stub-derived arg) raises ``RawFieldReadError``.
 
     The precompute path ships only reduction partials, never the chunk: any raw-data value handed to an
     unrecognized call is undeliverable.
     """
-    with pytest.raises(RawFieldReadError):
+    with pytest.raises(RawFieldReadError) as exc_info:
         _analyze("plot(arr)\ns = arr.sum()\nreturn s.compute()")
+    msg = str(exc_info.value)
+    # The error must name the consumer, the offending line, and the documented remedy. Line numbers are reported on
+    # the wrapped source: the module docstring shifts the first callback statement to line 2.
+    assert "plot" in msg
+    assert "line 2" in msg  # ``plot(arr)`` is the first callback statement
+    assert _ERROR_REMEDY in msg
+    # The refusal must be precise: attribute the raw value to its registered stub, not to opaque noise.
+    assert "raw data" in msg
 
 
 def test_raw_field_read_via_helper_call_refused():
     """An unrecognized bare-name call consuming the raw array is refused."""
-    with pytest.raises(RawFieldReadError):
+    with pytest.raises(RawFieldReadError) as exc_info:
         _analyze("custom(arr)\ns = arr.sum()\nreturn s.compute()")
+    msg = str(exc_info.value)
+    assert "custom" in msg  # the callee is named for quick diagnosis
+    assert "line 2" in msg
+    assert _ERROR_REMEDY in msg
+
+
+def test_resolvable_module_call_on_raw_data_allowed():
+    """``np.linalg.norm(arr)`` is NOT a refusal: the call runs chunk-locally at runtime.
+
+    A receiver that resolves to a real module (numpy) consumes the argument on the BRIDGE -- the local chunk --
+    which is deliverable work, unlike an unknown callee (``plot``) whose execution would need the full field.
+    """
+    branches = _analyze("import numpy as npy\nv = npy.linalg.norm(arr)\ns = arr.sum()\nreturn s.compute(), v")
+    assert [b.output_key for b in branches] == ["f-sum"]
+
+
+def test_raw_field_read_list_unwrapping():
+    """A raw array nested in a list argument is caught too: ``plot([arr])``."""
+    with pytest.raises(RawFieldReadError) as exc_info:
+        _analyze("plot([arr])\ns = arr.sum()\nreturn s.compute()")
+    assert "plot" in str(exc_info.value)
 
 
 def test_raw_field_compute_boundary_without_reduction_refused():
     """A compute boundary on the raw array with no reduction of its own is refused."""
-    with pytest.raises(RawFieldReadError):
+    with pytest.raises(RawFieldReadError) as exc_info:
         _analyze("plot(arr)\nv = arr.compute()\ns = arr.sum()\nreturn s.compute(), v")
+    msg = str(exc_info.value)
+    # Per-boundary check line number: ``arr.compute()`` sits on line 2 of the callback body.
+    assert "line 4" in msg or "line 2" in msg
+    assert _ERROR_REMEDY in msg
 
 
 def test_raw_field_index_read_refused_alongside_reduction():
@@ -299,6 +335,43 @@ def test_raw_field_index_read_refused_alongside_reduction():
     """
     with pytest.raises(RawFieldReadError):
         _analyze("v = arr[0, 0]\ns = arr.sum()\nreturn s.compute() + v.compute()")
+
+
+def test_predicate_builtins_on_raw_data_allowed():
+    """``assert isinstance(arr, ...)`` / ``hasattr(arr, ...)`` do NOT break the contract.
+
+    Predicate builtins inspect type/attrs, never data: they must stay allowed so the MPI test's
+    ``assert isinstance(darr, DeisaArray)`` pattern keeps registering under precompute.
+    """
+    branches = _analyze(
+        "assert isinstance(arr, object)\nassert hasattr(arr, 'shape')\ns = arr.sum()\nreturn s.compute()"
+    )
+    assert [b.output_key for b in branches] == ["f-sum"]
+
+
+def test_len_on_raw_data_allowed():
+    """``len(arr)`` reads metadata (shape), not data: allowed."""
+    branches = _analyze("n = len(arr)\ns = arr.sum()\nreturn s.compute(), n")
+    assert [b.output_key for b in branches] == ["f-sum"]
+
+
+def test_attribute_reads_on_raw_data_allowed():
+    """Attribute (metadata) reads -- ``arr.ndim``, f-strings in logs -- do not taint."""
+    branches = _analyze("y = arr.ndim\ns = arr.sum()\nreturn s.compute(), y")
+    assert [b.output_key for b in branches] == ["f-sum"]
+
+
+def test_raw_refusal_does_not_merge_branch_groups():
+    """A raw-read refusal must leave no partial branch state behind at registration."""
+    d = _make_deisa_stub()
+    cb = _make_callback("reg_raw_fail", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
+    with pytest.raises(RawFieldReadError):
+        d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
+    # Same no-trace contract as the UnsupportedReductionError case.
+    assert d._callbacks == {}
+    assert d._callbacks_by_array == {}
+    assert d._branch_groups == {}
+    assert d.client.subscribed == []
 
 
 def test_precompute_false_allows_raw_reads_with_warning(caplog):

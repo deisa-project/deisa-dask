@@ -37,6 +37,7 @@ reduction hints from each dask array's task graph.
 Crucial contract: the user's callback is NEVER called during analysis.
 """
 
+import functools
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
@@ -147,8 +148,9 @@ def test_compute_direct_reduction(op_name: str) -> None:
             result = arr.sum(axis=(0, 1))
             result.compute()""",
             ["f-sum"],
-            # Full local fold: axis rebonded to ``None`` (one scalar per bridge; see extract_reduction_hints).
-            None,
+            # Full local fold: the tier keeps dask's own kwargs (compositor finishes the fold; see
+            # extract_reduction_hints).
+            (0, 1),
             id="axis_kwarg_tuple",
         ),
     ],
@@ -162,6 +164,49 @@ def test_compute_single_array_hints(source, expected_hint_keys, expected_axis) -
     if expected_axis is not None:
         assert len(hints) == 1
         assert hints[0]["chunk_kwargs"].get("axis") == expected_axis
+
+
+def test_hint_full_local_fold_flag_semantics() -> None:
+    """The ``full_local_fold`` hint flag mirrors the recorded fold, and the tier stays dask's own.
+
+    No build path rebinds ``axis`` anymore: a full fold is delivered by the finalizer compositor
+    (``deisa.dask.branch._apply_full_local_fold``), so the hint records dask's raw chunk kwargs.
+    """
+    arr = _simple_stub()
+
+    def _hints(body: str):
+        cb = _make_function("callback", textwrap.dedent(body))
+        hints, _ = analyze_callback(cb, {"f": arr})
+        assert len(hints) == 1
+        return hints[0]
+
+    # Bare full reduction: fold flag on (axis_sig == ()); a DIRECT receiver read is not a window read.
+    h = _hints("        def callback(arr):\n            result = arr.sum()\n            result.compute()\n")
+    assert h["full_local_fold"] is True
+    assert h["window_read"] is False
+    assert h["kind"] == "scalar"
+
+    # Multi-axis reduction: full fold over the (10, 10) single-chunk stub.
+    h = _hints("        def callback(arr):\n            result = arr.sum(axis=(0, 1))\n            result.compute()\n")
+    assert h["full_local_fold"] is True
+    assert h["chunk_kwargs"]["axis"] == (0, 1)
+
+    # Axis reduction keeps a tier partial: no fold flag, axis unwrapped to the int form.
+    h = _hints("        def callback(arr):\n            result = arr.sum(axis=0)\n            result.compute()\n")
+    assert h["full_local_fold"] is False
+    assert h["chunk_kwargs"]["axis"] == 0
+
+    # Window read (``window[-1].sum()``): the fold composes at hint level too. (``window_read`` itself is branch-build
+    # territory: the hint's provenance only tags an explicit getitem LAYER, and ``_WindowProxy[-1]`` returns the stub
+    # directly -- the branch builder re-derives the flag from its own chain walk.)
+    cb = _make_function(
+        "callback",
+        "        def callback(window):\n            result = window[-1].sum()\n            result.compute()\n",
+    )
+    hints, _ = analyze_callback(cb, {"f": arr})
+    assert len(hints) == 1
+    assert hints[0]["full_local_fold"] is True
+    assert hints[0]["window_read"] is False
 
 
 @pytest.mark.parametrize(
@@ -289,7 +334,7 @@ def test_compute_loop_static_range() -> None:
 
 
 def test_compute_window_subscript_negative_one() -> None:
-    """``window[-1].sum().compute()`` should map to the last registered array."""
+    """``window[-1].sum().compute()`` should map to the last registered array and fold to a scalar partial."""
     arr = _simple_stub()
     src = """
         def callback(window):
@@ -299,6 +344,20 @@ def test_compute_window_subscript_negative_one() -> None:
     cb = _make_function("callback", src)
     hints, _ = analyze_callback(cb, {"f": arr})
     assert _hint_keys(hints) == ["f-sum"]
+    # The full local fold composes from the window-read spelling too: one scalar per bridge.
+    assert hints[0]["full_local_fold"] is True
+    from deisa.dask.branch import _analyze_callback_for_branches
+
+    branches = _analyze_callback_for_branches(cb, {"f": {"global_shape": (64, 64), "chunk_shape": (32, 32)}})
+    assert len(branches) == 1
+    # The delivered partial is the scalar, not dask's (1, 32) tier shape: the full local fold composed
+    # (``_full_fold_layer`` compositor in the chain; ``window_read`` varies by spelling and is recorded by the
+    # branch builder's own chain walk).
+    assert branches[0].partial_shape == ()
+    chain = branches[0].branch_func.keywords["_chain"]
+    # The compositor is a functools.partial carrying the tier func in keywords.
+    assert isinstance(chain[-1][0], functools.partial)
+    assert "tier_func" in chain[-1][0].keywords
 
 
 # ---------------------------------------------------------------------------

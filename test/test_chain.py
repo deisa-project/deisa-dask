@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from deisa.dask.branch import (
+    _apply_full_local_fold,
     _build_chain_branch_func,
     _find_chunk_layer,
     _find_single_upstream,
@@ -549,3 +550,80 @@ def test_merge_branches_refuses_same_key_different_signature() -> None:
     axis_zero = _make_spec("f-sum", reduction_axes=(0,))
     with pytest.raises(PrecomputeRuntimeError):
         merge_branches([window_read], [axis_zero])
+
+
+# ---------------------------------------------------------------------------
+# Full local fold: the operator-generic minimal-scalar-partial machinery
+# ---------------------------------------------------------------------------
+class TestFullFoldLocal:
+    """``_apply_full_local_fold`` composes ``tier -> finalizer`` on the bridge-local chain.
+
+    The operator-generic property: whichever scalar op the hint recorded, the finalizer table folds the tier output
+    to the minimal partial; the tier (dask's chunk kwargs) is never rebound. mean/moment never set the flag (their
+    dict partials are mathematically required), so the gate stays kind-based.
+    """
+
+    @pytest.mark.parametrize("op,numpy_op", [("sum", np.sum), ("prod", np.prod), ("max", np.max), ("min", np.min)])
+    def test_all_scalar_ops_fold_to_scalar(self, op, numpy_op):
+        """All four scalar ops compose a finalizer layer; the executed chain returns a true scalar."""
+        dask_op = getattr(da, op)
+        arr = da.zeros((4, 4), chunks=2)
+        chain = _walk_chain(dask_op(arr).__dask_graph__(), _find_agg_layer(dask_op(arr).__dask_graph__()))
+        assert chain is not None
+        folded = _apply_full_local_fold(op, True, chain)
+        # The compositor REPLACES the tier layer (same length), so the chain shape is unchanged.
+        assert len(folded) == len(chain)
+        real = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
+        value = real
+        for func, kwargs, _input_count in folded:
+            value = func(value) if isinstance(func, functools.partial) else func(value, **kwargs)
+        assert np.isclose(float(value), numpy_op(real))
+
+    def test_mean_moment_flag_composes_nothing(self):
+        """mean/moment either don't set the flag or have no table entry: the chain stays UNTOUCHED either way.
+
+        Their ``{n, total[, M]}`` dict partials are required by ``mean_agg``/``moment_agg`` -- no eager fold.
+        """
+        arr = da.zeros((4, 4), chunks=2)
+        g = arr.mean().__dask_graph__()
+        chain = _walk_chain(g, _find_agg_layer(g))
+        assert chain is not None
+        assert _apply_full_local_fold("mean", False, chain) == chain
+        assert _apply_full_local_fold("mean", True, chain) == chain  # no 'mean' finalizer entry
+
+    def test_unknown_op_flag_keeps_chain(self):
+        """A scalar-kind op with no finalizer entry degrades to the tier partial (still deliverable)."""
+        arr = da.zeros((4, 4), chunks=2)
+        g = arr.sum().__dask_graph__()
+        chain = _walk_chain(g, _find_agg_layer(g))
+        folded = _apply_full_local_fold("opaque-op", True, chain)
+        assert folded == chain
+
+    def test_compositor_picklable(self):
+        """The replaced tier layer must survive pickle: the DSL-boundary constraint.
+
+        Regression: a lambda-based first draft raised ``Can't pickle <function <lambda>>`` on the bridge.
+        """
+        import pickle
+
+        arr = da.zeros((4, 4), chunks=2)
+        g = arr.sum().__dask_graph__()
+        chain = _walk_chain(g, _find_agg_layer(g))
+        folded = _apply_full_local_fold("sum", True, chain)
+        compositor = folded[-1][0]
+        assert isinstance(compositor, functools.partial)
+        restored = pickle.loads(pickle.dumps(compositor))
+        real = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
+        assert np.isclose(float(restored(real)), real.sum())
+
+    def test_composed_branch_func_full_fold_is_scalar(self):
+        """End-to-end: a full-fold branch_func returns a 0-d (scalar) value, not a tier-shaped array."""
+        arr = da.zeros((4, 4), chunks=2)
+        g = arr.sum().__dask_graph__()
+        chain = _walk_chain(g, _find_agg_layer(g))
+        folded = _apply_full_local_fold("sum", True, chain)
+        branch_func = _build_chain_branch_func(folded)
+        real = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
+        out = branch_func(real)
+        assert np.asarray(out).ndim == 0
+        assert np.isclose(float(out), real.sum())
