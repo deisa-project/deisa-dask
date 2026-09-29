@@ -62,7 +62,9 @@ def is_running_on_mpi():
 
 def resolve_comm(comm, cart_coord_dims=1, use_mpi_if_available=True, *args, **kwargs) -> ICommunicator:
     """
-    handle 3 cases to resolve comm: - if comm is None: use_mpi_if_available or no MPI - if comm is an MPI Comm: use it
+    handle 3 cases to resolve comm:
+    - if comm is None: use_mpi_if_available or no MPI
+    - if comm is an MPI Comm: use it
     """
     if comm is None:
         if use_mpi_if_available and is_running_on_mpi():
