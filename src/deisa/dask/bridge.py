@@ -367,8 +367,8 @@ class Bridge(IBridge):
         branches = self._get_task_branches(array_name)
         partials = self._execute_operations_on_chunk(chunk, branches)
 
-        # With partials: scatter them only. Without: legacy full-chunk scatter (backwards compatibility for
-        # non-reduction callbacks).
+        # With partials: scatter them only. Without: full-chunk scatter (backwards compatibility for non-reduction
+        # callbacks).
         precomputed_meta: Dict[str, Dict[str, Any]] = {}
         if partials:
             logger.debug(
@@ -380,7 +380,7 @@ class Bridge(IBridge):
             precomputed_meta = partial_res["precomputed"]
         else:
             logger.debug(f"[{self.id}] send() precompute-inactive: scattering full chunk shape={chunk.shape}")
-            res = self._better_scatter(chunk, workers=workers, hash=False)
+            res = self._scatter_full(chunk, workers=workers, hash=False)
 
         # Single-bridge fast-path: no collective needed
         if sub_comm.Get_size() == 1:
@@ -448,7 +448,7 @@ class Bridge(IBridge):
                         )
                     )
             else:
-                # Legacy path: one entry per bridge with the full-chunk shape.
+                # Full-chunk path: one entry per bridge with the full-chunk shape.
                 futures_payload = [
                     {
                         "future": d["future-info"]["future"][0]
@@ -489,9 +489,9 @@ class Bridge(IBridge):
         For arrays that exist on only one bridge, we skip the gather() entirely and directly update the Dask scheduler.
 
         - ``:param array_name:`` The array name being sent.
-        - ``:param res:`` The scatter result (legacy: dict with a single ``future``;
+        - ``:param res:`` The scatter result (full-chunk: dict with a single ``future``;
             precompute: dict with a list ``future`` of all partial keys).
-        - ``:param chunk:`` The numpy ndarray data chunk (kept for legacy shape/dtype).
+        - ``:param chunk:`` The numpy ndarray data chunk (kept for full-chunk shape/dtype).
         - ``:param timestep:`` The current timestep.
         - ``:param precomputed_meta:`` Per-partial scatter metadata
             (``{output_key: {"future", "shape", "dtype"}}``); only set on the
@@ -582,7 +582,7 @@ class Bridge(IBridge):
 
         return default
 
-    def _better_scatter(self, data: np.ndarray, workers: List[str] = None, hash=False):
+    def _scatter_full(self, data: np.ndarray, workers: List[str] = None, hash=False):
         """Scatter data to workers and return the legacy ``{"future", "who_has", "nbytes"}`` result."""
         logger.debug(f"[{self.id}] scatter to {workers}")
 

@@ -77,7 +77,7 @@ def do_scatter_bridge(bridges: List[Bridge]) -> List[float]:
     for i, b in enumerate(bridges):
         start = time.time_ns()
         # b.send('my_array', data=data, iteration=0)
-        f = b._better_scatter(data)
+        f = b._scatter_full(data)
         f.release()  # release memory on worker
 
         stop = time.time_ns()
