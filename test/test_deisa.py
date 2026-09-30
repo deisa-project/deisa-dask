@@ -45,6 +45,7 @@ from TestSimulator import TestSimulation
 from utils import (
     FakeCartComm,
     FakeComm,
+    _make_callback,
     async_close_bridges,
     async_map,
     dask_array_element_wise_equal,
@@ -54,9 +55,52 @@ from utils import (
 
 from deisa.dask import Bridge, Deisa
 from deisa.dask.deisa import DEFAULT_SLIDING_WINDOW_SIZE
+from deisa.dask.precompute_analyzer import RawFieldReadError, UnsupportedReductionError
 from deisa.dask.utils import build_deisa_array
 
 logging.basicConfig(level=logging.DEBUG)
+
+META_A = {"a": {"global_shape": (8, 8), "chunk_shape": (4, 4)}}
+
+
+class _FakeClient:
+    """Minimal client surface used by Deisa._register_callback_impl."""
+
+    def __init__(self):
+        self.subscribed = []
+
+    def subscribe_topic(self, name, handler):  # noqa: D102
+        self.subscribed.append(name)
+
+    def close(self):  # noqa: D102
+        pass
+
+
+class _FakeHandshake:
+    """Minimal handshake surface used by Deisa._register_callback_impl."""
+
+    def __init__(self):
+        self.branches: Dict[str, Any] = {}
+
+    def set_task_branches(self, array_name, hints):  # noqa: D102
+        self.branches[array_name] = hints
+
+
+def _make_deisa_stub() -> Deisa:
+    """A Deisa instance with the registration surfaces stubbed (no cluster)."""
+    d = Deisa.__new__(Deisa)
+    d.client = _FakeClient()
+    d.handshake = _FakeHandshake()
+    d.arrays_metadata = META_A
+    d._callbacks = {}
+    d._callbacks_by_array = {}
+    d._topic_handlers = {}
+    d._callback_reductions = {}
+    d._callback_seq = 0
+    d._branch_groups = {}
+    d._tasks = set()
+    d._execute_callbacks_called = False
+    return d
 
 
 @pytest.mark.timeout(10)
@@ -99,6 +143,69 @@ class TestDeisaCtor:
             f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + "test-scheduler-error.json"
             os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = f
             Deisa(wait_for_go=False)
+
+
+# ---------------------------------------------------------------------------
+# Deisa registration surface tests (cluster-free stubs)
+# ---------------------------------------------------------------------------
+class TestDeisaRegistration:
+    def test_registration_success_stores_callback_payload(self):
+        """A successful registration stores the payload in ``_callbacks``.
+
+        The topic handler can only fire a callback whose payload lives in ``_callbacks``; it must be stored once every
+        step that can raise has succeeded.
+        """
+        d = _make_deisa_stub()
+        cb = _make_callback("reg_ok", "s = arr.sum()\nreturn s.compute()")
+        cid = d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
+        assert cid in d._callbacks
+        assert d._callbacks[cid]["callback"] is cb
+        assert d._callbacks[cid]["array_names"] == ["a"]
+        assert cid in d._callbacks_by_array["a"]
+        # Topic subscription happened for the registered array.
+        assert "a" in d.client.subscribed
+        # Branches are merged in memory at registration; the handshake actor is
+        # filed only by execute_callbacks (the per-cycle filing boundary).
+        assert d._branch_groups["a"]
+        d._flush_branches_to_handshake()
+        assert d.handshake.branches["a"]
+
+    def test_registration_failure_leaves_no_trace(self):
+        """A registration whose analysis raises leaks nothing.
+
+        ``_callbacks[callback_id]`` is written only AFTER the analysis; a raising analysis must leave no half-registered
+        entry that ``unregister_callback`` could never reach.
+        """
+        d = _make_deisa_stub()
+        cb = _make_callback("reg_fail", "s = (arr - arr.mean()).sum()\nreturn s.compute()")
+        with pytest.raises(UnsupportedReductionError):
+            d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
+        assert d._callbacks == {}
+        assert d._callbacks_by_array == {}
+        assert d.client.subscribed == []
+
+    def test_raw_refusal_does_not_merge_branch_groups(self):
+        """A raw-read refusal must leave no partial branch state behind at registration."""
+        d = _make_deisa_stub()
+        cb = _make_callback("reg_raw_fail", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
+        with pytest.raises(RawFieldReadError):
+            d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
+        # Same no-trace contract as the UnsupportedReductionError case.
+        assert d._callbacks == {}
+        assert d._callbacks_by_array == {}
+        assert d._branch_groups == {}
+        assert d.client.subscribed == []
+
+    def test_precompute_false_allows_raw_reads_with_warning(self, caplog):
+        """``precompute=False`` skips the analysis entirely: raw reads are allowed with a warning."""
+        d = _make_deisa_stub()
+        cb = _make_callback("reg_raw_ok", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
+        with caplog.at_level(logging.WARNING):
+            cid = d._register_callback_impl(
+                cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=False
+            )
+        assert cid in d._callbacks
+        assert "full-chunk scatter path" in caplog.text
 
 
 class TestUsingDaskCluster:

@@ -10,12 +10,12 @@ branch_func callables that match naive numpy computations.
 """
 
 import functools
-import textwrap
-from typing import Any, Callable, Dict
+from typing import Any, Dict
 
 import dask.array as da
 import numpy as np
 import pytest
+from utils import _make_callback
 
 from deisa.dask.branch import (
     _apply_full_local_fold,
@@ -24,20 +24,6 @@ from deisa.dask.branch import (
     _find_single_upstream,
     _walk_chain,
 )
-
-
-def _make_callback(name: str, body: str) -> Callable:
-    """Compile a small snippet ``def <name>(arr): <body>`` and return it.
-
-    Mirrors the helper used in test_precompute.py so ``analyze_callback`` can walk the source if needed.
-    """
-    src = textwrap.dedent(f"def {name}(arr):\n{textwrap.indent(body, '    ')}")
-    scope: Dict[str, Any] = {}
-    code = compile(src, f"<test_chain:{name}>", "exec")
-    exec(code, scope)
-    fn = scope[name]
-    fn.__source__ = src  # type: ignore[attr-defined]
-    return fn
 
 
 def _find_agg_layer(graph) -> str:
@@ -559,7 +545,7 @@ class TestFullFoldLocal:
     """``_apply_full_local_fold`` composes ``tier -> finalizer`` on the bridge-local chain.
 
     The operator-generic property: whichever scalar op the hint recorded, the finalizer table folds the tier output
-    to the minimal partial; the tier (dask's chunk kwargs) is never rebound. mean/moment never set the flag (their
+    to the minimal partial; the tier (dask's own chunk kwargs) is never rebound. mean/moment never set the flag (their
     dict partials are mathematically required), so the gate stays kind-based.
     """
 

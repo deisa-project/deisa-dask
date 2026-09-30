@@ -29,11 +29,13 @@
 import asyncio
 import multiprocessing
 import queue
+import textwrap
 import threading
 import time
-from typing import Any, List, Literal, Optional, Sequence
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
 
 import dask.array as da
+import numpy as np
 from deisa.core import ICommunicator
 
 from deisa.dask import Bridge
@@ -120,6 +122,38 @@ def run_on_all_ranks(comm_builder, fn):
         raise AssertionError(f"Rank {rank} failed") from exc
 
     return results
+
+
+def _make_callback(name: str, body: str, params: str = "arr") -> Callable:
+    """Compile ``def <name>(<params>): <body>`` and return the function with ``__source__`` set.
+
+    Shared by analyzer tests so ``analyze_callback`` can walk source via ``inspect.getsource``. The compiled filename is
+    generic (``<test-utils:name>``); no test asserts on the filename.
+    """
+    src = textwrap.dedent(f"def {name}({params}):\n{textwrap.indent(body, '    ')}")
+    scope: Dict[str, Any] = {}
+    exec(compile(src, f"<test-utils:{name}>", "exec"), scope)
+    fn = scope[name]
+    fn.__source__ = src  # type: ignore[attr-defined]
+    return fn
+
+
+def _analyze(body: str, params: str = "arr", name: str = "analyze_cb", meta: Dict[str, Any] = None) -> Any:
+    """Build a callback from ``body`` and run ``_analyze_callback_for_branches`` against ``meta``.
+
+    Defaults to a single array ``f`` with an (8, 8) global shape and (4, 4) chunk shape.
+    """
+    from deisa.dask.branch import _analyze_callback_for_branches
+
+    if meta is None:
+        meta = {"f": {"global_shape": (8, 8), "chunk_shape": (4, 4)}}
+    cb = _make_callback(name, body, params=params)
+    return _analyze_callback_for_branches(cb, meta)
+
+
+def _scalar(value: Any) -> float:
+    """Unwrap a (1, 1) keepdims partial (sum chunk layer has keepdims=True) to a scalar."""
+    return float(np.asarray(value).reshape(-1)[0])
 
 
 class FakeComm(ICommunicator):

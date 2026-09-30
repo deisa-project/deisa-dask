@@ -26,7 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
-"""Regression tests for the precompute analyzer (registration path), cluster-free.
+"""Regression tests for the precompute analyzer (branch analysis), cluster-free.
 
 Contract coverage:
 
@@ -37,50 +37,27 @@ Contract coverage:
   ``arr.sum() + (arr - arr.mean()).sum()``: it must be REFUSED.
 - ``_Missing`` degrades: unknown operands are UNKNOWN, never an assumed
   branch. Subscripting an unbound callback parameter must not crash either.
-- ``register_callback`` must store the callback payload only after the
-  analysis succeeds; a failed registration must leak nothing.
+- multi-array callbacks produce one branch per registered array with
+  distinct ``output_key`` values and per-array ``input_name`` attribution.
+- each branch's ``branch_func`` computes its OWN array's reduction on a
+  chunk, verified with real numeric values.
 """
-
-import textwrap
-from typing import Any, Callable, Dict
 
 import numpy as np
 import pytest
-from deisa.core import Window
+from utils import _analyze, _scalar
 
-from deisa.dask.branch import _analyze_callback_for_branches
-from deisa.dask.deisa import Deisa
 from deisa.dask.precompute_analyzer import (
     NoPrecomputableReductionError,
     RawFieldReadError,
     UnsupportedReductionError,
 )
 
-META = {"f": {"global_shape": (8, 8), "chunk_shape": (4, 4)}}
 META_A = {"a": {"global_shape": (8, 8), "chunk_shape": (4, 4)}}
-
-
-def _make_callback(name: str, body: str, params: str = "arr") -> Callable:
-    """Compile ``def <name>(<params>): <body>`` and return the function with ``__source__`` set.
-
-    Mirrors the helper in test_chain.py so ``analyze_callback`` can walk the source.
-    """
-    src = textwrap.dedent(f"def {name}({params}):\n{textwrap.indent(body, '    ')}")
-    scope: Dict[str, Any] = {}
-    exec(compile(src, f"<analyzer_regression:{name}>", "exec"), scope)
-    fn = scope[name]
-    fn.__source__ = src  # type: ignore[attr-defined]
-    return fn
-
-
-def _analyze(body: str, params: str = "arr", name: str = "analyze_cb", meta: Dict[str, Any] = META) -> Any:
-    cb = _make_callback(name, body, params=params)
-    return _analyze_callback_for_branches(cb, meta)
-
-
-def _scalar(value: Any) -> float:
-    """Unwrap a keepdims partial to a scalar."""
-    return float(np.asarray(value).reshape(-1)[0])
+META_AB = {
+    "a": {"global_shape": (8, 8), "chunk_shape": (4, 4)},
+    "b": {"global_shape": (8, 8), "chunk_shape": (4, 4)},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -188,83 +165,46 @@ def test_partial_metadata_scalar_full_reduction():
 
 
 # ---------------------------------------------------------------------------
-# registration stores the payload only after analysis succeeds
+# multi-array callbacks: per-array attribution and distinct output keys
 # ---------------------------------------------------------------------------
-class _FakeClient:
-    """Minimal client surface used by Deisa._register_callback_impl."""
+def test_multiarray_one_branch_per_array_with_distinct_output_keys():
+    """Two-array callback emits one branch per array with correct ``input_name`` and distinct ``output_key`` values.
 
-    def __init__(self):
-        self.subscribed = []
-
-    def subscribe_topic(self, name, handler):  # noqa: D102
-        self.subscribed.append(name)
-
-    def close(self):  # noqa: D102
-        pass
-
-
-class _FakeHandshake:
-    """Minimal handshake surface used by Deisa._register_callback_impl."""
-
-    def __init__(self):
-        self.branches: Dict[str, Any] = {}
-
-    def set_task_branches(self, array_name, hints):  # noqa: D102
-        self.branches[array_name] = hints
-
-
-def _make_deisa_stub() -> Deisa:
-    """A Deisa instance with the registration surfaces stubbed (no cluster)."""
-    d = Deisa.__new__(Deisa)
-    d.client = _FakeClient()
-    d.handshake = _FakeHandshake()
-    d.arrays_metadata = META_A
-    d._callbacks = {}
-    d._callbacks_by_array = {}
-    d._topic_handlers = {}
-    d._callback_reductions = {}
-    d._callback_seq = 0
-    d._branch_groups = {}
-    d._tasks = set()
-    d._execute_callbacks_called = False
-    return d
-
-
-def test_registration_success_stores_callback_payload():
-    """A successful registration stores the payload in ``_callbacks``.
-
-    The topic handler can only fire a callback whose payload lives in ``_callbacks``; it must be stored once every step
-    that can raise has succeeded.
+    ``arr_a.sum() + arr_b.sum()`` must produce exactly one branch rooted at ``a`` (key ``a-sum``) and one rooted at
+    ``b`` (key ``b-sum``). This merges the grouping assertion of ``test_multiarray_one_branch_per_array`` with the
+    distinct-keys assertion of ``test_multiarray_two_reductions_distinct_output_keys``.
     """
-    d = _make_deisa_stub()
-    cb = _make_callback("reg_ok", "s = arr.sum()\nreturn s.compute()")
-    cid = d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
-    assert cid in d._callbacks
-    assert d._callbacks[cid]["callback"] is cb
-    assert d._callbacks[cid]["array_names"] == ["a"]
-    assert cid in d._callbacks_by_array["a"]
-    # Topic subscription happened for the registered array.
-    assert "a" in d.client.subscribed
-    # Branches are merged in memory at registration; the handshake actor is
-    # filed only by execute_callbacks (the per-cycle filing boundary).
-    assert d._branch_groups["a"]
-    d._flush_branches_to_handshake()
-    assert d.handshake.branches["a"]
+    branches = _analyze(
+        "sa = arr_a.sum()\nsb = arr_b.sum()\nreturn sa.compute(), sb.compute()",
+        params="arr_a, arr_b",
+        meta=META_AB,
+    )
+    assert sorted(b.output_key for b in branches) == ["a-sum", "b-sum"]
+    branches_a = [b for b in branches if b.input_name == "a"]
+    branches_b = [b for b in branches if b.input_name == "b"]
+    assert len(branches_a) == 1
+    assert len(branches_b) == 1
+    assert branches_a[0].output_key == "a-sum"
+    assert branches_b[0].output_key == "b-sum"
 
 
-def test_registration_failure_leaves_no_trace():
-    """A registration whose analysis raises leaks nothing.
+def test_multiarray_branch_func_computes_own_reduction():
+    """Each branch in a two-array callback computes its OWN array's reduction on a known chunk.
 
-    ``_callbacks[callback_id]`` is written only AFTER the analysis; a raising analysis must leave no half-registered
-    entry that ``unregister_callback`` could never reach.
+    ``a-sum`` runs ``sum`` over an ``arr_a`` chunk; ``b-sum`` runs ``sum`` over an ``arr_b`` chunk. Regression: before
+    per-array attribution both branches folded the same array's data.
     """
-    d = _make_deisa_stub()
-    cb = _make_callback("reg_fail", "s = (arr - arr.mean()).sum()\nreturn s.compute()")
-    with pytest.raises(UnsupportedReductionError):
-        d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
-    assert d._callbacks == {}
-    assert d._callbacks_by_array == {}
-    assert d.client.subscribed == []
+    branches = _analyze(
+        "sa = arr_a.sum()\nsb = arr_b.sum()\nreturn sa.compute(), sb.compute()",
+        params="arr_a, arr_b",
+        meta=META_AB,
+    )
+    by_key = {b.output_key: b for b in branches}
+    assert set(by_key) == {"a-sum", "b-sum"}
+    chunk_a = np.arange(16.0).reshape(4, 4)
+    chunk_b = chunk_a + 16.0
+    assert np.isclose(_scalar(by_key["a-sum"].branch_func(chunk_a)), float(chunk_a.sum()))
+    assert np.isclose(_scalar(by_key["b-sum"].branch_func(chunk_b)), float(chunk_b.sum()))
 
 
 # ---------------------------------------------------------------------------
@@ -359,28 +299,3 @@ def test_attribute_reads_on_raw_data_allowed():
     """Attribute (metadata) reads -- ``arr.ndim``, f-strings in logs -- do not taint."""
     branches = _analyze("y = arr.ndim\ns = arr.sum()\nreturn s.compute(), y")
     assert [b.output_key for b in branches] == ["f-sum"]
-
-
-def test_raw_refusal_does_not_merge_branch_groups():
-    """A raw-read refusal must leave no partial branch state behind at registration."""
-    d = _make_deisa_stub()
-    cb = _make_callback("reg_raw_fail", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
-    with pytest.raises(RawFieldReadError):
-        d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=True)
-    # Same no-trace contract as the UnsupportedReductionError case.
-    assert d._callbacks == {}
-    assert d._callbacks_by_array == {}
-    assert d._branch_groups == {}
-    assert d.client.subscribed == []
-
-
-def test_precompute_false_allows_raw_reads_with_warning(caplog):
-    """``precompute=False`` skips the analysis entirely: raw reads are allowed with a warning."""
-    d = _make_deisa_stub()
-    cb = _make_callback("reg_raw_ok", "plot(arr)\ns = arr.sum()\nreturn s.compute()")
-    import logging
-
-    with caplog.at_level(logging.WARNING):
-        cid = d._register_callback_impl(cb, [Window("a", size=1)], exception_handler=None, when="AND", precompute=False)
-    assert cid in d._callbacks
-    assert "full-chunk scatter path" in caplog.text
