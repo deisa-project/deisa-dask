@@ -184,12 +184,11 @@ class TestPrecomputeMemory:
         logging.warning(f"PRECOMPUTE TEST ({op}): per-worker max key nbytes: {after_max_per_worker}")
         logging.warning(f"PRECOMPUTE TEST ({op}): per-worker keys: {after}")
 
-        # The full chunk is 32 MB; the partial is a scalar/dict-blob (~8-32
-        # bytes). Allow some slack for numpy wrapping, but keep it ~5000x
-        # smaller than the chunk.
-        max_allowed = 64 * 1024  # 64 KB
+        # The full chunk is 32 MB; the partial is a scalar/dict-blob (~8 bytes).
+        # Allow some slack for numpy wrapping, but keep it ~5000x smaller than the chunk.
+        max_allowed = 8  # bytes
         for worker, max_nbytes in after_max_per_worker.items():
-            assert max_nbytes < max_allowed, (
+            assert max_nbytes <= max_allowed, (
                 f"Worker {worker} holds a key of {max_nbytes} bytes; "
                 f"expected only the small partial (< {max_allowed} bytes). "
                 f"Full chunk appears to have landed on the worker -- precompute "
