@@ -19,20 +19,15 @@ Types of changes:
 ### Added
 
 - CI: continuous benchmark using Bencher.
-- Precompute: callbacks whose reductions are chunk-local (`sum`, `mean`, `var`, `std`,
-  `min`, `max`, `prod`) are analysed at registration time and shipped to Dask workers as
-  small per-bridge partials instead of the full array chunk. Branches are registered per
-  array, so a multi-array callback gets one branch set per array. Expressions whose
-  reduction depends on another reduction's output are refused with
-  `UnsupportedReductionError`.
+- Bridge-local precompute: callbacks whose compute operations are chunk-local reductions (`sum`, `mean`, `var`, `std`, 
+  `min`, `max`, `prod`) are analyzed at registration time and shipped to Dask workers as small per-bridge partials 
+  instead of the full array chunk. Branches are registered per array, so a multi-array callback gets one branch set per 
+  array. Expressions whose reduction depends on another reduction's output are refused with`UnsupportedReductionError`.
 
 ### Fixed
 
 - Missing first callback(s) due to not waiting for `Deisa.execute_callbacks()`
 - Deisa: avoid exceptions raised from `__del__()`
-- Precompute: analyze branches on the synchronous scheduler, so branch analysis
-  never blocks on an ambient distributed `Client` (a stale client left by the
-  surrounding process made analysis hang instead of failing fast).
 
 ## [0.6.3]
 
