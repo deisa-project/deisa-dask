@@ -242,7 +242,7 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark, env_setup):
         def deisa_side():
             deisa = Deisa(feedback_queue_size=1024, timeout=60)
 
-            @deisa.register(array_name)
+            @deisa.register(array_name, precompute=False)
             def timed_callback(window):
                 # Deisa passes a list of DeisaArray (one per registered array
                 # name); window[0] is the GLOBAL dask array. Materialize it to
