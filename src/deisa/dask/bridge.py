@@ -622,6 +622,9 @@ class Bridge(IBridge):
         """Scatter data to workers and return the legacy ``{"future", "who_has", "nbytes"}`` result."""
         logger.debug(f"[{self.id}] scatter to {workers}")
 
+        if workers is None:
+            workers = list(self.workers)
+
         if self.client:
             return self.client.sync(self._scatter_blocking, workers, data, hash=hash)
         else:
