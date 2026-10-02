@@ -29,6 +29,7 @@
 import asyncio
 import logging
 import sys
+import time
 import uuid
 import zlib
 from collections import defaultdict, deque
@@ -39,8 +40,10 @@ import numpy as np
 from deisa.core import IBridge, ICommunicator, validate_arrays_metadata
 from distributed import Client, Event, Queue
 from distributed.protocol import to_serialize
+from distributed.sizeof import safe_sizeof as sizeof
 from distributed.utils_comm import scatter_to_workers
-from tlz import valmap
+from distributed.worker import _global_workers
+from distributed.worker_state_machine import RemoveReplicasEvent
 
 from dask.tokenize import tokenize
 from deisa.dask.branch import BranchSpec
@@ -308,8 +311,12 @@ class Bridge(IBridge):
         - ``:param timestep:`` The current timestep associated to the sent data chunk.
         - ``:param args:`` Additional positional arguments if required by the method implementation.
         - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported kwargs: update_workers (bool), filter_workers (callable).
-        - ``:return:`` None
+            Supported keys include:
+            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+            - `filter_workers` (callable): A function that filters the available workers
+              and returns a list of worker names. Must return a non-empty list of strings.
+
+        - ``:return:`` None.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
 
@@ -587,7 +594,7 @@ class Bridge(IBridge):
         logger.debug(f"[{self.id}] scatter to {workers}")
 
         if workers is None:
-            workers = self.workers
+            workers = list(self.workers.keys())
 
         if self.client:
             return self.client.sync(self._scatter_blocking, workers, data, hash=hash)
@@ -618,9 +625,12 @@ class Bridge(IBridge):
 
         assert isinstance(data, dict)
 
-        data2 = valmap(to_serialize, data)
-
-        _, who_has, nbytes = await scatter_to_workers(list(workers), data2)
+        _, who_has, nbytes = await self._better_scatter_to_workers(
+            workers,
+            data,
+            scheduler=self.client.scheduler if self.client else None,
+            client_id=self.client.id if self.client else None,
+        )
 
         out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
 
@@ -635,9 +645,16 @@ class Bridge(IBridge):
     async def _scatter_to_workers_async(self, workers: List[str], data: Dict[str, Any]):
         """Scatter an already-keyed payload dict to ``workers``; returns ``(who_has, nbytes)``.
 
-        Used on the precompute path, which builds its own payload keys and only needs the scheduling pair.
+        Used on the precompute path, which builds its own payload keys and only needs the scheduling pair. Goes through
+        :meth:`_better_scatter_to_workers` so an in-process worker receives the partials zero-copied; ``data`` must
+        therefore NOT be pre-serialized here -- the remote branch serializes only the entries it actually ships.
         """
-        _, who_has, nbytes = await scatter_to_workers(list(workers), data)
+        _, who_has, nbytes = await self._better_scatter_to_workers(
+            workers,
+            data,
+            scheduler=self.client.scheduler if self.client else None,
+            client_id=self.client.id if self.client else None,
+        )
         return who_has, nbytes
 
     def _fetch_branches_bcast(self, array_name: str) -> Optional[List[BranchSpec]]:
@@ -749,15 +766,13 @@ class Bridge(IBridge):
                 "op_name": branch.op_name,
             }
 
-        # Serialize for scatter (handles numpy arrays in dict values).
-        payload2 = valmap(to_serialize, payload)
-
-        # scatter_to_workers directly for the (who_has, nbytes) pair. client.sync when a Client is available,
-        # asyncio.run otherwise (only rank 0 has a Client).
+        # Serialize only what actually leaves the process: _scatter_to_workers_async -> _better_scatter_to_workers
+        # writes RAW values into an in-process worker's store (zero-copy) and wraps just its remote entries in
+        # to_serialize. Pre-serializing here would defeat the zero-copy path.
         if self.client is not None:
-            who_has, nbytes = self.client.sync(self._scatter_to_workers_async, [target_worker], payload2)
+            who_has, nbytes = self.client.sync(self._scatter_to_workers_async, [target_worker], payload)
         else:
-            who_has, nbytes = asyncio.run(self._scatter_to_workers_async([target_worker], payload2))
+            who_has, nbytes = asyncio.run(self._scatter_to_workers_async([target_worker], payload))
 
         future_keys = list(payload.keys())
         return {
@@ -799,6 +814,135 @@ class Bridge(IBridge):
 
         logger.debug(f"[{self.id}] _execute_operations_on_chunk: {partials}")
         return partials
+
+    async def _better_scatter_to_workers(self, workers, data, scheduler=None, client_id: Optional[str] = None):
+        """Scatter ``data`` to ``workers``, zero-copy for in-process workers.
+
+        Workers found in ``_global_workers`` (same process as this bridge) get the value reference written
+        directly into their store via ``worker.update_data`` -- no serialization, no network. All other
+        workers fall back to the distributed ``scatter_to_workers`` path with serialized payloads.
+
+        - ``:param workers:`` The worker addresses to scatter to (one key per worker, round-robin).
+        - ``:param data:`` The ``{key: value}`` payload to scatter. Values must be RAW: the local branch writes the
+            reference itself and only the remote branch wraps its entries in ``to_serialize``.
+        - ``:param scheduler:`` The scheduler proxy to report the local keys to (None skips the report).
+        - ``:param client_id:`` The reporting client's id, forwarded to ``scheduler.update_data``.
+        - ``:return:`` ``(names, who_has, nbytes)`` -- dask's ``scatter_to_workers`` contract. ``nbytes`` comes from
+            dask's ``sizeof`` on both branches so the scheduler's accounting matches what the workers report.
+        """
+
+        assert isinstance(data, dict)
+
+        local_worker_map = {w.address: w for w in _global_workers}
+
+        # deterministic ordering
+        workers = sorted(workers)
+        names = list(data.keys())
+        values = list(data.values())
+
+        # assign workers round-robin
+        entries = [(workers[i % len(workers)], names[i], values[i]) for i in range(len(names))]
+
+        who_has = {}
+        nbytes = {}
+
+        local_entries = []
+        remote_entries = []
+
+        for w, k, v in entries:
+            (local_entries if w in local_worker_map else remote_entries).append((w, k, v))
+
+        # -----------------------
+        # Local (zero-copy path)
+        # -----------------------
+        if local_entries:
+            scheduler_who_has = {}
+            scheduler_nbytes = {}
+
+            written = []
+            try:
+                for addr, key, val in local_entries:
+                    worker = local_worker_map[addr]
+                    worker.update_data({key: val})
+
+                    # Record BEFORE the zero-copy assert: ``update_data`` has already committed, so the key is in the
+                    # store from here on. The assert below is one of the ways this loop can raise, and a key missing
+                    # from ``written`` would be exactly the orphan the compensation exists to prevent.
+                    written.append((addr, key))
+
+                    assert id(worker.data[key]) == id(val), f"In-process scatter copied data: id(orig)={id(val)}"
+
+                    size = sizeof(val)
+
+                    who_has[key] = [addr]
+                    nbytes[key] = size
+
+                    scheduler_who_has[key] = [addr]
+                    scheduler_nbytes[key] = size
+
+                if scheduler is not None:
+                    await scheduler.update_data(
+                        who_has=scheduler_who_has,
+                        nbytes=scheduler_nbytes,
+                        client=client_id,
+                    )
+            except BaseException:
+                # The worker store is written before the scheduler hears about it, so a raise in between (or in the
+                # report itself) orphans every key written so far: the worker holds bytes the scheduler never
+                # accounts for, and the scheduler may already know about a subset. Compensate by releasing the local
+                # writes; a key the scheduler did learn about is then harmlessly redundant and gets dropped.
+                #
+                # BaseException, not Exception: the divergence window is real for CancelledError / KeyboardInterrupt
+                # too (the writes are synchronous and already committed), so those must be compensated as well rather
+                # than leaving an orphan behind. ``_release_local_keys`` never re-raises, so the original exception
+                # always propagates.
+                _release_local_keys(local_worker_map, written, bridge_id=self.id)
+                raise
+
+        # -----------------------
+        # Remote (distributed path)
+        # -----------------------
+        if remote_entries:
+            remote_workers = sorted({w for w, _, _ in remote_entries})
+
+            remote_data = {k: to_serialize(v) for _, k, v in remote_entries}
+
+            _, remote_who_has, remote_nbytes = await scatter_to_workers(remote_workers, remote_data)
+
+            who_has.update(remote_who_has)
+            nbytes.update(remote_nbytes)
+
+        return names, who_has, nbytes
+
+
+def _release_local_keys(local_worker_map: Mapping[str, Any], written: List[tuple], bridge_id: Any = None) -> None:
+    """Drop ``written`` ``(addr, key)`` entries from their in-process worker stores.
+
+    Compensation for a scatter that failed between the local write and the scheduler report. Releasing through the
+    worker's own state machine (``RemoveReplicasEvent`` -> ``released`` transition) keeps the worker state, its memory
+    accounting and its spill buffer consistent; a bare ``worker.data.pop`` would leave the task in ``memory`` forever.
+
+    - ``:param local_worker_map:`` ``{worker_address: Worker}`` for the in-process workers.
+    - ``:param written:`` The ``(addr, key)`` pairs already written to a worker store.
+    - ``:param bridge_id:`` The owning bridge's rank, for the log line only.
+    - ``:return:`` None.
+
+    Best-effort: a release that itself fails must not mask the original failure, so errors are logged and swallowed.
+    """
+    by_addr: Dict[str, List[str]] = defaultdict(list)
+    for addr, key in written:
+        by_addr[addr].append(key)
+
+    for addr, keys in by_addr.items():
+        worker = local_worker_map[addr]
+        try:
+            worker.handle_stimulus(RemoveReplicasEvent(stimulus_id=f"deisa-scatter-rollback-{time.time()}", keys=keys))
+        except Exception:
+            logger.warning(
+                f"[{bridge_id}] _release_local_keys: could not release {len(keys)} key(s) from in-process worker "
+                f"{addr}: the worker may hold untracked data",
+                exc_info=True,
+            )
 
 
 def _build_futures_payload(meta: Mapping[str, Mapping[str, Any]], chunk_position: Any) -> List[Dict[str, Any]]:

@@ -133,6 +133,8 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
     def work():
         logging.basicConfig(level=logging.DEBUG)
 
+        error = False
+
         deisa = Deisa(timeout=10)
 
         print(f"deisa={deisa}: deisa.arrays_metadata={deisa.arrays_metadata}", flush=True)
@@ -140,8 +142,8 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         deisa.set("hello", "world", timestep=1)
 
         def exception_handler(exception: BaseException):
-            print(f"exception_handler: exception={exception}", flush=True)
-            pytest.fail("exception thrown in callback")  # TODO: this should fail the test
+            print(f"====================== exception_handler: exception={exception}", flush=True, file=sys.stderr)
+            raise exception
 
         @deisa.register("temperature", exception_handler=exception_handler)
         def cb(window):
@@ -153,7 +155,8 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
             )
 
         deisa.execute_callbacks()
-        return 0
+
+        return 0 if not error else 1
 
     pool = ThreadPool(processes=1)
 
