@@ -26,6 +26,13 @@ Types of changes:
 
 ### Fixed
 
+- Bridge: `asyncio.run()` is no longer called with a running event loop. On the no-client path
+  (`_scatter_full`, `_scatter_partials`), a loop left running on the calling thread during teardown made
+  `asyncio.run` raise `RuntimeError: asyncio.run() cannot be called from a running event loop`, surfacing as
+  spurious "Error while closing bridges" errors during teardown. The scatter path now runs the coroutine through
+  `Bridge._run_async`: `asyncio.run` when the thread has no running loop, otherwise
+  `deisa.dask.utils.run_coro_on_private_loop`, which hosts a fresh loop on a short-lived worker thread (blocking
+  the caller's running loop would deadlock, since a running loop cannot be re-entered).
 - Missing first callback(s) due to not waiting for `Deisa.execute_callbacks()`
 - Deisa: avoid exceptions raised from `__del__()`
 
