@@ -61,11 +61,11 @@ except ImportError:
     _UNDEFINED = 2147483647
 
 
-def _run_coro_on_private_loop(coro, caller_loop):
+def _run_coro_on_private_loop(coro):
     """Run ``coro`` on a private event loop hosted by a short-lived worker thread.
 
-    Needed when ``caller_loop`` is running on the calling thread: blocking that
-    thread on ``caller_loop.run_until_complete(coro)`` would deadlock, because a
+    Needed when the calling thread already has a running event loop: blocking
+    that thread on ``loop.run_until_complete(coro)`` would deadlock, because a
     running loop cannot be re-entered. A dedicated thread with its own loop is
     unaffected by whatever the caller is doing, so the coroutine completes and
     the caller blocks only on the future's result.
@@ -638,16 +638,16 @@ class Bridge(IBridge):
         Use the existing loop when there is one, and ``asyncio.run`` otherwise.
         """
         try:
-            loop = asyncio.get_running_loop()
+            # Probe for a running loop on this thread. We are in synchronous code, so a
+            # running loop here cannot make progress while we block on run_until_complete --
+            # that would deadlock. Hand the coroutine to a private loop on a worker thread
+            # instead, which runs concurrently with the caller's loop.
+            asyncio.get_running_loop()
         except RuntimeError:
             # No loop on this thread: asyncio.run is safe and needs no cleanup.
             return asyncio.run(coro)
 
-        # A loop IS running here. We are in synchronous code on this thread, so
-        # the loop cannot make progress while we block on run_until_complete --
-        # that would deadlock. Hand the coroutine to a private loop on a worker
-        # thread instead, which runs concurrently with the caller's loop.
-        return _run_coro_on_private_loop(coro, loop)
+        return _run_coro_on_private_loop(coro)
 
     async def _scatter_blocking(self, workers, data, hash=False):
         """Scatter ``data`` to ``workers`` and return the legacy per-key result (one future key per element)."""
