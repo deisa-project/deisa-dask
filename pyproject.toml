@@ -18,7 +18,8 @@ dependencies = [
     "dask>=2024.9.0",
     "distributed",
     "toolz",
-    "numpy"
+    "numpy",
+    "mpi4py",
 ]
 
 [project.optional-dependencies]
@@ -27,9 +28,6 @@ test = [
     "pytest-retry",
     "pytest-timeout",
     "pytest-xdist"
-]
-mpi = [
-    "mpi4py"
 ]
 benchmark = [
     "pytest",

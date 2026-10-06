@@ -56,7 +56,8 @@ try:
     from mpi4py import MPI
 
     _UNDEFINED = MPI.UNDEFINED
-except ImportError:
+except Exception:
+    logger.warning("mpi4py not available.")
     _UNDEFINED = 2147483647
 
 
