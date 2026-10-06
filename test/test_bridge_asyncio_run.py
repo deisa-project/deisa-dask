@@ -1,12 +1,10 @@
 """Regression test: ``asyncio.run`` must not be called with a running loop.
 
-Before this fix, ``Bridge._scatter_full`` and ``Bridge._direct_send`` called
-``asyncio.run(...)`` directly on the no-client path. ``asyncio.run`` raises
-``RuntimeError: asyncio.run() cannot be called from a running event loop`` when
-the calling thread already has a running loop, which happens during bridge
-teardown. That surfaced as ``ERROR:TestSimulator:Error while closing bridges:
-asyncio.run() cannot be called from a running event loop`` and left the
-``test_register_callback`` family reporting spurious teardown errors.
+Before this fix, ``Bridge._scatter_full`` and ``Bridge._direct_send`` called ``asyncio.run(...)`` directly on the
+no-client path. ``asyncio.run`` raises ``RuntimeError: asyncio.run() cannot be called from a running event loop`` when
+the calling thread already has a running loop, which happens during bridge teardown.
+That surfaced as ``ERROR:TestSimulator:Error while closing bridges: asyncio.run() cannot be called from a running event
+loop`` and left the ``test_register_callback`` family reporting spurious teardown errors.
 
 These tests exercise the helpers directly and through the real code paths, so a
 regression fails here instead of surfacing as flaky teardown noise.
@@ -48,10 +46,9 @@ def test_run_async_with_a_running_loop_does_not_raise():
 def test_scatter_full_no_client_path_under_a_running_loop():
     """The real call site: ``_scatter_full`` must survive a running loop.
 
-    ``_scatter_full`` is what bridge teardown reaches on the no-client path, so it is where
-    ``asyncio.run`` used to raise. Covering only ``_run_async`` is not enough: a change that fixed
-    the helper while leaving a call site on bare ``asyncio.run`` would still pass and still fail in
-    production.
+    ``_scatter_full`` is what bridge teardown reaches on the no-client path, so it is where ``asyncio.run`` used to
+    raise. Covering only ``_run_async`` is not enough: a change that fixed the helper while leaving a call site on bare
+    ``asyncio.run`` would still pass and still fail in production.
     """
     bridge = Bridge.__new__(Bridge)  # no __init__: no cluster, no comm
     bridge.client = None  # force the no-client branch
@@ -80,10 +77,9 @@ def test_scatter_full_no_client_path_under_a_running_loop():
 def test_scatter_partials_no_client_path_under_a_running_loop():
     """Second real call site: ``_scatter_partials`` must survive a running loop.
 
-    ``_scatter_partials`` also scattered via bare ``asyncio.run`` on the no-client path (the
-    precomputed-partials send used by the mergeable reductions). Covering only ``_scatter_full``
-    leaves this site unprotected: a change that reintroduced ``asyncio.run`` here would pass the
-    other tests and still fail in production.
+    ``_scatter_partials`` also scattered via bare ``asyncio.run`` on the no-client path (the precomputed-partials send
+    used by the mergeable reductions). Covering only ``_scatter_full`` leaves this site unprotected: a change that
+    reintroduced ``asyncio.run`` here would pass the other tests and still fail in production.
     """
     from deisa.dask.branch import BranchSpec
 
@@ -124,8 +120,8 @@ def test_scatter_partials_no_client_path_under_a_running_loop():
 
     asyncio.run(main())
     assert captured.get("called") is True, "the no-client partials path was not taken"
-    # The scattered keys are namespaced (KEY_PREFIX + array + output_key + uuid), so assert on
-    # membership rather than exact equality.
+    # The scattered keys are namespaced (KEY_PREFIX + array + output_key + uuid), so assert on membership rather than
+    # exact equality.
     future_keys = result["value"]["future-info"]["future"]
     assert len(future_keys) == 1 and "f-sum" in future_keys[0]
 

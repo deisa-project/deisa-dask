@@ -596,18 +596,16 @@ class Bridge(IBridge):
 
     def _run_async(self, coro):
         """Run ``coro`` to completion from synchronous code.
-
-        ``asyncio.run`` cannot be called when the calling thread already has a
-        running event loop; it raises ``RuntimeError: asyncio.run() cannot be
-        called from a running event loop``. The no-client path reaches this from
-        bridge teardown, where a loop is frequently still running on this thread.
+        ``asyncio.run`` cannot be called when the calling thread already has a running event loop; it raises
+        ``RuntimeError: asyncio.run() cannot be called from a running event loop``.
+        The no-client path reaches this from bridge teardown, where a loop is frequently still running on this thread.
         Use the existing loop when there is one, and ``asyncio.run`` otherwise.
         """
         try:
-            # Probe for a running loop on this thread. We are in synchronous code, so a
-            # running loop here cannot make progress while we block on run_until_complete --
-            # that would deadlock. Hand the coroutine to a private loop on a worker thread
-            # instead, which runs concurrently with the caller's loop.
+            # Probe for a running loop on this thread. We are in synchronous code, so a running loop here cannot make
+            # progress while we block on run_until_complete, that would deadlock.
+            # Hand the coroutine to a private loop on a worker thread instead, which runs concurrently with the caller's
+            # loop.
             asyncio.get_running_loop()
         except RuntimeError:
             # No loop on this thread: asyncio.run is safe and needs no cleanup.

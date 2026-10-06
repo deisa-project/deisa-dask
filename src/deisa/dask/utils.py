@@ -236,11 +236,10 @@ def make_precomputed_view(
 def run_coro_on_private_loop(coro):
     """Run ``coro`` on a private event loop hosted by a short-lived worker thread.
 
-    Needed when the calling thread already has a running event loop: blocking
-    that thread on ``loop.run_until_complete(coro)`` would deadlock, because a
-    running loop cannot be re-entered. A dedicated thread with its own loop is
-    unaffected by whatever the caller is doing, so the coroutine completes and
-    the caller blocks only on the future's result.
+    Needed when the calling thread already has a running event loop: blocking that thread on
+    ``loop.run_until_complete(coro)`` would deadlock, because a running loop cannot be re-entered. A dedicated thread
+    with its own loop is unaffected by whatever the caller is doing, so the coroutine completes and the caller blocks
+    only on the future's result.
     """
     result: dict = {}
 
