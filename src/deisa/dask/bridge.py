@@ -29,7 +29,6 @@
 import asyncio
 import logging
 import sys
-import threading
 import uuid
 import zlib
 from collections import defaultdict, deque
@@ -48,7 +47,7 @@ from deisa.dask.branch import BranchSpec
 from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX, WAIT_FOR_EXECUTE_CB_EVENT
 from deisa.dask.handshake import Handshake
 from deisa.dask.precompute_analyzer import PrecomputeRuntimeError
-from deisa.dask.utils import get_client
+from deisa.dask.utils import get_client, run_coro_on_private_loop
 
 logger = logging.getLogger(__name__)
 
@@ -59,39 +58,6 @@ try:
     _UNDEFINED = MPI.UNDEFINED
 except ImportError:
     _UNDEFINED = 2147483647
-
-
-def _run_coro_on_private_loop(coro):
-    """Run ``coro`` on a private event loop hosted by a short-lived worker thread.
-
-    Needed when the calling thread already has a running event loop: blocking
-    that thread on ``loop.run_until_complete(coro)`` would deadlock, because a
-    running loop cannot be re-entered. A dedicated thread with its own loop is
-    unaffected by whatever the caller is doing, so the coroutine completes and
-    the caller blocks only on the future's result.
-    """
-    result: dict = {}
-
-    def _target():
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            result["value"] = loop.run_until_complete(coro)
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller below
-            result["error"] = exc
-        finally:
-            try:
-                loop.close()
-            finally:
-                asyncio.set_event_loop(None)
-
-    thread = threading.Thread(target=_target, daemon=True, name="deisa-bridge-scatter")
-    thread.start()
-    thread.join()
-
-    if "error" in result:
-        raise result["error"]
-    return result.get("value")
 
 
 class Bridge(IBridge):
@@ -647,7 +613,7 @@ class Bridge(IBridge):
             # No loop on this thread: asyncio.run is safe and needs no cleanup.
             return asyncio.run(coro)
 
-        return _run_coro_on_private_loop(coro)
+        return run_coro_on_private_loop(coro)
 
     async def _scatter_blocking(self, workers, data, hash=False):
         """Scatter ``data`` to ``workers`` and return the legacy per-key result (one future key per element)."""

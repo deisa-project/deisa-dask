@@ -17,7 +17,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from deisa.dask.bridge import Bridge, _run_coro_on_private_loop
+from deisa.dask.bridge import Bridge
+from deisa.dask.utils import run_coro_on_private_loop
 
 
 async def _noop():
@@ -136,7 +137,7 @@ def test_private_loop_helper_propagates_exceptions():
         raise ValueError("boom")
 
     with pytest.raises(ValueError, match="boom"):
-        _run_coro_on_private_loop(boom())
+        run_coro_on_private_loop(boom())
 
 
 def test_private_loop_helper_returns_value():
@@ -146,4 +147,4 @@ def test_private_loop_helper_returns_value():
         await asyncio.sleep(0)
         return 42
 
-    assert _run_coro_on_private_loop(compute()) == 42
+    assert run_coro_on_private_loop(compute()) == 42

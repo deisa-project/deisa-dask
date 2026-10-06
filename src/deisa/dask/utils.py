@@ -26,8 +26,10 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
+import asyncio
 import logging
 import os
+import threading
 
 from deisa.core import DeisaArray, ICommunicator
 from distributed import Client, Lock, Variable
@@ -229,3 +231,36 @@ def make_precomputed_view(
     view._registered_ndim = registered_ndim
     view.__class__ = _PrecomputedDeisaArray
     return view
+
+
+def run_coro_on_private_loop(coro):
+    """Run ``coro`` on a private event loop hosted by a short-lived worker thread.
+
+    Needed when the calling thread already has a running event loop: blocking
+    that thread on ``loop.run_until_complete(coro)`` would deadlock, because a
+    running loop cannot be re-entered. A dedicated thread with its own loop is
+    unaffected by whatever the caller is doing, so the coroutine completes and
+    the caller blocks only on the future's result.
+    """
+    result: dict = {}
+
+    def _target():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            result["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller below
+            result["error"] = exc
+        finally:
+            try:
+                loop.close()
+            finally:
+                asyncio.set_event_loop(None)
+
+    thread = threading.Thread(target=_target, daemon=True, name="deisa-bridge-scatter")
+    thread.start()
+    thread.join()
+
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
