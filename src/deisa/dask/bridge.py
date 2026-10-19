@@ -47,7 +47,7 @@ from deisa.dask.branch import BranchSpec
 from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX, WAIT_FOR_EXECUTE_CB_EVENT
 from deisa.dask.handshake import Handshake
 from deisa.dask.precompute_analyzer import PrecomputeRuntimeError
-from deisa.dask.utils import get_client, run_coro_on_private_loop
+from deisa.dask.utils import called_from_event_loop, get_client, run_coro_on_private_loop
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +59,6 @@ try:
 except Exception:
     logger.warning("mpi4py not available.")
     _UNDEFINED = 2147483647
-
-
-def _called_from_event_loop() -> bool:
-    """Whether the current thread is running an asyncio event loop, i.e. we are inside a callback.
-
-    - ``:return:`` True if an event loop is running in this thread, False otherwise.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
 
 
 class Bridge(IBridge):
@@ -276,7 +264,7 @@ class Bridge(IBridge):
         if sys.is_finalizing():
             logger.debug(f"[{self.id}] Bridge.__del__ during interpreter shutdown: skipping close()")
             return
-        if _called_from_event_loop():
+        if called_from_event_loop():
             logger.debug(
                 f"[{self.id}] Bridge.__del__ from inside an event-loop callback: skipping close(), it would "
                 f"block the loop that has to service its collectives"

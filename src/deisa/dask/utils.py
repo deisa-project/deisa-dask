@@ -262,6 +262,18 @@ def make_precomputed_view(
     return view
 
 
+def called_from_event_loop() -> bool:
+    """Whether the current thread is running an asyncio event loop, i.e. we are inside a callback.
+
+    - ``:return:`` True if an event loop is running in this thread, False otherwise.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def run_coro_on_private_loop(coro):
     """Run ``coro`` on a private event loop hosted by a short-lived worker thread.
 
