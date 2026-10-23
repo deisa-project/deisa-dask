@@ -420,3 +420,43 @@ class TestPrecomputeRegressions:
         comm_state = FakeComm.State(1)
         bridge = Bridge(comm=FakeComm(comm_state, 0), arrays_metadata=arrays_metadata, wait_for_go=False)
         return bridge, arrays_metadata
+
+
+class TestBridgeClientIsNotTheProcessDefault:
+    """A bridge's internal client must not take over dask's process-global scheduler.
+
+    A ``distributed.Client`` built as a default runs ``dask.config.set(scheduler="dask.distributed")`` for its entire
+    lifetime, restoring it only in ``Client._close()``. A bridge whose cluster is gone therefore holds the
+    process-global scheduler config at ``dask.distributed`` for the length of its reconnect window (``timeout=10``),
+    and any module on the same xdist worker that pinned ``scheduler="threads"`` resolves to ``dask.distributed``, finds
+    no live client, and dies with "Requested dask.distributed scheduler but no Client active" -- the flavour of that
+    flake that landed on unrelated mergeable-PCA tests. The bridge always uses ``self.client`` explicitly, so it does
+    not need the default.
+
+    ``get_client()`` itself keeps installing the default: it is the documented way for a caller to attach to the
+    scheduler, and a bare ``.compute()`` on the arrays afterwards has to find that client.
+    """
+
+    def test_bridge_client_does_not_become_the_process_default(self, env_setup):
+        """Building a bridge leaves ``Client.current()`` on the caller's own default client."""
+        from distributed import Event
+
+        from deisa.dask.handshake import Handshake
+
+        client, _ = env_setup
+        Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
+        bridge = Bridge(
+            comm=FakeComm(FakeComm.State(1), 0),
+            arrays_metadata={"temperature": {"global_shape": (1,), "chunk_shape": (1,), "chunk_position": (0,)}},
+            wait_for_go=False,
+        )
+        try:
+            assert bridge.client is not None, "bridge id 0 should hold a client"
+            # With set_as_default=False the bridge client does not seize the process-wide Dask scheduler config.
+            # Client.current() therefore remains the test's own client (set by env_setup).
+            assert Client.current(allow_global=True).scheduler.address == client.scheduler.address, (
+                f"expected Client.current() scheduler address to match the test's client scheduler address, "
+                f"got {Client.current(allow_global=True).scheduler.address}"
+            )
+        finally:
+            bridge.close(timestep=0)

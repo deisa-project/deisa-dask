@@ -56,6 +56,16 @@ Types of changes:
   the caller's running loop would deadlock, since a running loop cannot be re-entered).
 - Missing first callback(s) due to not waiting for `Deisa.execute_callbacks()`
 - Deisa: avoid exceptions raised from `__del__()`
+- Bridge: a bridge's internal `distributed.Client` is now built with `set_as_default=False`, so it no longer
+  pins the process-global Dask scheduler at `dask.distributed` for its whole lifetime (including a 10 s
+  reconnect window against a scheduler that is already gone). Previously any module on the same xdist worker
+  that pinned `scheduler="threads"` resolved to `dask.distributed`, found no live client, and failed with
+  `RuntimeError: Requested dask.distributed scheduler but no Client active.` — the flake that landed on
+  unrelated `mergeable_pca` tests in CI. `_get_actor` scopes its client with `client.as_current()` because
+  `distributed.Lock(key)` takes no client and reads `Client.current()`. Regression test:
+  `TestBridgeClientIsNotTheProcessDefault` (fails on `main`, passes here).
+- Bridge: an idle bridge client that no longer finds its scheduler now closes itself cleanly instead of
+  holding the process-global scheduler config through the reconnect window.
 
 ## [0.6.3]
 
