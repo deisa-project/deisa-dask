@@ -120,6 +120,13 @@ class TestBridge:
         with pytest.raises(TypeError) as _:
             bridge.send("temperature", np.ones(1), timestep=0, filter_workers=filter)
 
+    @pytest.mark.parametrize("i", [1, np.array(1), np.array([1])])
+    def test_send_timestep_type(self, env_setup, i):
+        client, cluster = env_setup
+        bridge, _ = self.get_new_bridge()
+
+        bridge.send("temperature", np.ones(1), timestep=i)
+
     def test_send_filter_workers_without_update_workers_valid(self, env_setup):
         client, cluster = env_setup
         bridge, _ = self.get_new_bridge()

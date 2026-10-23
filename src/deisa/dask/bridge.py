@@ -312,7 +312,7 @@ class Bridge(IBridge):
         except Exception as e:
             logger.error(f"[{self.id}] Could not cleanly close bridge. exception={e}")
 
-    def send(self, array_name: str, chunk: np.ndarray, timestep: int, *args, **kwargs):
+    def send(self, array_name: str, chunk: np.ndarray, timestep: Union[int, np.ndarray], *args, **kwargs):
         """
         Distribute a data chunk to a Dask workers.
 
@@ -334,6 +334,16 @@ class Bridge(IBridge):
 
         if array_name not in self.arrays_metadata:
             raise ValueError(f"array {array_name} is unknown.")
+
+        # handle different types of timestep. Cast to int if necessary.
+        if isinstance(timestep, np.ndarray):
+            if timestep.ndim == 0:
+                timestep = int(timestep)
+            elif timestep.ndim == 1 and timestep.size == 1:
+                timestep = timestep.item()
+            else:
+                raise ValueError("timestep must be a scalar, a 0D array or a 1D array of size 1.")
+        assert isinstance(timestep, int)
 
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self

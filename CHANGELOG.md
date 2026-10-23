@@ -40,6 +40,7 @@ Types of changes:
   real Dask graph, so it can be inspected or `.visualize()`d; `_fit_dask` is the `.compute()` on top. The merged root
   summary is kept as `_summary_` for further merging (and for the bridge to emit), separate from the truncated public
   `components_` / `singular_values_` / `explained_variance_`, so nothing destroys mergeability mid-tree.
+- `Bridge.send()` now handles 0D ndarray and 1D `ndarray` of size 1 as the timestep argument type.
 
 ### Changed
 
