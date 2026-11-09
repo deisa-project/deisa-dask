@@ -85,7 +85,13 @@ class Deisa(IDeisa):
         # "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
         super().__init__(feedback_queue_size, *args, **kwargs)
-        self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa")
+        # ``set_as_default=False``: Deisa always uses ``self.client`` explicitly and never relies on a bare
+        # ``.compute()`` finding it. Left as the process-wide default it would hold ``dask.config["scheduler"]`` at
+        # ``dask.distributed`` for its whole lifetime -- including a reconnect window against a scheduler that is
+        # already gone -- and a leaked Deisa (garbage-collected, or whose cluster died) would then decide the
+        # scheduler for unrelated code on the same xdist worker ("Requested dask.distributed scheduler but no
+        # Client active"). Deisa is the source of the 10 s reconnect window seen in CI (timeout=10).
+        self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa", set_as_default=False)
         self.feedback_queue_size = feedback_queue_size
 
         # blocking until all bridges are ready
