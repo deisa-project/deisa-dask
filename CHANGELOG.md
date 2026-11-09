@@ -16,6 +16,9 @@ Types of changes:
 
 ## [Unreleased]
 
+### Changed
+
+- getting-started: add feedback (`bridge.get()` and `deisa.set()`)
 
 ## [0.7.0]
 
