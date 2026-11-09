@@ -1,8 +1,11 @@
+import time
+
 import numpy as np
 from mpi4py import MPI
 
 from deisa.dask import Bridge
 
+nb_timesteps = 10  # max number of iterations
 global_grid_size = (64, 64)
 mpi_parallelism = (2, 2)
 
@@ -47,10 +50,17 @@ bridge = Bridge(
     },
 )
 
-for ts in range(5):
+for ts in range(nb_timesteps):
     print(f"[{rank}] Sending timestep {ts}", flush=True)
     sigma = 0.15 + ts * 0.05
     local_data = np.exp(-(X**2 + Y**2) / (2 * sigma**2))
     bridge.send("temperature", local_data, timestep=ts)
 
-bridge.close(timestep=5)
+    # Retrieve the stop signal. When `timestep` is not provided, `get` returns the full dequeue.
+    stop = bridge.get("stop")  # `get` is non-blocking.
+    print(f"[{rank}] Received stop={stop} at timestep {ts}", flush=True)
+    if any(stop):
+        break
+    time.sleep(0.1)
+
+bridge.close(timestep=nb_timesteps)
