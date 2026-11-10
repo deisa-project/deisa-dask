@@ -27,17 +27,15 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # =============================================================================
 import asyncio
-import gc
 import logging
 import os
 import sys
 import time
-import weakref
 
 import numpy as np
 import pytest
 from distributed import Client, LocalCluster
-from utils import FakeCartComm, FakeComm, async_close_bridges, async_map
+from utils import FakeComm
 
 from deisa.dask import Bridge
 
@@ -437,19 +435,16 @@ class TestBridge:
 
     @pytest.fixture
     def env_setup_mixed_precompute(self):
-        """MIXED topology + a real registered precompute callback, driven end-to-end through one ``send()``.
+        """MIXED topology (one subprocess worker plus one in-process ``Worker`` on a ``processes=True`` cluster)
+        with a registered precompute callback, driven end-to-end through one ``send()``.
 
-        ``n_workers=1, processes=True`` (one subprocess worker) PLUS one in-process ``Worker`` dialed to the same
-        scheduler -- i.e. exactly ``env_setup_mixed``. That topology is what makes the zero-copy assertion a REAL
-        discriminator: an in-process worker on a ``processes=True``(``tcp://``), so distributed's plain
-        ``scatter_to_workers`` really serializes the value and the buffer address really moves (measured:
-        ``0x4053e430 -> 0x407ddb45``). On a ``processes=False``(``inproc://``), which does not serialize at all.
-
-        Yields ``(inproc_worker, bridge, array_name, chunk, partials_by_output_key, scatter_info, snapshot, results,
-        global_data)`` where ``partials_by_output_key`` maps each ``output_key`` to the exact partial object
-        ``_execute_operations_on_chunk`` returned (the reference the zero-copy assertion compares against), and
-        ``snapshot`` is the worker-resident state captured AT SCATTER TIME -- reading it after the callback has run
-        races with the topic handler releasing the keys.
+        The topology is what makes a zero-copy assertion discriminating: on ``processes=True`` the in-process
+        worker speaks ``tcp://``, so a serialized scatter really moves the buffer address (measured
+        ``0x4053e430 -> 0x407ddb45``); on ``processes=False`` (``inproc://``) nothing serializes and an address
+        assert would pass vacuously. Yields ``(inproc_worker, bridge, array_name, chunk, partials, scatter_info,
+        snapshot, results, global_data)`` where ``partials`` maps each ``output_key`` to the object
+        ``_execute_operations_on_chunk`` returned, and ``snapshot`` is the worker-resident state at scatter time
+        (later it races with the topic handler releasing the keys).
         """
         from distributed import Worker
         from test_precompute_memory import _make_compute_callback
@@ -472,10 +467,8 @@ class TestBridge:
         client.wait_for_workers(2, timeout=20)
 
         array_name = "temperature"
-        # A chunk big enough that "full chunk" and "partial" are unambiguous (4 KiB partial vs 2 MiB chunk),
-        # and small enough to stay fast.
-        chunk_shape = (512, 512)
-        global_shape = chunk_shape  # (1, 1) grid: one bridge owns the whole array
+        chunk_shape = (512, 512)  # 2 MiB chunk vs ~4 KiB partials: full and partial are unambiguous.
+        global_shape = chunk_shape  # one bridge owns the whole array
 
         sim = TestSimulation(
             client,
@@ -484,41 +477,35 @@ class TestBridge:
             wait_for_go=False,
         )
         bridge = sim.bridges[0]
-        assert inproc_worker.address in bridge.workers, (
-            f"in-process worker {inproc_worker.address} is not one of the bridge's workers "
-            f"{sorted(bridge.workers)}; this test is about the LOCAL branch"
-        )
+        assert inproc_worker.address in bridge.workers, "the in-process worker must be one of the bridge's workers"
 
-        # ``send()`` round-robins: ``index = (timestep + self.id) % len(workers)`` over ``sorted(workers)``. Solve for
-        # the timestep that targets the in-process worker instead of leaving placement to the half-parity round-robin.
+        # send() round-robins over sorted(workers): pick the timestep that targets the in-process worker.
         sorted_workers = sorted(bridge.workers)
         timestep = (sorted_workers.index(inproc_worker.address) - bridge.id) % len(sorted_workers)
 
-        # Capture the partial objects the bridge computes, before they are scattered.
+        # Capture the computed partials, and the chunk send() actually handed to the executor.
         recorded: dict = {}
         original_execute = bridge._execute_operations_on_chunk
 
         def _spy(chunk_arg, branches):
             partials = original_execute(chunk_arg, branches)
             recorded.update(partials)
-            # Keep a reference to the chunk the bridge really sent (the send() payload), for the residency check.
             recorded.setdefault("__chunk__", chunk_arg)
             return partials
 
         bridge._execute_operations_on_chunk = _spy
 
-        # Snapshot the worker-resident state at SCATTER time, before the topic handler can release the keys.
+        # Snapshot the worker-resident state at scatter time, before the topic handler releases the keys.
         scatter_info: dict = {}
         snapshot: dict = {}
         original_scatter_partials = bridge._scatter_partials
 
         def _spy_scatter(partials, branches, array_name_arg, workers):
-            out = original_scatter_partials(partials, branches, array_name_arg, workers)
-            scatter_info.update(out)
-
             def inspect(dask_worker):
                 return {k: (v.nbytes if hasattr(v, "nbytes") else None) for k, v in dask_worker.data.items()}
 
+            out = original_scatter_partials(partials, branches, array_name_arg, workers)
+            scatter_info.update(out)
             snapshot["per_worker"] = client.run(inspect)
             snapshot["inproc"] = {k: v for k, v in inproc_worker.data.items()}
             return out
@@ -563,20 +550,13 @@ class TestBridge:
     def test_precompute_partial_reaches_inprocess_worker_zero_copy(self, env_setup_mixed_precompute):
         """The precompute path delivers its PARTIAL to an in-process worker ZERO-COPIED.
 
-        ``send()`` with precompute-active routes through ``_scatter_partials`` -> ``_scatter_to_workers_async`` ->
-        ``_better_scatter_to_workers``. Unlike the legacy full-chunk path, the precompute payload is the small
-        per-bridge reduction partial, so this asserts all three load-bearing properties on ONE send:
-
-        1. the worker's partial buffer address is IDENTICAL to the buffer ``_execute_operations_on_chunk`` produced --
-           the value crossed no serialization boundary;
-        2. the callback's reduction equals the true reduction of the global data (numerical correctness);
-        3. the FULL CHUNK is resident on NO worker (the precompute invariant: only the partial crosses
-           bridge -> worker).
-
-        The topology is what makes assertion 1 mean anything (see ``env_setup_mixed_precompute``): the in-process
-        worker speaks ``tcp://`` and a serialized scatter WOULD move the buffer. Assertion 3 is what makes this more
-        than a copy test: a full-chunk scatter would satisfy 1 and 2 for a different reason (the chunk itself is
-        zero-copied) and fail only there.
+        ``send()`` with precompute-active routes ``_scatter_partials`` -> ``_scatter_to_workers_async`` ->
+        ``_better_scatter_to_workers``, so on one send() it asserts: (1) the worker's partial buffer address is
+        identical to what the bridge wrote -- nothing serialized; (2) the callback's reduction is the true sum of
+        the global data; (3) the full chunk is resident on no worker (only the partial may cross bridge -> worker).
+        The ``processes=True`` topology gives (1) its meaning (``tcp://`` would move the buffer), and (3) is what
+        separates this from a full-chunk scatter, which zero-copies the chunk itself and would otherwise satisfy
+        (1) and (2) vacuously.
         """
         (
             inproc_worker,
@@ -591,46 +571,30 @@ class TestBridge:
         ) = env_setup_mixed_precompute
 
         assert recorded, f"no partial was computed for {array_name!r}: the precompute path was not exercised"
-
-        # The bridge must have taken the PRECOMPUTE path (partials scattered), not the legacy full-chunk path.
-        assert bridge._task_branches.get(array_name), "bridge has no cached branch: precompute path never engaged"
+        assert bridge._task_branches.get(array_name), "bridge has no cached branch: the precompute path never engaged"
 
         future_info = scatter_info["future-info"]
         for output_key, partial in recorded.items():
-            # ``_scatter_partials`` stamps each partial key ``<prefix><array>-partial-<output_key>-<uuid>`` and reports
-            # the very same key in ``precomputed[output_key]["future"]``, so use the reported key rather than pattern
-            # matching ``who_has`` (the topic handler may already have released it).
+            # Use the key the scatter reported rather than pattern-matching who_has (may already be released).
             meta = scatter_info["precomputed"][output_key]
             key = meta["future"]
             assert key in future_info["who_has"], f"scattered key {key!r} missing from the scatter's who_has report"
             assert future_info["who_has"][key] == [inproc_worker.address], (
-                f"partial {key!r} was placed on {future_info['who_has'][key]}, but the local branch must own it on the "
-                f"in-process worker {inproc_worker.address}"
+                f"partial {key!r} must be owned by the in-process worker {inproc_worker.address}"
             )
-            assert key in snapshot["inproc"], (
-                f"partial {key!r} was reported on the in-process worker but is absent from its data store: "
-                f"{sorted(snapshot['inproc'])}"
-            )
+            assert key in snapshot["inproc"], f"partial {key!r} is absent from the in-process worker's data store"
 
             stored = snapshot["inproc"][key]
             # (1) zero-copy: the worker holds the very buffer the bridge wrote, not a deserialized copy.
             assert isinstance(stored, np.ndarray), f"expected an ndarray partial, got {type(stored)!r}"
-            assert stored.shape == partial.shape == tuple(meta["shape"]), (
-                f"partial shape changed in transit: stored {stored.shape} != computed {partial.shape} "
-                f"!= reported {tuple(meta['shape'])}"
+            assert stored.shape == partial.shape == tuple(meta["shape"]), "partial shape changed in transit"
+            assert stored.__array_interface__["data"][0] == partial.__array_interface__["data"][0], (
+                f"zero-copy failed for {output_key!r}: the buffer was serialized in transit"
             )
-            stored_addr = stored.__array_interface__["data"][0]
-            written_addr = partial.__array_interface__["data"][0]
-            assert stored_addr == written_addr, (
-                f"Zero-copy failed for partial {output_key!r}: worker holds buffer {hex(stored_addr)} but the bridge "
-                f"wrote {hex(written_addr)} -- the value was serialized in transit"
-            )
-            # Value equality too, so the address assert cannot pass on two different buffers that happen to alias.
+            # Value equality guards against two distinct buffers that happen to alias.
             assert np.array_equal(stored, partial), "worker-held partial differs in VALUE from the one computed"
 
-        # (3) the full chunk must be resident on NO worker -- neither the in-process nor the subprocess one. Size is
-        # the discriminator: the partials are 4 KiB against the 2 MiB chunk, so anything chunk-sized means the FULL
-        # CHUNK crossed the bridge -> worker boundary.
+        # (3) nothing chunk-sized may be resident on any worker: only the partials cross bridge -> worker.
         chunk_bytes = chunk.nbytes
         offenders = [
             (worker, held_key, size)
@@ -639,24 +603,13 @@ class TestBridge:
             if size is not None and size >= chunk_bytes
         ]
         assert not offenders, (
-            f"the FULL CHUNK ({chunk.shape}, {chunk_bytes} bytes) is resident on a worker: {offenders}. Only the "
-            f"partials ({[p.shape for p in recorded.values()]}, {[p.nbytes for p in recorded.values()]} bytes) may "
-            f"cross bridge -> worker."
+            f"the full chunk ({chunk.shape}, {chunk_bytes} bytes) is resident on a worker: {offenders}"
         )
 
-        # (2) numerical correctness: the callback's reduction is the true reduction of the global data.
+        # (2) numerical correctness: the callback's reduction is the true sum(axis=0) of the global data.
         assert len(results) == 1, f"expected exactly one callback invocation, got {len(results)}"
         computed, delivered_shape = results[0]
         truth = np.sum(global_data, axis=0)
-        assert np.allclose(computed, truth, rtol=1e-5, atol=1e-9), (
-            f"callback reduction {computed!r} is not the true sum(axis=0) of the global data (first values "
-            f"{np.asarray(truth)[:3]!r})"
-        )
-        # The precompute path delivers the COMBINED reduction (the (1, 512) partial with the axis reduced away), not
-        # the full array -- so the window the callback sees is the reduction shape. Assert values AND shapes.
-        assert np.asarray(computed).shape == truth.shape, (
-            f"delivered reduction shape {np.asarray(computed).shape} != truth {truth.shape}"
-        )
-        assert delivered_shape == tuple(truth.shape), (
-            f"callback saw a window of shape {delivered_shape}, expected the combined reduction shape {truth.shape}"
-        )
+        assert np.allclose(computed, truth, rtol=1e-5, atol=1e-9), "callback reduction is not the true sum"
+        assert np.asarray(computed).shape == truth.shape, "delivered reduction shape differs from the truth"
+        assert delivered_shape == tuple(truth.shape), "the callback window must be the combined reduction shape"
