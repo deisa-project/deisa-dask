@@ -1,6 +1,6 @@
 """Regression test: ``asyncio.run`` must not be called with a running loop.
 
-Before this fix, ``Bridge._scatter_full`` and ``Bridge._direct_send`` called ``asyncio.run(...)`` directly on the
+Before this fix, ``Bridge._scatter_full`` and the single-bridge publish path called ``asyncio.run(...)`` directly on the
 no-client path. ``asyncio.run`` raises ``RuntimeError: asyncio.run() cannot be called from a running event loop`` when
 the calling thread already has a running loop, which happens during bridge teardown.
 That surfaced as ``ERROR:TestSimulator:Error while closing bridges: asyncio.run() cannot be called from a running event

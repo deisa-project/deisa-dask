@@ -89,7 +89,7 @@ class TestSingleBridge:
             assert bridge._array_comms[key].Get_size() == 1
 
     def test_single_bridge_fast_path(self, env_setup):
-        """Single-bridge array uses _direct_send (no gather)."""
+        """Single-bridge array publishes directly (no gather)."""
         client, cluster = env_setup
 
         arrays_metadata = _meta("temperature", (0,), (1,), (1,))

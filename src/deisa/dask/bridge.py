@@ -319,22 +319,31 @@ class Bridge(IBridge):
         """
         Distribute a data chunk to a Dask workers.
 
-        Scatters the chunk to the next worker (round-robin), then gathers all
-        chunks metadata to bridge rank 0, which updates the Dask scheduler.
+        Scatters the chunk to the next worker (round-robin), then gathers all chunks metadata to bridge rank 0,
+        which updates the Dask scheduler.
 
-        For single-bridge arrays (sub_comm_size == 1), skips the gather entirely
-        and updates the scheduler directly.
+        ``send`` is a three-stage pipeline with ONE implementation per stage:
+
+        1) ``_select_workers`` resolves the round-robin target (the only place the ``update_workers``/``filter_workers``
+        kwargs are read; the refresh broadcast keeps its position in the collective order).
+
+        2) ``_ship_chunk`` runs the data plane: branch-func reductions on the local numpy chunk, then the
+        partials scatter, or the full-chunk scatter when no branch produced a partial (backwards compatibility).
+
+        3) ``_publish_metadata`` runs the control plane: the per-bridge slice is published directly on a single-bridge
+        array (sub_comm_size == 1) or gathered first, then a single shared tail merges, updates the scheduler and
+        emits the topic event.
 
         - ``:param array_name:`` The name of the data array being sent as a string.
         - ``:param chunk:`` A numpy ndarray containing the data chunk to be sent to the workers.
         - ``:param timestep:`` The current timestep associated to the sent data chunk.
         - ``:param args:`` Additional positional arguments if required by the method implementation.
         - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported keys include:
-            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
-            - `filter_workers` (callable): A function that filters the available workers
-              and returns a list of worker names. Must return a non-empty list of strings.
+        Supported keys include:
 
+        - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+        - `filter_workers` (callable): A function that filters the available workers and returns a list of worker names.
+        Must return a non-empty list of strings.
         - ``:return:`` None.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
@@ -352,6 +361,37 @@ class Bridge(IBridge):
                 raise ValueError("timestep must be a scalar, a 0D array or a 1D array of size 1.")
         assert isinstance(timestep, int)
 
+        workers = self._select_workers(array_name, timestep, **kwargs)
+
+        # Determine communicator from cached sub-comms (from comm.Split())
+        sub_comm = self._array_comms.get(array_name)
+
+        if sub_comm == _COMM_NULL:
+            # This rank doesn't participate in this array
+            logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
+            return
+
+        # Data plane: local reductions then ship ONLY the tiny partials when branches produced any (the full chunk
+        # never enters worker memory), else the full-chunk scatter for non-reduction callbacks.
+        res, precomputed_meta = self._ship_chunk(array_name, chunk, workers)
+
+        # Control plane: rank 0 merges every bridge's slice and publishes the topic event.
+        self._publish_metadata(array_name, res, precomputed_meta, chunk, timestep, sub_comm)
+
+        # TODO: what to do if error ?
+
+    def _select_workers(self, array_name: str, timestep: int, **kwargs) -> List[str]:
+        """Pick the ONE worker this bridge's chunk goes to: round-robin over the sorted worker list.
+
+        ``send()``'s whole worker axis lives here, at its original position -- before the participation check -- so
+        the optional ``update_workers`` refresh (one sub-comm broadcast, entered by every rank of the array) keeps
+        its place in the collective order. The caller's ``filter_workers`` keeps its validation contract: a filter
+        that does not return a non-empty list of strings raises ``TypeError``.
+
+        - ``:param array_name:`` Registered array the send is for; its sub-comm carries the refresh broadcast.
+        - ``:param timestep:`` The current timestep, which picks the worker together with the bridge id.
+        - ``:param kwargs:`` ``send()``'s optional kwargs: ``update_workers`` (bool), ``filter_workers`` (callable).
+        """
         assert isinstance(self.workers, dict)
         workers = dict(self.workers)  # make a copy so that the user-defined function does not modify self
 
@@ -389,186 +429,140 @@ class Bridge(IBridge):
         workers = [workers[index]]
 
         assert len(workers) == 1, "worker list should be of length 1."
+        return workers
 
-        # Determine communicator from cached sub-comms (from comm.Split())
-        sub_comm = self._array_comms.get(array_name)
+    def _ship_chunk(self, array_name: str, chunk: np.ndarray, workers: List[str]) -> tuple:
+        """Run the data plane of ``send()``: local reductions, then partials, else the full chunk.
 
-        if sub_comm == _COMM_NULL:
-            # This rank doesn't participate in this array
-            logger.debug(f"[{self.id}] send() rank not in participating set for '{array_name}', skipping")
-            return
-
-        # Execute branch funcs locally on the numpy chunk (running on participating ranks only -- the ``_COMM_NULL``
-        # early return above exits first), then ship ONLY the tiny partials; the full chunk never enters worker memory.
+        - ``:param array_name:`` Registered array the send is for. Its cached branch list (when any) is computed
+          locally on ``chunk``; every produced partial is shipped to the ONE target worker and nothing more.
+        - ``:param chunk:`` This bridge's own numpy chunk.
+        - ``:param workers:`` The single target worker (see ``_select_workers``).
+        - ``:return:`` ``(res, precomputed_meta)``: ``res`` is the NORMALIZED scatter result
+          ``{"future": List[str], "who_has", "nbytes"}``, and ``precomputed_meta`` is the per-reduction
+          ``{output_key: {...}}`` map on the precompute path, empty otherwise.
+        """
         branches = self._get_task_branches(array_name)
         partials = self._execute_operations_on_chunk(chunk, branches)
 
-        # With partials: scatter them only. Without: full-chunk scatter (backwards compatibility for non-reduction
-        # callbacks).
-        precomputed_meta: Dict[str, Dict[str, Any]] = {}
         if partials:
             logger.debug(
                 f"[{self.id}] send() precompute-active: scattering {len(partials)} partials "
                 f"instead of full chunk shape={chunk.shape}"
             )
             partial_res = self._scatter_partials(partials, branches, array_name, workers=workers)
-            res = partial_res["future-info"]
-            precomputed_meta = partial_res["precomputed"]
+            res: Dict[str, Any] = partial_res["future-info"]
+            precomputed_meta: Dict[str, Dict[str, Any]] = partial_res["precomputed"]
         else:
             logger.debug(f"[{self.id}] send() precompute-inactive: scattering full chunk shape={chunk.shape}")
             res = self._scatter_full(chunk, workers=workers, hash=False)
+            precomputed_meta = {}
 
-        # Single-bridge fast-path: no collective needed
-        if sub_comm.Get_size() == 1:
-            self._direct_send(
-                array_name,
-                res,
-                chunk,
-                timestep,
-                precomputed_meta=precomputed_meta,
-            )
-            return
+        if not isinstance(res["future"], list):
+            res = {**res, "future": [res["future"]]}
+        return res, precomputed_meta
 
-        to_send = {
+    def _publish_metadata(
+        self,
+        array_name: str,
+        res: dict,
+        precomputed_meta: Dict[str, Dict[str, Any]],
+        chunk: np.ndarray,
+        timestep: int,
+        sub_comm: Any,
+    ) -> None:
+        """Publish one timestep's topic event. This will eventually trigger the user's callback.
+
+        Each side reduces to a ``piece`` (the per-bridge metadata of what was sent on the network (scatter result,
+        chunk position, precompute metadata)) published directly on a single-bridge array or gathered first on a
+        multi-bridge one.
+
+        - ``:param array_name:`` Registered array the event is for.
+        - ``:param res:`` This bridge's normalized scatter result (``{"future": List[str], "who_has", "nbytes"}``).
+        - ``:param precomputed_meta:`` The per-reduction metadata of the partials shipped by ``_ship_chunk`` (empty
+          when the full chunk was scattered instead).
+        - ``:param chunk:`` This bridge's own numpy chunk, read for the payload's shape/dtype.
+        - ``:param timestep:`` The current timestep, carried as the event's ``iteration``.
+        - ``:param sub_comm:`` The array's sub-communicator on this rank; the gather runs on it when it has peers.
+        """
+        Piece = Dict[str, Any]
+
+        piece: Piece = {
             "future-info": res,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
             "precomputed": precomputed_meta,
         }
-        logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
 
-        gathered_data = sub_comm.gather(to_send, root=0)
-
-        logger.debug(f"[{self.id}] send() gathered_data={gathered_data}")
-
-        if gathered_data:
+        pieces: List[Piece]
+        if sub_comm.Get_size() == 1:
+            assert self.client is not None, "client cannot be None for single-bridge publish."
+            # Single-bridge array: the one rank IS the whole grid, skip the gather entirely.
+            pieces = [piece]
+        else:
+            logger.debug(f"[{self.id}] send() gather: to_send={piece}")
+            gathered = sub_comm.gather(piece, root=0)
+            logger.debug(f"[{self.id}] send() gathered_data={gathered}")
+            if not gathered:
+                # Non-root rank: rank 0 publishes for the array.
+                return
             assert self.client is not None, "client cannot be None for Bridge id 0."
-            # rank 0 (root=0 in comm.gather): aggregate who_has from all partials/chunks
-            who_has = {}
-            nbytes = {}
-            keys = []
-            # Each partial set carries its OWN chunk_position: indexing filtered metadata with ``enumerate`` would
-            # misalign when a bridge shipped no partials, letting one bridge's partial inherit another bridge's
-            # coordinates (or under-count the grid) and corrupt the combine.
-            all_partials_meta: List[Dict[str, Any]] = []
-            for d in gathered_data:
-                who_has.update(d["future-info"]["who_has"])
-                nbytes.update(d["future-info"]["nbytes"])
-                future_field = d["future-info"]["future"]
-                if isinstance(future_field, list):
-                    keys.extend(future_field)
-                else:
-                    keys.append(future_field)
-                if d.get("precomputed"):
-                    all_partials_meta.append({"precomputed": d["precomputed"], "chunk_position": d["chunk_position"]})
+            pieces = gathered
 
-            # only update the scheduler with who has what and register the futures once
-            self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
+        assert self.client is not None, "client cannot be None."
 
-            # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler. TODO: id=0 can use
-            # a queue
-            self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
+        # Merge the pieces (one per participating bridge) into the array-wide state. Each piece carries its OWN
+        # chunk_position: indexing the pieces with ``enumerate`` would misalign when a bridge shipped no partials,
+        # letting one bridge's coordinates (or grid count) corrupt another's contribution.
+        who_has: Dict[str, List[str]] = {}
+        nbytes: Dict[str, int] = {}
+        keys: List[str] = []
+        precomputed_pieces: List[tuple] = []
+        for other in pieces:
+            info: Dict[str, Any] = other["future-info"]
+            who_has.update(info["who_has"])
+            nbytes.update(info["nbytes"])
+            keys.extend(info["future"])
+            if other.get("precomputed"):
+                precomputed_pieces.append((other["precomputed"], other["chunk_position"]))
 
-            # Topic event: with precompute, ``futures`` lists one entry per (bridge, reduction) pair with the partial's
-            # reduced shape/dtype; the Deisa side rebuilds the graph from these small partials.
-            futures_payload: List[Dict[str, Any]]
-            if all_partials_meta:
-                # One entry per (bridge, reduction). ``chunk_position`` is the contributing bridge's MPI coords
-                # (matching the chunk-grid layout ``mean_agg``/``moment_agg`` expect); ``chunk_axis`` is the reduction
-                # axis tuple used to compute the combine output shape.
-                futures_payload = []
-                for partial_meta in all_partials_meta:
-                    futures_payload.extend(
-                        _build_futures_payload(
-                            partial_meta["precomputed"],
-                            partial_meta["chunk_position"],
-                        )
-                    )
-            else:
-                # Full-chunk path: one entry per bridge with the full-chunk shape.
-                futures_payload = [
-                    {
-                        "future": d["future-info"]["future"][0]
-                        if isinstance(d["future-info"]["future"], list)
-                        else d["future-info"]["future"],
-                        "shape": chunk.shape,
-                        "dtype": str(chunk.dtype),
-                        "chunk_position": d["chunk_position"],
-                    }
-                    for d in gathered_data
-                ]
-
-            to_send = {
-                "array_name": array_name,
-                "iteration": timestep,
-                "precomputed": True if all_partials_meta else None,
-                "futures": futures_payload,
-            }
-            logger.debug(
-                f"[{self.id}] send() log_event: array={array_name}, "
-                f"timestep={timestep}, n_futures={len(futures_payload)}"
-            )
-            self.client.log_event(array_name, to_send)
-
-        # TODO: what to do if error ?
-
-    def _direct_send(
-        self,
-        array_name: str,
-        res: dict,
-        chunk: np.ndarray,
-        timestep: int,
-        precomputed_meta: Optional[Dict[str, Dict]] = None,
-    ):
-        """
-        Handle single-bridge array send without collective.
-
-        For arrays that exist on only one bridge, we skip the gather() entirely and directly update the Dask scheduler.
-
-        - ``:param array_name:`` The array name being sent.
-        - ``:param res:`` The scatter result (full-chunk: dict with a single ``future``;
-            precompute: dict with a list ``future`` of all partial keys).
-        - ``:param chunk:`` The numpy ndarray data chunk (kept for full-chunk shape/dtype).
-        - ``:param timestep:`` The current timestep.
-        - ``:param precomputed_meta:`` Per-partial scatter metadata
-            (``{output_key: {"future", "shape", "dtype"}}``); only set on the
-            precompute path. When provided, the topic event's ``futures`` list
-            carries the partials' reduced shapes instead of the full-chunk shape.
-        """
-        assert self.client is not None, "client cannot be None for single-bridge send."
-
-        # On the precompute path, ``res["future"]`` is a list of partial keys (one per reduction). On the non-precompute
-        # path, it's a single future key.
-        future_keys = res["future"] if isinstance(res["future"], list) else [res["future"]]
-        who_has = res["who_has"]
-        nbytes = res["nbytes"]
-
+        # only update the scheduler with who has what and register the futures once
         self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
-        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": future_keys, "client": CLIENT_KEY})
 
-        # Build the topic event. On the precompute path, emit one entry per partial (with its reduced shape). On the
-        # non-precompute path, emit one entry pointing at the full chunk.
-        if precomputed_meta:
-            futures_payload = _build_futures_payload(
-                precomputed_meta,
-                self.arrays_metadata[array_name]["chunk_position"],
-            )
+        # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler.
+        # TODO: can id=0 use a queue instead of manually handling keys ?
+        self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
+
+        # Topic event: with precompute, ``futures`` lists one entry per (bridge, reduction) pair with the partial's
+        # reduced shape/dtype; the Deisa side rebuilds the graph from these small partials. Otherwise one entry per
+        # bridge names the full chunk.
+        if precomputed_pieces:
+            futures_payload: List[Dict[str, Any]] = []
+            for partial_meta, chunk_position in precomputed_pieces:
+                futures_payload.extend(_build_futures_payload(partial_meta, chunk_position))
         else:
             futures_payload = [
                 {
-                    "future": future_keys[0],
+                    "future": info["future"][0],
                     "shape": chunk.shape,
                     "dtype": str(chunk.dtype),
-                    "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
+                    "chunk_position": other["chunk_position"],
                 }
+                for other in pieces
+                for info in (other["future-info"],)
             ]
 
         to_send = {
             "array_name": array_name,
             "iteration": timestep,
-            "precomputed": True if precomputed_meta else None,
+            "precomputed": True if precomputed_pieces else False,
             "futures": futures_payload,
         }
+        logger.debug(
+            f"[{self.id}] send() log_event: array={array_name}, timestep={timestep}, n_futures={len(futures_payload)}"
+        )
         self.client.log_event(array_name, to_send)
+
+        # TODO: what to do if error ?
 
     def get(self, key: str, timestep: Optional[int] = None, default: Any = None) -> Optional[Union[Deque, Any]]:
         """
