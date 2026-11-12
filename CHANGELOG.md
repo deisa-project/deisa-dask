@@ -16,6 +16,10 @@ Types of changes:
 
 ## [Unreleased]
 
+### Changed
+
+- `deisa.dask.bridge.send`: refactor into a _select_workers / _ship_chunk / _publish_metadata pipeline, 
+  unifying the single-bridge and gathered publish paths into one implementation (no more _direct_send duplicate)
 
 ## [0.7.0]
 

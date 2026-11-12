@@ -319,33 +319,31 @@ class Bridge(IBridge):
         """
         Distribute a data chunk to a Dask workers.
 
-        Scatters the chunk to the next worker (round-robin), then gathers all
-        chunks metadata to bridge rank 0, which updates the Dask scheduler.
+        Scatters the chunk to the next worker (round-robin), then gathers all chunks metadata to bridge rank 0,
+        which updates the Dask scheduler.
 
-        For single-bridge arrays (sub_comm_size == 1), skips the gather entirely
-        and updates the scheduler directly.
+        ``send`` is a three-stage pipeline with ONE implementation per stage:
 
-        The send is a three-stage pipeline with ONE implementation per stage:
+        1) ``_select_workers`` resolves the round-robin target (the only place the ``update_workers``/``filter_workers``
+        kwargs are read; the refresh broadcast keeps its position in the collective order).
 
-        - ``_select_workers`` resolves the round-robin target (the only place the
-          ``update_workers``/``filter_workers`` kwargs are read; the refresh
-          broadcast keeps its position in the collective order).
-        - ``_ship_chunk`` runs the data plane: branch-func reductions on the local
-          numpy chunk, then the partials scatter, or the full-chunk scatter when
-          no branch produced a partial (backwards compatibility).
-        - ``_publish`` runs the control plane: the per-bridge slice is published
-          directly on a single-bridge array or gathered first, then a single
-          shared tail merges, updates the scheduler and emits the topic event.
+        2) ``_ship_chunk`` runs the data plane: branch-func reductions on the local numpy chunk, then the
+        partials scatter, or the full-chunk scatter when no branch produced a partial (backwards compatibility).
+
+        3) ``_publish_metadata`` runs the control plane: the per-bridge slice is published directly on a single-bridge
+        array (sub_comm_size == 1) or gathered first, then a single shared tail merges, updates the scheduler and
+        emits the topic event.
 
         - ``:param array_name:`` The name of the data array being sent as a string.
         - ``:param chunk:`` A numpy ndarray containing the data chunk to be sent to the workers.
         - ``:param timestep:`` The current timestep associated to the sent data chunk.
         - ``:param args:`` Additional positional arguments if required by the method implementation.
         - ``:param kwargs:`` Additional keyword arguments for optional configurations.
-            Supported keys include:
-            - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
-            - `filter_workers` (callable): A function that filters the available workers
-              and returns a list of worker names. Must return a non-empty list of strings.
+        Supported keys include:
+
+        - `update_workers` (bool): If True, updates the workers' list by retrieving it from the scheduler.
+        - `filter_workers` (callable): A function that filters the available workers and returns a list of worker names.
+        Must return a non-empty list of strings.
         - ``:return:`` None.
         """
         logger.debug(f"[{self.id}] send() array_name={array_name}, data.shape={chunk.shape}, iteration={timestep}")
@@ -378,7 +376,7 @@ class Bridge(IBridge):
         res, precomputed_meta = self._ship_chunk(array_name, chunk, workers)
 
         # Control plane: rank 0 merges every bridge's slice and publishes the topic event.
-        self._publish(array_name, res, precomputed_meta, chunk, timestep, sub_comm)
+        self._publish_metadata(array_name, res, precomputed_meta, chunk, timestep, sub_comm)
 
         # TODO: what to do if error ?
 
@@ -441,8 +439,7 @@ class Bridge(IBridge):
         - ``:param chunk:`` This bridge's own numpy chunk.
         - ``:param workers:`` The single target worker (see ``_select_workers``).
         - ``:return:`` ``(res, precomputed_meta)``: ``res`` is the NORMALIZED scatter result
-          ``{"future": List[str], "who_has", "nbytes"}`` (the scalar legacy shape of ``_scatter_full`` is widened
-          here, so no downstream code ever flattens again), and ``precomputed_meta`` is the per-reduction
+          ``{"future": List[str], "who_has", "nbytes"}``, and ``precomputed_meta`` is the per-reduction
           ``{output_key: {...}}`` map on the precompute path, empty otherwise.
         """
         branches = self._get_task_branches(array_name)
@@ -465,7 +462,7 @@ class Bridge(IBridge):
             res = {**res, "future": [res["future"]]}
         return res, precomputed_meta
 
-    def _publish(
+    def _publish_metadata(
         self,
         array_name: str,
         res: dict,
@@ -474,12 +471,11 @@ class Bridge(IBridge):
         timestep: int,
         sub_comm: Any,
     ) -> None:
-        """Publish one timestep's topic event: ONE implementation for the single-bridge and gathered topologies.
+        """Publish one timestep's topic event. This will eventually trigger the user's callback.
 
-        Each side reduces to a ``piece`` -- the per-bridge slice of what crossed the boundary (scatter result,
-        chunk position, precompute metadata) -- published directly on a single-bridge array or gathered first on a
-        multi-bridge one. From ``pieces`` on there is a single shared tail: the merge, the scheduler update and the
-        event payload, so the two topologies cannot drift apart again.
+        Each side reduces to a ``piece`` (the per-bridge metadata of what was sent on the network (scatter result,
+        chunk position, precompute metadata)) published directly on a single-bridge array or gathered first on a
+        multi-bridge one.
 
         - ``:param array_name:`` Registered array the event is for.
         - ``:param res:`` This bridge's normalized scatter result (``{"future": List[str], "who_has", "nbytes"}``).
@@ -489,13 +485,15 @@ class Bridge(IBridge):
         - ``:param timestep:`` The current timestep, carried as the event's ``iteration``.
         - ``:param sub_comm:`` The array's sub-communicator on this rank; the gather runs on it when it has peers.
         """
-        piece: Dict[str, Any] = {
+        Piece = Dict[str, Any]
+
+        piece: Piece = {
             "future-info": res,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
             "precomputed": precomputed_meta,
         }
 
-        pieces: List[Dict[str, Any]]
+        pieces: List[Piece]
         if sub_comm.Get_size() == 1:
             assert self.client is not None, "client cannot be None for single-bridge publish."
             # Single-bridge array: the one rank IS the whole grid, skip the gather entirely.
@@ -510,7 +508,9 @@ class Bridge(IBridge):
             assert self.client is not None, "client cannot be None for Bridge id 0."
             pieces = gathered
 
-        # Merge the pieces -- one per participating bridge -- into the array-wide state. Each piece carries its OWN
+        assert self.client is not None, "client cannot be None."
+
+        # Merge the pieces (one per participating bridge) into the array-wide state. Each piece carries its OWN
         # chunk_position: indexing the pieces with ``enumerate`` would misalign when a bridge shipped no partials,
         # letting one bridge's coordinates (or grid count) corrupt another's contribution.
         who_has: Dict[str, List[str]] = {}
@@ -528,8 +528,8 @@ class Bridge(IBridge):
         # only update the scheduler with who has what and register the futures once
         self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
 
-        # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler. TODO: id=0 can use
-        # a queue
+        # mimic mechanism from Queue. Keep a reference on keys until reception in topic handler.
+        # TODO: can id=0 use a queue instead of manually handling keys ?
         self.client._send_to_scheduler({"op": "client-desires-keys", "keys": keys, "client": CLIENT_KEY})
 
         # Topic event: with precompute, ``futures`` lists one entry per (bridge, reduction) pair with the partial's
@@ -554,7 +554,7 @@ class Bridge(IBridge):
         to_send = {
             "array_name": array_name,
             "iteration": timestep,
-            "precomputed": True if precomputed_pieces else None,
+            "precomputed": True if precomputed_pieces else False,
             "futures": futures_payload,
         }
         logger.debug(
