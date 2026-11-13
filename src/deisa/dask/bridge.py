@@ -371,10 +371,10 @@ class Bridge(IBridge):
 
         # Data plane: local reductions then ship ONLY the tiny partials when branches produced any (the full chunk
         # never enters worker memory), else the full-chunk scatter for non-reduction callbacks.
-        res, futures_entries = self._ship_chunk(array_name, chunk, workers)
+        scatter_result, futures_entries = self._ship_chunk(array_name, chunk, workers)
 
         # Control plane: rank 0 merges every bridge's slice and publishes the topic event.
-        self._publish_metadata(array_name, res, futures_entries, chunk, timestep, sub_comm)
+        self._publish_metadata(array_name, scatter_result, futures_entries, chunk, timestep, sub_comm)
 
         # TODO: what to do if error ?
 
@@ -436,7 +436,7 @@ class Bridge(IBridge):
           locally on ``chunk``; every produced partial is shipped to the ONE target worker and nothing more.
         - ``:param chunk:`` This bridge's own numpy chunk.
         - ``:param workers:`` The single target worker (see ``_select_workers``).
-        - ``:return:`` ``(res, futures_entries)``: ``res`` is the normalized scatter result
+        - ``:return:`` ``(scatter_result, futures_entries)``: ``scatter_result`` is the normalized scatter result
           ``{"future": List[str], "who_has", "nbytes"}``, and ``futures_entries`` holds the final topic-event
           entries on the precompute path (empty on the full-chunk path, where ``_publish_metadata`` builds one
           entry per bridge from the chunk itself).
@@ -456,7 +456,7 @@ class Bridge(IBridge):
     def _publish_metadata(
         self,
         array_name: str,
-        res: dict,
+        scatter_result: dict,
         futures_entries: List[Dict[str, Any]],
         chunk: np.ndarray,
         timestep: int,
@@ -469,7 +469,8 @@ class Bridge(IBridge):
         multi-bridge one.
 
         - ``:param array_name:`` Registered array the event is for.
-        - ``:param res:`` This bridge's normalized scatter result (``{"future": List[str], "who_has", "nbytes"}``).
+        - ``:param scatter_result:`` This bridge's normalized scatter result
+          (``{"future": List[str], "who_has", "nbytes"}``).
         - ``:param futures_entries:`` The final topic-event entries of this bridge's partials on the precompute
           path (empty on the full-chunk path; then one entry per bridge is built here from the chunk).
         - ``:param chunk:`` This bridge's own numpy chunk, read for the payload's shape/dtype.
@@ -477,7 +478,7 @@ class Bridge(IBridge):
         - ``:param sub_comm:`` The array's sub-communicator on this rank; the gather runs on it when it has peers.
         """
         piece: Dict[str, Any] = {
-            "future-info": res,
+            "scatter": scatter_result,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
             "futures": futures_entries,
         }
@@ -506,7 +507,7 @@ class Bridge(IBridge):
         nbytes: Dict[str, int] = {}
         keys: List[str] = []
         for other in pieces:
-            info: Dict[str, Any] = other["future-info"]
+            info: Dict[str, Any] = other["scatter"]
             who_has.update(info["who_has"])
             nbytes.update(info["nbytes"])
             keys.extend(info["future"])
@@ -527,7 +528,7 @@ class Bridge(IBridge):
         else:
             futures_payload = [
                 {
-                    "future": other["future-info"]["future"][0],
+                    "future": other["scatter"]["future"][0],
                     "shape": chunk.shape,
                     "dtype": str(chunk.dtype),
                     "chunk_position": other["chunk_position"],
@@ -737,7 +738,7 @@ class Bridge(IBridge):
         per-reduction metadata directly), so the event payload is born once instead of being ferried through an
         intermediate metadata sidecar.
 
-        - ``:return:`` ``(res, futures_entries)``: ``res`` is the normalized scatter result
+        - ``:return:`` ``(scatter_result, futures_entries)``: ``scatter_result`` is the normalized scatter result
           ``{"future": List[str], "who_has", "nbytes"}``; ``futures_entries`` is one entry per reduction with the
           partial's shape/dtype, the reduction's ``chunk_axis`` and this bridge's ``chunk_position``.
         """

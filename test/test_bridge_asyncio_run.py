@@ -123,8 +123,8 @@ def test_scatter_partials_no_client_path_under_a_running_loop():
     assert captured.get("called") is True, "the no-client partials path was not taken"
     # The scattered keys are namespaced (KEY_PREFIX + array + output_key + uuid), so assert on membership rather than
     # exact equality.
-    res, futures_entries = result["value"]
-    future_keys = res["future"]
+    scatter_result, futures_entries = result["value"]
+    future_keys = scatter_result["future"]
     assert len(future_keys) == 1 and "f-sum" in future_keys[0]
     assert futures_entries[0]["future"] == future_keys[0]
     assert futures_entries[0]["chunk_position"] == (0,)

@@ -238,11 +238,11 @@ class TestBridge:
         original_buffer_addr = data.__array_interface__["data"][0]
 
         # (a) The benchmark call shape: one ndarray, no ``workers`` argument.
-        res = bridge._scatter_full(data)
-        future = res["future"][0]
-        assert set(res["who_has"]) == {future}
-        assert res["nbytes"][future] == data.nbytes
-        assert res["who_has"][future] == [sorted_workers[0]], res["who_has"]
+        scatter_result = bridge._scatter_full(data)
+        future = scatter_result["future"][0]
+        assert set(scatter_result["who_has"]) == {future}
+        assert scatter_result["nbytes"][future] == data.nbytes
+        assert scatter_result["who_has"][future] == [sorted_workers[0]], scatter_result["who_has"]
 
         who_has = client.who_has()
         assert who_has[future] == [sorted_workers[0]], "default scatter did not register the key with the scheduler"
@@ -502,8 +502,8 @@ class TestBridge:
                 return {k: (v.nbytes if hasattr(v, "nbytes") else None) for k, v in dask_worker.data.items()}
 
             out = original_scatter_partials(partials, branches, array_name_arg, workers)
-            res, futures_entries = out
-            scatter_info["future-info"] = res
+            scatter_result, futures_entries = out
+            scatter_info["scatter"] = scatter_result
             scatter_info["entries"] = {entry["output_key"]: entry for entry in futures_entries}
             snapshot["per_worker"] = client.run(inspect)
             snapshot["inproc"] = {k: v for k, v in inproc_worker.data.items()}
@@ -531,7 +531,7 @@ class TestBridge:
         assert bridge._task_branches.get(array_name), "bridge has no cached branch: the precompute path never engaged"
 
         try:
-            future_info = scatter_info["future-info"]
+            future_info = scatter_info["scatter"]
             for output_key, partial in recorded.items():
                 # Use the key the scatter reported rather than pattern-matching who_has (may already be released).
                 meta = scatter_info["entries"][output_key]
