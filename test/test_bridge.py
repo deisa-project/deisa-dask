@@ -397,12 +397,19 @@ class TestPrecomputeRegressions:
         )
         b1._task_branches["temperature"] = [branch]
         # Stub the scatters: no worker/network interaction needed for the guard.
-        b1._scatter_partials = lambda partials, branches, array_name, workers: {
-            "future-info": {"future": ["fut-k1"], "who_has": {}, "nbytes": {}},
-            "precomputed": {
-                "k1": {"future": "fut-k1", "kind": "scalar", "shape": (), "dtype": "float64", "finalize": None}
-            },
-        }
+        b1._scatter_partials = lambda partials, branches, array_name, workers: (
+            {"future": ["fut-k1"], "who_has": {}, "nbytes": {}},
+            [
+                {
+                    "future": "fut-k1",
+                    "shape": (),
+                    "dtype": "float64",
+                    "kind": "scalar",
+                    "finalize": None,
+                    "chunk_position": (1,),
+                }
+            ],
+        )
 
         async def _send():
             await asyncio.gather(

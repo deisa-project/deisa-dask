@@ -57,11 +57,11 @@ def test_scatter_full_no_client_path_under_a_running_loop():
 
     captured = {}
 
-    async def fake_scatter_blocking(workers, data, hash=False):
+    async def fake_scatter_payload(workers, payload):
         captured["called"] = True
-        return {"future": ["k"], "who_has": workers, "nbytes": {}}
+        return {k: list(workers) for k in payload}, {}
 
-    bridge._scatter_blocking = fake_scatter_blocking
+    bridge._scatter_payload = fake_scatter_payload
 
     result = {}
 
@@ -71,7 +71,7 @@ def test_scatter_full_no_client_path_under_a_running_loop():
 
     asyncio.run(main())
     assert captured.get("called") is True, "the no-client scatter path was not taken"
-    assert result["value"]["future"] == ["k"]
+    assert len(result["value"]["future"]) == 1
 
 
 def test_scatter_partials_no_client_path_under_a_running_loop():
@@ -87,6 +87,7 @@ def test_scatter_partials_no_client_path_under_a_running_loop():
     bridge.client = None  # force the no-client branch
     bridge.id = "test-bridge"
     bridge._branch_by_key = {}  # cache dict built in __init__
+    bridge.arrays_metadata = {"a": {"chunk_position": (0,)}}
 
     captured = {}
 
@@ -95,11 +96,11 @@ def test_scatter_partials_no_client_path_under_a_running_loop():
 
     bridge._get_branch_by_key = fake_get_branch_by_key
 
-    async def fake_scatter_to_workers_async(target, payload2):
+    async def fake_scatter_payload(target_worker, payload):
         captured["called"] = True
-        return ["who"], {"n": 1}
+        return {k: ["who"] for k in payload}, {}
 
-    bridge._scatter_to_workers_async = fake_scatter_to_workers_async
+    bridge._scatter_payload = fake_scatter_payload
 
     branch = BranchSpec(
         output_key="f-sum",
@@ -122,8 +123,11 @@ def test_scatter_partials_no_client_path_under_a_running_loop():
     assert captured.get("called") is True, "the no-client partials path was not taken"
     # The scattered keys are namespaced (KEY_PREFIX + array + output_key + uuid), so assert on membership rather than
     # exact equality.
-    future_keys = result["value"]["future-info"]["future"]
+    res, futures_entries = result["value"]
+    future_keys = res["future"]
     assert len(future_keys) == 1 and "f-sum" in future_keys[0]
+    assert futures_entries[0]["future"] == future_keys[0]
+    assert futures_entries[0]["chunk_position"] == (0,)
 
 
 def test_private_loop_helper_propagates_exceptions():

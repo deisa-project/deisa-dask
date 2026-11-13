@@ -33,8 +33,7 @@ import time
 import uuid
 import zlib
 from collections import defaultdict, deque
-from numbers import Number
-from typing import Any, Deque, Dict, Final, Iterator, List, Mapping, Optional, Union
+from typing import Any, Deque, Dict, Final, List, Mapping, Optional, Union
 
 import numpy as np
 from deisa.core import IBridge, ICommunicator, validate_arrays_metadata
@@ -45,7 +44,6 @@ from distributed.utils_comm import scatter_to_workers
 from distributed.worker import _global_workers
 from distributed.worker_state_machine import RemoveReplicasEvent
 
-from dask.tokenize import tokenize
 from deisa.dask.branch import BranchSpec
 from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX, WAIT_FOR_EXECUTE_CB_EVENT
 from deisa.dask.handshake import Handshake
@@ -373,10 +371,10 @@ class Bridge(IBridge):
 
         # Data plane: local reductions then ship ONLY the tiny partials when branches produced any (the full chunk
         # never enters worker memory), else the full-chunk scatter for non-reduction callbacks.
-        res, precomputed_meta = self._ship_chunk(array_name, chunk, workers)
+        res, futures_entries = self._ship_chunk(array_name, chunk, workers)
 
         # Control plane: rank 0 merges every bridge's slice and publishes the topic event.
-        self._publish_metadata(array_name, res, precomputed_meta, chunk, timestep, sub_comm)
+        self._publish_metadata(array_name, res, futures_entries, chunk, timestep, sub_comm)
 
         # TODO: what to do if error ?
 
@@ -438,9 +436,10 @@ class Bridge(IBridge):
           locally on ``chunk``; every produced partial is shipped to the ONE target worker and nothing more.
         - ``:param chunk:`` This bridge's own numpy chunk.
         - ``:param workers:`` The single target worker (see ``_select_workers``).
-        - ``:return:`` ``(res, precomputed_meta)``: ``res`` is the NORMALIZED scatter result
-          ``{"future": List[str], "who_has", "nbytes"}``, and ``precomputed_meta`` is the per-reduction
-          ``{output_key: {...}}`` map on the precompute path, empty otherwise.
+        - ``:return:`` ``(res, futures_entries)``: ``res`` is the normalized scatter result
+          ``{"future": List[str], "who_has", "nbytes"}``, and ``futures_entries`` holds the final topic-event
+          entries on the precompute path (empty on the full-chunk path, where ``_publish_metadata`` builds one
+          entry per bridge from the chunk itself).
         """
         branches = self._get_task_branches(array_name)
         partials = self._execute_operations_on_chunk(chunk, branches)
@@ -450,23 +449,15 @@ class Bridge(IBridge):
                 f"[{self.id}] send() precompute-active: scattering {len(partials)} partials "
                 f"instead of full chunk shape={chunk.shape}"
             )
-            partial_res = self._scatter_partials(partials, branches, array_name, workers=workers)
-            res: Dict[str, Any] = partial_res["future-info"]
-            precomputed_meta: Dict[str, Dict[str, Any]] = partial_res["precomputed"]
-        else:
-            logger.debug(f"[{self.id}] send() precompute-inactive: scattering full chunk shape={chunk.shape}")
-            res = self._scatter_full(chunk, workers=workers, hash=False)
-            precomputed_meta = {}
-
-        if not isinstance(res["future"], list):
-            res = {**res, "future": [res["future"]]}
-        return res, precomputed_meta
+            return self._scatter_partials(partials, branches, array_name, workers)
+        logger.debug(f"[{self.id}] send() precompute-inactive: scattering full chunk shape={chunk.shape}")
+        return self._scatter_full(chunk, workers=workers), []
 
     def _publish_metadata(
         self,
         array_name: str,
         res: dict,
-        precomputed_meta: Dict[str, Dict[str, Any]],
+        futures_entries: List[Dict[str, Any]],
         chunk: np.ndarray,
         timestep: int,
         sub_comm: Any,
@@ -474,26 +465,24 @@ class Bridge(IBridge):
         """Publish one timestep's topic event. This will eventually trigger the user's callback.
 
         Each side reduces to a ``piece`` (the per-bridge metadata of what was sent on the network (scatter result,
-        chunk position, precompute metadata)) published directly on a single-bridge array or gathered first on a
+        chunk position, futures entries)) published directly on a single-bridge array or gathered first on a
         multi-bridge one.
 
         - ``:param array_name:`` Registered array the event is for.
         - ``:param res:`` This bridge's normalized scatter result (``{"future": List[str], "who_has", "nbytes"}``).
-        - ``:param precomputed_meta:`` The per-reduction metadata of the partials shipped by ``_ship_chunk`` (empty
-          when the full chunk was scattered instead).
+        - ``:param futures_entries:`` The final topic-event entries of this bridge's partials on the precompute
+          path (empty on the full-chunk path; then one entry per bridge is built here from the chunk).
         - ``:param chunk:`` This bridge's own numpy chunk, read for the payload's shape/dtype.
         - ``:param timestep:`` The current timestep, carried as the event's ``iteration``.
         - ``:param sub_comm:`` The array's sub-communicator on this rank; the gather runs on it when it has peers.
         """
-        Piece = Dict[str, Any]
-
-        piece: Piece = {
+        piece: Dict[str, Any] = {
             "future-info": res,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
-            "precomputed": precomputed_meta,
+            "futures": futures_entries,
         }
 
-        pieces: List[Piece]
+        pieces: List[Dict[str, Any]]
         if sub_comm.Get_size() == 1:
             assert self.client is not None, "client cannot be None for single-bridge publish."
             # Single-bridge array: the one rank IS the whole grid, skip the gather entirely.
@@ -516,14 +505,11 @@ class Bridge(IBridge):
         who_has: Dict[str, List[str]] = {}
         nbytes: Dict[str, int] = {}
         keys: List[str] = []
-        precomputed_pieces: List[tuple] = []
         for other in pieces:
             info: Dict[str, Any] = other["future-info"]
             who_has.update(info["who_has"])
             nbytes.update(info["nbytes"])
             keys.extend(info["future"])
-            if other.get("precomputed"):
-                precomputed_pieces.append((other["precomputed"], other["chunk_position"]))
 
         # only update the scheduler with who has what and register the futures once
         self.client.sync(self.client.scheduler.update_data, who_has=who_has, nbytes=nbytes)
@@ -535,26 +521,24 @@ class Bridge(IBridge):
         # Topic event: with precompute, ``futures`` lists one entry per (bridge, reduction) pair with the partial's
         # reduced shape/dtype; the Deisa side rebuilds the graph from these small partials. Otherwise one entry per
         # bridge names the full chunk.
-        if precomputed_pieces:
-            futures_payload: List[Dict[str, Any]] = []
-            for partial_meta, chunk_position in precomputed_pieces:
-                futures_payload.extend(_build_futures_payload(partial_meta, chunk_position))
+        precomputed = any(other["futures"] for other in pieces)
+        if precomputed:
+            futures_payload = [entry for other in pieces for entry in other["futures"]]
         else:
             futures_payload = [
                 {
-                    "future": info["future"][0],
+                    "future": other["future-info"]["future"][0],
                     "shape": chunk.shape,
                     "dtype": str(chunk.dtype),
                     "chunk_position": other["chunk_position"],
                 }
                 for other in pieces
-                for info in (other["future-info"],)
             ]
 
         to_send = {
             "array_name": array_name,
             "iteration": timestep,
-            "precomputed": True if precomputed_pieces else False,
+            "precomputed": precomputed,
             "futures": futures_payload,
         }
         logger.debug(
@@ -612,17 +596,26 @@ class Bridge(IBridge):
 
         return default
 
-    def _scatter_full(self, data: np.ndarray, workers: List[str] = None, hash=False):
-        """Scatter data to workers and return the legacy ``{"future", "who_has", "nbytes"}`` result."""
+    def _scatter_full(self, data: np.ndarray, workers: List[str] = None):
+        """Scatter the full chunk to ``workers``; returns the normalized ``{"future": [key], "who_has", "nbytes"}``."""
         logger.debug(f"[{self.id}] scatter to {workers}")
 
         if workers is None:
             workers = list(self.workers)
 
-        if self.client:
-            return self.client.sync(self._scatter_blocking, workers, data, hash=hash)
-        else:
-            return self._run_async(self._scatter_blocking(workers, data, hash=hash))
+        key = f"{KEY_PREFIX}-{type(data).__name__}-{uuid.uuid4().hex}"
+        who_has, nbytes = self._await_scatter(self._scatter_payload, workers, {key: data})
+        return {"future": [key], "who_has": who_has, "nbytes": nbytes}
+
+    def _await_scatter(self, fn, *args):
+        """Run a scatter coroutine ``fn(*args)`` through the client's loop, else on a private loop.
+
+        The no-client path (bridge teardown) can reach this from inside a running event loop, where ``asyncio.run``
+        raises; ``_run_async`` picks the existing loop or a private one instead.
+        """
+        if self.client is not None:
+            return self.client.sync(fn, *args)
+        return self._run_async(fn(*args))
 
     def _run_async(self, coro):
         """Run ``coro`` to completion from synchronous code.
@@ -643,57 +636,18 @@ class Bridge(IBridge):
 
         return run_coro_on_private_loop(coro)
 
-    async def _scatter_blocking(self, workers, data, hash=False):
-        """Scatter ``data`` to ``workers`` and return the legacy per-key result (one future key per element)."""
-        if isinstance(workers, (str, Number)):
-            workers = [workers]
+    async def _scatter_payload(self, workers, payload):
+        """Scatter an already-keyed ``{key: value}`` payload to ``workers``; returns ``(who_has, nbytes)``.
 
-        input_type = type(data)
-        names: List[str] = []
-        unpack = False
-        if isinstance(data, Iterator) or isinstance(data, type(range(0))):
-            data = list(data)
-        if isinstance(data, (set, frozenset)):
-            data = list(data)
-        if not isinstance(data, (dict, list, tuple, set, frozenset)):
-            unpack = True
-            data = [data]
-        if isinstance(data, (list, tuple)):
-            if hash:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + tokenize(x) for x in data]
-            else:
-                names = [KEY_PREFIX + "-" + type(x).__name__ + "-" + uuid.uuid4().hex for x in data]
-            data = dict(zip(names, data))
-
-        assert isinstance(data, dict)
-
-        _, who_has, nbytes = await self._better_scatter_to_workers(
-            workers,
-            data,
-            scheduler=self.client.scheduler if self.client else None,
-            client_id=self.client.id if self.client else None,
-        )
-
-        out = {k: {"future": k, "who_has": who_has, "nbytes": nbytes} for k in data}
-
-        if issubclass(input_type, (list, tuple, set, frozenset)):
-            out = input_type(out[k] for k in names)
-
-        if unpack:
-            assert len(out) == 1
-            out = list(out.values())[0]
-        return out
-
-    async def _scatter_to_workers_async(self, workers: List[str], data: Dict[str, Any]):
-        """Scatter an already-keyed payload dict to ``workers``; returns ``(who_has, nbytes)``.
-
-        Used on the precompute path, which builds its own payload keys and only needs the scheduling pair. Goes through
-        :meth:`_better_scatter_to_workers` so an in-process worker receives the partials zero-copied; ``data`` must
-        therefore NOT be pre-serialized here -- the remote branch serializes only the entries it actually ships.
+        The ONLY scatter primitive: every send path (full chunk, precompute partials) keys its payload and calls
+        this. Goes through :meth:`_better_scatter_to_workers`, so an in-process worker receives the values
+        zero-copied; ``payload`` must therefore stay RAW -- the remote branch serializes only the entries it
+        actually ships.
         """
+        assert isinstance(payload, dict)
         _, who_has, nbytes = await self._better_scatter_to_workers(
             workers,
-            data,
+            payload,
             scheduler=self.client.scheduler if self.client else None,
             client_id=self.client.id if self.client else None,
         )
@@ -769,19 +723,23 @@ class Bridge(IBridge):
     def _scatter_partials(
         self,
         partials: Dict[str, Any],
-        branches: List[BranchSpec],  # List[BranchSpec]
+        branches: List[BranchSpec],
         array_name: str,
         workers: List[str],
-    ) -> Dict[str, Any]:
-        """Scatter precomputed reduction partials to a worker instead of the full chunk.
+    ) -> tuple:
+        """Scatter precompute partials to a worker instead of the full chunk.
 
-        Partial flavors: ``scalar`` (sum/prod/max/min: plain numbers/arrays,
-        one future key per reduction), ``mean`` (``{"n", "total"}`` dict,
-        combined with ``mean_agg``) and ``moment`` (``{"n", "total", "M"}``
-        dict for var/std, combined with ``moment_agg`` + sqrt). Returns the
-        legacy scatter result plus a ``precomputed`` map of ``output_key``
-        to ``{future, kind, shape, dtype, finalize}`` metadata so the topic
-        handler can reconstruct the right dask graph.
+        Partial flavors: ``scalar`` (sum/prod/max/min: plain numbers/arrays, one future key per reduction), ``mean``
+        (``{"n", "total"}`` dict, combined with ``mean_agg``) and ``moment`` (``{"n", "total", "M"}`` dict for
+        var/std, combined with ``moment_agg`` + sqrt).
+
+        One loop keys the payload AND builds the final topic-event entries (each :class:`BranchSpec` carries the
+        per-reduction metadata directly), so the event payload is born once instead of being ferried through an
+        intermediate metadata sidecar.
+
+        - ``:return:`` ``(res, futures_entries)``: ``res`` is the normalized scatter result
+          ``{"future": List[str], "who_has", "nbytes"}``; ``futures_entries`` is one entry per reduction with the
+          partial's shape/dtype, the reduction's ``chunk_axis`` and this bridge's ``chunk_position``.
         """
         assert len(workers) == 1, "_scatter_partials expects a single target worker"
         target_worker = workers[0]
@@ -790,7 +748,7 @@ class Bridge(IBridge):
         branch_by_key = self._get_branch_by_key(array_name, branches)
 
         payload: Dict[str, Any] = {}
-        shape_dtype: Dict[str, Dict[str, Any]] = {}
+        futures_entries: List[Dict[str, Any]] = []
         for output_key, value in partials.items():
             branch = branch_by_key.get(output_key)
             if branch is None:
@@ -798,33 +756,24 @@ class Bridge(IBridge):
                 raise KeyError(f"no branch found for precomputed output_key {output_key!r}")
             key = f"{KEY_PREFIX}{array_name}-partial-{output_key}-{uuid.uuid4().hex}"
             payload[key] = value
-            shape_dtype[output_key] = {
-                "future": key,
-                "kind": branch.output_kind,
-                "shape": branch.partial_shape,
-                "dtype": branch.partial_dtype,
-                "finalize": branch.finalize,
-                "chunk_axis": branch.chunk_axis,
-                "op_name": branch.op_name,
-            }
+            futures_entries.append(
+                {
+                    "future": key,
+                    "shape": branch.partial_shape,
+                    "dtype": branch.partial_dtype,
+                    "kind": branch.output_kind,
+                    "finalize": branch.finalize,
+                    "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
+                    "chunk_axis": branch.chunk_axis,
+                    "op_name": branch.op_name,
+                    "output_key": output_key,
+                }
+            )
 
-        # Serialize only what actually leaves the process: _scatter_to_workers_async -> _better_scatter_to_workers
-        # writes RAW values into an in-process worker's store (zero-copy) and wraps just its remote entries in
-        # to_serialize. Pre-serializing here would defeat the zero-copy path.
-        if self.client is not None:
-            who_has, nbytes = self.client.sync(self._scatter_to_workers_async, [target_worker], payload)
-        else:
-            who_has, nbytes = self._run_async(self._scatter_to_workers_async([target_worker], payload))
-
-        future_keys = list(payload.keys())
-        return {
-            "future-info": {
-                "future": future_keys,
-                "who_has": who_has,
-                "nbytes": nbytes,
-            },
-            "precomputed": shape_dtype,
-        }
+        # _scatter_payload keeps the payload RAW so an in-process worker receives it zero-copied; pre-serializing
+        # here would defeat that.
+        who_has, nbytes = self._await_scatter(self._scatter_payload, [target_worker], payload)
+        return {"future": list(payload.keys()), "who_has": who_has, "nbytes": nbytes}, futures_entries
 
     def _execute_operations_on_chunk(self, chunk: np.ndarray, branches: List["BranchSpec"]) -> Dict[str, Any]:
         """
@@ -985,27 +934,3 @@ def _release_local_keys(local_worker_map: Mapping[str, Any], written: List[tuple
                 f"{addr}: the worker may hold untracked data",
                 exc_info=True,
             )
-
-
-def _build_futures_payload(meta: Mapping[str, Mapping[str, Any]], chunk_position: Any) -> List[Dict[str, Any]]:
-    """Build per-reduction ``futures`` entries for a precompute topic event.
-
-    One entry per reduction in ``meta``, carrying the partial's reduced
-    shape/dtype, the reduction's ``chunk_axis`` and the caller-provided
-    ``chunk_position``; shared by multi-bridge gather and the single-bridge
-    fast path so both byte-identically shape the payload.
-    """
-    return [
-        {
-            "future": info["future"],
-            "shape": info["shape"],
-            "dtype": info["dtype"],
-            "kind": info.get("kind", "scalar"),
-            "finalize": info.get("finalize"),
-            "chunk_position": chunk_position,
-            "chunk_axis": info.get("chunk_axis"),
-            "op_name": info.get("op_name"),
-            "output_key": output_key,
-        }
-        for output_key, info in meta.items()
-    ]
