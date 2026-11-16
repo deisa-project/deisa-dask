@@ -794,6 +794,58 @@ class TestUsingDaskCluster:
         async_close_bridges(sim.bridges, 4)
         deisa.execute_callbacks()
 
+    def test_callback_bare_compute_uses_deisa_client(self, env_setup):
+        """A bare ``.compute()`` inside a callback must run on the Deisa client, not the caller's default client.
+
+        ``Deisa``'s client is created with ``set_as_default=False`` -- it must never hijack the process-wide Dask
+        scheduler -- so the callback body is the one place where its client has to be scoped explicitly. Computing
+        the delivered array from a foreign client releases the delivered scatter keys as soon as that graph
+        finishes, evicting the chunk from the workers before the callback returns (that is what made the
+        ``precompute=False`` memory control test lose the chunk in CI). ``Client.current(allow_global=False)``
+        raises outside a ``Client.as_current()`` scope, so it pins the scoping without any timing dependency.
+        """
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+
+        sim = TestSimulation(
+            client,
+            mpi_parallelism=mpi_parallelism,
+            arrays_metadata={
+                "my_array": {
+                    "global_shape": global_grid_size,
+                    "chunk_shape": (
+                        global_grid_size[0] // mpi_parallelism[0],
+                        global_grid_size[1] // mpi_parallelism[1],
+                    ),
+                    "chunk_position": (0, 0),  # TODO
+                }
+            },
+            wait_for_go=False,
+        )
+        deisa = Deisa()
+
+        time.sleep(0.2)  # wait for bridges and deisa to be ready
+
+        context = {"client_ids": [], "sums": []}
+
+        @deisa.register("my_array", precompute=False)
+        def window_callback(my_array: list[DeisaArray]):
+            context["client_ids"].append(Client.current(allow_global=False).id)
+            context["sums"].append(float(my_array[-1].sum().compute()))
+
+        global_data = sim.generate_data("my_array", iteration=1)
+
+        assert wait_for(lambda: len(context["sums"]) == 1, timeout=10), "callback was not called"
+        assert context["client_ids"] == [deisa.client.id], (
+            f"callback body ran under client(s) {context['client_ids']!r}; expected the Deisa client "
+            f"{deisa.client.id!r}. A foreign client must not execute the callback's bare .compute()."
+        )
+        assert np.isclose(context["sums"][0], float(np.sum(global_data)))
+
+        async_close_bridges(sim.bridges, 4)
+        deisa.execute_callbacks()
+
     @pytest.mark.parametrize("nb_bridges", [1, 4])
     def test_set_get(self, env_setup, nb_bridges: int):
         client, _ = env_setup

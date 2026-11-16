@@ -777,8 +777,21 @@ class Deisa(IDeisa):
             ]
 
             async def _run():
+                def _invoke_callback():
+                    # Scope the Deisa client to the callback body: user code routinely calls ``.compute()`` on the
+                    # delivered array with no client argument, and that bare call must resolve to the Deisa client
+                    # that owns the delivered futures (it persists them and holds their desires). Without this scope
+                    # it resolves to the ambient default client -- and since ``Deisa``'s client is deliberately NOT
+                    # the process-wide default, computing the array from a foreign client releases the delivered
+                    # scatter keys as soon as the graph finishes, evicting the chunk before the callback even
+                    # returns. ``as_current`` only sets context-local client/config state (no RPC), so it is safe to
+                    # enter from this ``to_thread`` worker thread, and it restores the previous values on exit so
+                    # nothing leaks outside the callback.
+                    with self.client.as_current():
+                        cb_data["callback"](*windows)
+
                 try:
-                    await asyncio.to_thread(cb_data["callback"], *windows)
+                    await asyncio.to_thread(_invoke_callback)
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
 

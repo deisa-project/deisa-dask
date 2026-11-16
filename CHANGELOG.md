@@ -20,6 +20,18 @@ Types of changes:
 
 - `deisa.dask.bridge.send`: zero-copy scatter path when the receiving worker is process-local.
 
+### Fixed
+
+- Deisa: registered callbacks now execute inside the Deisa client's context (`client.as_current()`), so a bare
+  `.compute()` in a callback body resolves to the Deisa client that owns the delivered futures. Since the Deisa
+  client is deliberately no longer the process-wide Dask default, such a compute resolved to the caller's default
+  client instead and released the delivered scatter keys as soon as it finished, evicting the chunk from the
+  workers before the callback even returned (the `precompute=False` memory control test lost its 32 MB chunk in
+  CI). Regression test: `test_callback_bare_compute_uses_deisa_client`.
+- test: the `reset_dask_scheduler` fixture in `test/conftest.py` now really restores the pre-test
+  `dask.config["scheduler"]` value instead of re-applying the leaked value on context exit (the previous version
+  was a no-op).
+
 ### Changed
 
 - getting-started: add feedback (`bridge.get()` and `deisa.set()`)
