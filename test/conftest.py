@@ -13,26 +13,28 @@ import pytest
 
 @pytest.fixture(autouse=True, scope="function")
 def reset_dask_scheduler():
-    """Ensure dask.config['scheduler'] is reset after each test.
+    """Restore ``dask.config['scheduler']`` to its pre-test value after each test.
 
-    This prevents a default Client from one test leaking its scheduler config
-    to subsequent tests on the same xdist worker. The fixture:
+    A default ``Client`` (``set_as_default=True``) rewrites
+    ``dask.config["scheduler"]`` to ``"dask.distributed"`` for as long as it is alive.
+    When such a client outlives its test (or its cluster is already gone), the next test
+    on the same xdist worker resolves every bare ``.compute()`` against it and fails with
+    ``RuntimeError: Requested dask.distributed scheduler but no Client active`` during the
+    10 s reconnect window.
 
-    1. Records the scheduler config before the test (for reference only)
-    2. Yields control to the test
-    3. After the test, unconditionally resets ``dask.config["scheduler"]`` to
-       ``"threads"`` — this is the critical step that prevents config leakage.
+    The fixture records the value BEFORE the test and writes it back AFTER the test. The
+    restore must be a plain ``dask.config.set`` call: wrapping it in a
+    ``with dask.config.set(...)`` block would put the leaked value back on context exit,
+    which is exactly why the previous version of this fixture was a no-op. ``scheduler``
+    is not defined in every supported dask release's shipped config, so an absent key is
+    restored by removing it again rather than writing a value.
     """
-    # Record config before test (for reference; not used after yield)
-    _ = dask.config.get("scheduler", None)
+    _missing = object()
+    previous = dask.config.get("scheduler", _missing)
 
     yield
 
-    # CRITICAL: Unconditionally reset scheduler config after the test.
-    # Without this, a default Client from a previous test leaves
-    # ``dask.config["scheduler"]` set to ``"dask.distributed"``, which causes
-    # any subsequent ``.compute()`` or scheduler resolution to raise
-    # ``RuntimeError: Requested dask.distributed scheduler but no Client active``
-    # during the 10 s reconnect window.
-    with dask.config.set({"scheduler": "threads"}):
-        pass
+    if previous is _missing:
+        dask.config.pop("scheduler", None)
+    elif dask.config.get("scheduler", _missing) != previous:
+        dask.config.set({"scheduler": previous})
