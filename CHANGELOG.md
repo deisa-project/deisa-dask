@@ -16,9 +16,23 @@ Types of changes:
 
 ## [Unreleased]
 
+### Added
+
+- `deisa.dask.bridge.send`: zero-copy scatter path when the receiving worker is process-local.
+
 ### Changed
 
 - getting-started: add feedback (`bridge.get()` and `deisa.set()`)
+- `deisa.dask.bridge.send`: refactor into a _select_workers / _ship_chunk / _publish_metadata pipeline, 
+  unifying the single-bridge and gathered publish paths into one implementation (no more _direct_send duplicate)
+- `deisa.dask.bridge.send`: zero-copy scatter path cleanup. One scatter primitive (`_scatter_payload`) is the only
+  caller of `_better_scatter_to_workers`; `_scatter_full` ships one key and returns the same normalized
+  `scatter_result` shape (`future`, `who_has`, `nbytes`) as `_scatter_partials`; the futures topic-event entries
+  are born once in `_scatter_partials` and travel unchanged to `_publish_metadata` (the `shape_dtype` sidecar is
+  gone). Deleted: `_scatter_blocking`, `_scatter_to_workers_async`, `_build_futures_payload`, and the legacy
+  iterator/set/tuple `hash=` input normalization. The `_await_scatter` helper replaces the four duplicated
+  client/no-client dispatch sites.
+
 
 ## [0.7.0]
 
@@ -108,6 +122,7 @@ Types of changes:
 - getting started example code
 - feature: per-array communicator.
   This feature also enables the handling of non-distributed arrays.
+- optimize: zero-copy Bridge.send() when local worker.
 
 ## [0.5.1]
 
