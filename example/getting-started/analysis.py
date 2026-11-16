@@ -14,6 +14,11 @@ def callback(temperatures):
     sum = latest_temperature.sum().compute()
     print(f"latest temperature t={latest_temperature.timestep}, sum={sum}", flush=True)
 
+    # define a threshold value that stops the simulation
+    if sum > 1000:
+        print(f"Stopping at timestep {latest_temperature.timestep}")
+        deisa.set("stop", True, timestep=latest_temperature.timestep)
+
     # plot the latest temperature
     fig = Figure()
     FigureCanvasAgg(fig)

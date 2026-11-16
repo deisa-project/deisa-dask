@@ -21,7 +21,7 @@ Unlike standalone Dask usage, deisa-dask is intended to run inside MPI-parallel 
 deisa-dask acts as a bridge between:
 
 - MPI simulation codes (C/C++/Fortran/Python, see [PDI](https://pdi.dev) for more info)
-- deisa core abstractions (data movement + orchestration layer)
+- deisa core abstractions (data movement, orchestration, and feedback)
 - Dask distributed scheduler and workers
 
 ```
@@ -39,7 +39,8 @@ Distributed analysis tasks
 ```
 
 The key idea is that the simulation drives the execution, not the scheduler.
-
+In addition to streaming simulation data to the analysis application, deisa-dask supports feedback from the analysis application to the simulation.
+This allows analysis results to influence the simulation at runtime, for example by requesting an early termination or adapting simulation parameters.
 
 ## Prerequisites
 
@@ -126,12 +127,16 @@ This approach is ideal for:
 
 ## Minimal Example: Local Dask Cluster
 
-This example demonstrates the basic execution model of **deisa-dask** using MPI.
+This example demonstrates the basic execution model of **deisa-dask**, including bidirectional communication between an MPI simulation and a distributed analysis application.
 It launches a local Dask scheduler and worker, starts an MPI simulation, and runs an analysis process that receives distributed arrays as Dask arrays.
 
 The simulation generates a synthetic temperature field on four MPI ranks.
-At each timestep, every rank sends its local portion of the global array through the deisa bridge. 
+At each timestep, every rank sends its local portion of the global array through the deisa bridge.
 The analysis application reconstructs the distributed array as a Dask array, computes its global sum, and saves a visualization of the latest timestep.
+It also monitors this value and sends a feedback signal to the simulation when a predefined threshold is exceeded.
+
+The simulation periodically checks for feedback and stops early when it receives the stop signal.
+This illustrates how analysis results can influence the execution of a running simulation without requiring a separate communication mechanism.
 
 The complete example has the following structure:
 ```fish
@@ -153,15 +158,26 @@ The simulation is a simple MPI program running on **4 ranks** arranged in a 2×2
 Each rank owns one quarter of a 64×64 global grid.
 
 After creating the `Bridge`, the simulation repeatedly generates a synthetic Gaussian temperature field whose width increases over time.
-Each MPI rank sends only its local subdomain using `bridge.send()`.
+At every timestep, each MPI rank sends its local subdomain using `bridge.send()`.
 The metadata provided when constructing the bridge describes how the local chunks are assembled into a global distributed array.
 
+After sending the data, the simulation checks for feedback using `bridge.get("stop")`.
+This is a non-blocking operation: it retrieves the currently available feedback messages without waiting for new ones.
+
+If any rank receives a stop signal, the simulation terminates its timestep loop.
+Otherwise, it continues generating and sending data.
+
+The simulation is configured to run for at most 10 timesteps, but its actual execution can be shortened by feedback from the analysis application.
+
 ```python
+import time
+
 import numpy as np
 from mpi4py import MPI
 
 from deisa.dask import Bridge
 
+nb_timesteps = 10  # max number of iterations
 global_grid_size = (64, 64)
 mpi_parallelism = (2, 2)
 
@@ -206,13 +222,20 @@ bridge = Bridge(
     },
 )
 
-for ts in range(5):
+for ts in range(nb_timesteps):
     print(f"[{rank}] Sending timestep {ts}", flush=True)
     sigma = 0.15 + ts * 0.05
     local_data = np.exp(-(X**2 + Y**2) / (2 * sigma**2))
     bridge.send("temperature", local_data, timestep=ts)
 
-bridge.close(timestep=5)
+    # Retrieve the stop signal. When `timestep` is not provided, `get` returns the full dequeue.
+    stop = bridge.get("stop")  # `get` is non-blocking.
+    print(f"[{rank}] Received stop={stop} at timestep {ts}", flush=True)
+    if any(stop):
+        break
+    time.sleep(0.1)
+
+bridge.close(timestep=nb_timesteps)
 ```
 
 
@@ -223,15 +246,24 @@ The analysis process creates a `Deisa` instance and registers a callback for the
 Whenever new timesteps become available, deisa invokes the callback with a sequence of Dask arrays representing the received timesteps 
 (in this example, the `temperature` [sliding window](/docs/public-api/#callback_args) array is by default of size 1).
 
-In this example, the callback:
+The callback:
 
 - selects the most recent timestep,
 - computes the global sum of the distributed array,
+- checks whether the sum exceeds a predefined threshold,
+- sends a stop signal to the simulation when the threshold is exceeded,
 - renders the array using Matplotlib, and
 - saves the image as `heat-<timestep>.png`.
 
-Because the data remain distributed as Dask arrays, operations such as `sum()` execute in parallel on the Dask worker.
+The feedback mechanism is implemented using `deisa.set()`.
+When the global temperature sum exceeds 1000, the analysis application publishes a `stop` value associated with the current timestep.
 
+The simulation retrieves this value using `bridge.get("stop")` and can use it to decide whether to continue executing.
+
+Notice that the callback is registered with `precompute=False`.
+This ensures that the callback is executed without using the precompute mechanism, which is required to generate the image.
+
+This example illustrates a simple form of runtime steering: the analysis application monitors simulation data and influences the simulation's execution based on its results.
 
 ```python
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -242,13 +274,18 @@ from deisa.dask import Deisa
 deisa = Deisa()
 
 
-@deisa.register("temperature")
+@deisa.register("temperature", precompute=False)
 def callback(temperatures):
 
     latest_temperature = temperatures[-1]
     # compute the sum of the latest temperature
     sum = latest_temperature.sum().compute()
     print(f"latest temperature t={latest_temperature.timestep}, sum={sum}", flush=True)
+
+    # define a threshold value that stops the simulation
+    if sum > 1000:
+        print(f"Stopping at timestep {latest_temperature.timestep}")
+        deisa.set("stop", True, timestep=latest_temperature.timestep)
 
     # plot the latest temperature
     fig = Figure()
@@ -313,13 +350,17 @@ echo "launcher is done."
 
 #### Results
 
-Running the launcher script produces a sequence of images (heat-0.png to heat-4.png), one for each timestep received by the analysis application.
+Running the launcher script produces a sequence of images (heat-0.png, heat-1.png, etc.), one for each timestep received by the analysis application.
 
 The animation below shows the reconstructed global temperature field.
 Although the simulation sends only local subdomains from each MPI rank, deisa automatically assembles them into a distributed Dask array.
 The analysis callback then computes on the global array and generates the visualization without requiring any explicit gather operation.
 
-In this example, the Gaussian temperature field becomes progressively wider over time, demonstrating how timesteps are streamed from the simulation to the analysis process as they are produced.
+As the Gaussian temperature field becomes progressively wider, its global sum eventually exceeds the configured threshold.
+The analysis application then sends a stop signal to the simulation, which terminates early rather than completing all 10 timesteps.
+
+This demonstrates bidirectional communication between simulation and analysis:
+simulation data are streamed to the analysis application, while analysis results can influence the simulation at runtime.
 
 The results are saved into the directory with the code like this:
 
