@@ -32,13 +32,16 @@
 # =============================================================================
 import asyncio
 import os
+import threading
 
 import numpy as np
 import pytest
-from distributed import Client, LocalCluster
+from distributed import Client, Event, LocalCluster
 from utils import FakeCartComm, FakeComm, async_map
 
 from deisa.dask import Bridge
+from deisa.dask.constants import WAIT_FOR_EXECUTE_CB_EVENT
+from deisa.dask.handshake import Handshake
 
 
 @pytest.fixture(scope="function")
@@ -66,6 +69,35 @@ def _close_all(bridges):
         await asyncio.gather(*[asyncio.to_thread(b.close, 0) for b in bridges])
 
     asyncio.run(_do())
+
+
+def _make_bridges_with_timeout(items, func, timeout: float = 30.0):
+    """Build bridges in parallel, failing instead of hanging when collectives do not match.
+
+    ``Bridge.__init__`` is collective, so a mismatched collective (the 0.7.0 rank-0-only prefetch) leaves the
+    FakeComm ranks waiting on each other forever. Daemon threads plus a bounded join turn that hang into a test
+    failure instead of a stuck worker.
+    """
+    items = list(items)
+    results: list = [None] * len(items)
+    errors = []
+
+    def run(index, item):
+        try:
+            results[index] = func(item)
+        except BaseException as e:  # noqa: BLE001 - re-raised below as a test failure
+            errors.append((item, e))
+
+    threads = [threading.Thread(target=run, args=(i, item), daemon=True) for i, item in enumerate(items)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout)
+
+    assert not errors, f"bridge creation failed: {errors}"
+    stuck = [items[i] for i, thread in enumerate(threads) if thread.is_alive()]
+    assert not stuck, f"bridge creation deadlocked on ranks {stuck}: mismatched collectives"
+    return results
 
 
 class TestSingleBridge:
@@ -148,6 +180,43 @@ class TestSingleBridge:
 
 class TestMultiBridge:
     """Multi-bridge scenarios with parallel bridge creation."""
+
+    def test_prefetch_populates_every_rank_cache(self, env_setup):
+        """Regression: the ``__init__`` prefetch must run on EVERY rank, not just world rank 0.
+
+        ``_prefetch_task_branches`` issues one bcast per array on that array's sub-communicator, so every
+        sub-comm member has to enter the same (sorted) sequence of collectives. With the 0.7.0
+        ``and self.id == 0`` gate only rank 0's cache was filled and any second shared array deadlocked;
+        here both ranks must end up with a populated ``_task_branches`` cache for both arrays.
+        """
+        client, _ = env_setup
+        # The two go events are set by the analytics side (``Handshake.deisa_ready``) and by
+        # ``Deisa.execute_callbacks()``. Set them up front so that ``__init__`` does not block waiting for an
+        # analytics side this test does not need.
+        Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
+        Event(WAIT_FOR_EXECUTE_CB_EVENT, client=client).set()
+
+        comm_state = FakeComm.State(2)
+        array_names = ("alpha", "beta")
+
+        def make_bridge(rank):
+            return Bridge(
+                comm=FakeComm(comm_state, rank),
+                arrays_metadata={
+                    name: {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (rank,)} for name in array_names
+                },
+                # wait_for_go defaults to True: this is the path that runs the prefetch.
+            )
+
+        bridges = _make_bridges_with_timeout(range(2), make_bridge, timeout=30)
+
+        for rank, bridge in enumerate(bridges):
+            for name in array_names:
+                cached = bridge._task_branches[name]
+                assert cached is not None, f"rank {rank} did not prefetch task branches for {name!r}"
+                assert cached == [], f"no callback registered: rank {rank}/{name!r} should cache an empty branch list"
+
+        _close_all(bridges)
 
     @pytest.mark.parametrize("comm_size", [2, 4])
     def test_all_bridges_same_array(self, env_setup, comm_size):

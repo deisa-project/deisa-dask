@@ -71,6 +71,59 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
+def mpi_prefetch_main(scheduler_address: str):
+    """Two ranks sharing two arrays, sending them in OPPOSITE orders.
+
+    ``Bridge.__init__`` prefetches task branches with one bcast per array on that array's sub-communicator, so the
+    prefetch MUST run on every rank. With the 0.7.0 rank-0-only gate, rank 0 prefetched in sorted order ("alpha",
+    "beta") while the other rank entered the sub-communicator of the array it sent FIRST -> both ranks block in a
+    bcast on different communicators and the run never finishes.
+    """
+    import logging
+
+    import numpy as np
+    from mpi4py import MPI
+
+    from deisa.dask import Bridge
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    rank = MPI.COMM_WORLD.Get_rank()
+    size = MPI.COMM_WORLD.Get_size()
+    assert size == 2, f"this scenario needs exactly 2 ranks, got {size}"
+
+    global_shape = (4,)
+    chunk_shape = (2,)
+    array_names = ("alpha", "beta")
+    arrays_metadata = {
+        name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": (rank,)}
+        for name in array_names
+    }
+
+    print(f"MPI {rank} of {size}: arrays_metadata={arrays_metadata}", flush=True)
+
+    # wait_for_go defaults to True: this is the path that runs the prefetch inside __init__.
+    bridge = Bridge(comm=MPI.COMM_WORLD, arrays_metadata=arrays_metadata)
+
+    # The prefetch must have run on EVERY rank. On an MPI whose bcast blocks for the root this scenario deadlocks in
+    # the bcast instead (the field-report symptom); on an eager-bcast MPI it "only" leaves the non-root ranks without
+    # their cache, which is what this assertion catches deterministically.
+    missing = [name for name, cached in bridge._task_branches.items() if cached is None]
+    assert not missing, (
+        f"__init__ prefetch did not populate task branches for {missing}: it must run on every rank, not only "
+        "world rank 0"
+    )
+    print(f"MPI {rank}: bridge ready, cached task branches for {sorted(bridge._task_branches)}", flush=True)
+
+    send_order = array_names if rank == 0 else tuple(reversed(array_names))
+    print(f"MPI {rank}: sending {send_order}", flush=True)
+    for array_name in send_order:
+        bridge.send(array_name, np.ones(chunk_shape, dtype=np.float64), timestep=1)
+
+    bridge.close(timestep=1)
+    print(f"MPI {rank} of {size} finished", flush=True)
+
+
 def has_mpirun():
     return shutil.which("mpirun") is not None
 
@@ -204,6 +257,85 @@ def test_mpi_bridge(global_size: Tuple, parallelism: int, comm: str):
         cluster.close()
 
 
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
+@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+def test_mpi_bridge_prefetch_all_ranks():
+    """Regression (0.7.0): the ``__init__`` prefetch must not deadlock with several shared arrays.
+
+    Two ranks share TWO arrays and send them in opposite orders. The prefetch is a per-array bcast, so running it on
+    world rank 0 only makes rank 0 block on the first array's sub-communicator while the other rank blocks on the
+    array it sends first -- a permanent deadlock (the field-report bug). The run is bounded by a timeout so a
+    deadlock fails the test instead of hanging it.
+
+    No ``Deisa`` analytics side is needed: the two go events are set up front, exactly like the FakeComm unit test,
+    which keeps the test on the prefetch protocol alone. Both arrays must still deliver one event per timestep with
+    one future per rank.
+    """
+    import signal
+
+    from distributed import Client, Event, LocalCluster
+
+    from deisa.dask.constants import WAIT_FOR_EXECUTE_CB_EVENT
+    from deisa.dask.handshake import Handshake
+
+    array_names = ("alpha", "beta")
+
+    cluster = LocalCluster(
+        n_workers=2,
+        threads_per_worker=1,
+        processes=True,
+        host="127.0.0.1",
+        scheduler_port=0,
+        dashboard_address=":0",
+        worker_dashboard_address=":0",
+    )
+    client = Client(cluster)
+    client.wait_for_workers(2, timeout=10)
+
+    # The handshake go event is normally set by the analytics side (``Handshake.deisa_ready``) and
+    # ``WAIT_FOR_EXECUTE_CB_EVENT`` by ``Deisa.execute_callbacks()``; setting both up front lets the bridges run the
+    # wait_for_go path without an analytics process.
+    Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
+    Event(WAIT_FOR_EXECUTE_CB_EVENT, client=client).set()
+
+    cmd = build_mpirun_cmd(2, "--mpi-prefetch", "--scheduler-address", cluster.scheduler.address)
+    print(f"cmd={cmd}", flush=True)
+
+    # Own session so that a deadlocked run can be killed as a whole (mpirun plus every rank) instead of leaving
+    # orphaned MPI processes behind.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        try:
+            output, _ = proc.communicate(timeout=90)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            output, _ = proc.communicate()
+            pytest.fail(
+                "MPI run did not finish within 90s: the __init__ prefetch deadlocked (it must run on every rank)\n"
+                f"output tail:\n{output[-4000:]}"
+            )
+
+        print("STDOUT:\n", output, flush=True)
+        assert proc.returncode == 0, f"MPI test failed (returncode={proc.returncode})\nSTDOUT:\n{output[-4000:]}"
+
+        for array_name in array_names:
+            events = client.get_events(array_name)
+            assert len(events) == 1, f"expected exactly one {array_name} event, got {events}"
+            _, info = events[0]
+            assert info["iteration"] == 1
+            positions = sorted(f["chunk_position"] for f in info["futures"])
+            assert positions == [(0,), (1,)], f"{array_name}: expected one chunk per rank, got {positions}"
+    finally:
+        client.close()
+        cluster.close()
+
+
 # ENTRY POINT SWITCH
 if __name__ == "__main__":
     print(f"sys.argv={sys.argv}", flush=True)
@@ -212,6 +344,7 @@ if __name__ == "__main__":
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--mpi-gather", action="store_true")
     group.add_argument("--mpi-bridge", action="store_true")
+    group.add_argument("--mpi-prefetch", action="store_true")
 
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
@@ -220,10 +353,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.mpi_bridge and not args.scheduler_address:
-        parser.error("--scheduler-address is required when using --mpi-bridge")
+    if (args.mpi_bridge or args.mpi_prefetch) and not args.scheduler_address:
+        parser.error("--scheduler-address is required when using --mpi-bridge or --mpi-prefetch")
 
     args = parser.parse_args()
+
+    if args.mpi_prefetch:
+        try:
+            os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = args.scheduler_address
+            mpi_prefetch_main(scheduler_address=args.scheduler_address)
+        except Exception as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(1)
+        sys.exit(0)
 
     if args.mpi_bridge:
         try:
