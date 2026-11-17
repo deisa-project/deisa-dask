@@ -323,32 +323,54 @@ class TestTileDaskBlocksUnevenChunks:
         with pytest.raises(ValueError, match="coordinate\\(s\\) for a 1-dimensional array"):
             Deisa._Deisa__tile_dask_blocks(pieces, (3,))
 
-    def test_position_degenerate_metadata_tiles_uniformly_as_before(self):
-        """Metadata declaring ONE chunk position for every rank still tiles like the pre-position-driven contract."""
+    def test_uniform_grid_tiles_when_every_piece_declares_its_own_position(self):
+        """A uniform grid stays expressible: each piece declares its TRUE position -- only guessing is banned."""
         data = np.arange(16.0).reshape(4, 4)
-        pieces = [_tile_piece(data[x : x + 2, y : y + 2], (0, 0)) for x in (0, 2) for y in (0, 2)]
+        pieces = [_tile_piece(data[x : x + 2, y : y + 2], (x // 2, y // 2)) for x in (0, 2) for y in (0, 2)]
 
         darr = Deisa._Deisa__tile_dask_blocks(pieces, (4, 4))
 
         assert darr.chunks == ((2, 2), (2, 2))
         assert np.array_equal(darr.compute(), data)
 
-    def test_position_degenerate_metadata_with_mismatched_count_is_loud(self):
+    def test_duplicate_chunk_positions_are_loud(self):
+        """Metadata declaring ONE chunk position for every rank describes no layout: refuse instead of guessing."""
+        data = np.arange(16.0).reshape(4, 4)
+        pieces = [_tile_piece(data[x : x + 2, y : y + 2], (0, 0)) for x in (0, 2) for y in (0, 2)]
+
+        with pytest.raises(
+            ValueError,
+            match=r"4 pieces claim the same chunk position \(0, 0\) for a 2-axis array \(axes 0\.\.1\): chunk "
+            r"positions are explicit and must be distinct; the gather metadata is inconsistent\.",
+        ):
+            Deisa._Deisa__tile_dask_blocks(pieces, (4, 4))
+
+    def test_duplicate_chunk_positions_in_one_dimension_are_loud(self):
         data = np.arange(6.0)
         pieces = [_tile_piece(data[0:2], (0,)), _tile_piece(data[2:4], (0,))]
 
-        with pytest.raises(ValueError, match="Mismatch between number of blocks"):
+        with pytest.raises(
+            ValueError,
+            match=r"2 pieces claim the same chunk position \(0,\) for a 1-axis array \(axes 0\.\.0\)",
+        ):
             Deisa._Deisa__tile_dask_blocks(pieces, (6,))
 
-    def test_grid_extent_from_positions_ignores_degenerate_positions(self):
+    def test_grid_extent_from_positions_reads_observed_positions(self):
         from deisa.dask.deisa import _grid_extent_from_positions
 
         assert _grid_extent_from_positions([(0,), (1,)]) == (2,)
         assert _grid_extent_from_positions([(0, 0), (0, 1), (1, 0)]) == (2, 2)
         assert _grid_extent_from_positions([]) is None
-        # Every piece reporting the same position says nothing about the grid: the caller must fall back.
-        assert _grid_extent_from_positions([(0, 0), (0, 0), (0, 0)]) is None
+        # One entry per (bridge, reduction) repeats a bridge's position: the extent still comes from the positions.
+        assert _grid_extent_from_positions([(0, 1), (0, 1), (1, 0)]) == (2, 2)
         assert _grid_extent_from_positions([(0, 0)]) == (1, 1)
+
+    def test_grid_extent_from_positions_rejects_mixed_arity(self):
+        """Positions with a different number of coordinates cannot describe one grid."""
+        from deisa.dask.deisa import _grid_extent_from_positions
+
+        with pytest.raises(ValueError, match="do not all have the same number of coordinates"):
+            _grid_extent_from_positions([(0,), (0, 0)])
 
 
 class TestUsingDaskCluster:

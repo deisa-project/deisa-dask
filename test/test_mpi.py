@@ -41,11 +41,16 @@ def mpi_bridge_main(scheduler_address: str, global_size: Tuple, parallelism: Tup
 
     assert size == np.prod(parallelism), f"comm size={size} should be equal to product of parallelism={parallelism}"
 
+    # The rank's TRUE chunk position in the global grid: every rank carries its own distinct chunk, so the analytics
+    # side can place each gathered piece by its own metadata. Declaring one position array-wide (the old fixture)
+    # described no layout at all and is now rejected loudly instead of being guessed back into a uniform grid.
+    chunk_position = tuple(int(i) for i in np.unravel_index(rank, tuple(parallelism)))
+
     arrays_metadata = {
         "temperature": {
             "global_shape": global_size,
             "chunk_shape": tuple(g // p for g, p in zip(global_size, parallelism)),
-            "chunk_position": (0,) * len(global_size),
+            "chunk_position": chunk_position,
         }
     }
 

@@ -16,6 +16,13 @@ Types of changes:
 
 ## [Unreleased]
 
+### Changed
+
+- `deisa.dask.deisa`: chunk positions are explicit and never guessed. Duplicate/degenerate chunk positions are now
+  rejected loudly (both in the full-chunk tiler and in the precompute path) and the uniform-grid fallback inference
+  is removed: no more row-major position nesting by stride, grid extent from `global_shape // chunk_shape`, or tile
+  count inferred the same way.
+
 ### Fixed
 
 - Bridge: the task-branch prefetch in `__init__` now runs on every rank instead of world rank 0 only. The prefetch

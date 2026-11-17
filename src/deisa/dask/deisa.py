@@ -522,15 +522,22 @@ class Deisa(IDeisa):
                         by_reduction.setdefault(f["output_key"], []).append(f)
                     metadata = _weak_self.arrays_metadata[array_name]
                     array_ndim = len(metadata.get("global_shape", ())) if metadata.get("global_shape") else None
-                    # The chunk grid is whatever the event's partials actually report. With an uneven chunk
+                    # The chunk grid is whatever positions the event actually reports. With an uneven chunk
                     # distribution ``global_shape // chunk_shape`` is wrong -- the merged metadata keeps ONE bridge's
-                    # own chunk shape -- so the metadata-derived extent is only the fallback when no position is known.
-                    grid_extent = _grid_extent_from_positions([f["chunk_position"] for f in futures])
-                    if grid_extent is not None:
-                        grid_size = int(np.prod(grid_extent))
-                    else:
-                        grid_extent = _grid_extent_from_metadata(metadata)
-                        grid_size = _grid_size_from_metadata(metadata)
+                    # own chunk shape -- so the extent is never derived from it. One entry per (bridge, reduction)
+                    # repeats a bridge's position, hence the distinct view.
+                    observed_positions = {tuple(int(v) for v in f["chunk_position"]) for f in futures}
+                    if len(observed_positions) == 1 and any(len(p) > 1 for p in by_reduction.values()):
+                        # Several partials, one position: the metadata describes no multi-bridge layout at all.
+                        # Guessing a uniform grid from it could silently deliver a wrong array, so refuse loudly.
+                        claimed = max(len(p) for p in by_reduction.values())
+                        raise ValueError(
+                            f"{claimed} bridge partial(s) claim the same chunk position "
+                            f"{next(iter(observed_positions))}: chunk positions are explicit and must be distinct; "
+                            "the gather metadata is inconsistent."
+                        )
+                    grid_extent = _grid_extent_from_positions(observed_positions)
+                    grid_size = int(np.prod(grid_extent)) if grid_extent is not None else None
                     combined_by_key: Dict[str, Any] = {}
                     for output_key, partial_futures in by_reduction.items():
                         kind = partial_futures[0].get("kind", "scalar")
@@ -851,6 +858,11 @@ class Deisa(IDeisa):
         data axis' block sizes are read off the pieces' positions and ``da.block`` concatenates the uneven result.
         Uniform grids remain the common case and behave exactly as before.
 
+        Positions are explicit and never guessed: a full-chunk gather carries exactly one piece per chunk, so two
+        pieces claiming the same position mean the gather metadata is inconsistent. Such positions describe no layout
+        (a single ``chunk_position`` declared array-wide) and inferring a uniform grid from them could silently tile a
+        wrong array, so they are rejected instead.
+
         - ``:param pieces:`` The topic event's ``futures`` entries, one per MPI chunk, each carrying ``future``,
         ``shape``, ``dtype`` and ``chunk_position``. ``:param global_shape:`` Shape of the full array to reconstruct.
         ``:return:`` The reconstructed ``dask.array.Array``. ``:rtype:`` dask.array.Array
@@ -868,35 +880,8 @@ class Deisa(IDeisa):
                 raise ValueError(f"No tiling possible for a 0-dimensional array: got {len(pieces)} blocks.")
             return da.from_delayed(pieces[0]["future"], shape=(), dtype=pieces[0]["dtype"])
 
-        def uniform_positions(block_shape: tuple[int, ...]) -> list[tuple[int, ...]]:
-            """Row-major positions of a flat, uniform tiling -- the pre-position-driven tiling contract."""
-            tile_counts = tuple(g // b for g, b in zip(global_shape, block_shape))
-            expected = int(np.prod(tile_counts))
-            if expected != len(pieces):
-                raise ValueError(
-                    f"Mismatch between number of blocks ({len(pieces)}) "
-                    f"and expected number from global_shape {global_shape} "
-                    f"with block shape {block_shape} (expected {expected} blocks)."
-                )
-            return [tuple(int(i) for i in pos) for pos in np.ndindex(*tile_counts)]
-
-        # Every piece claiming the SAME position means the positions describe no layout at all: this is metadata
-        # written before tiling was position-driven (one chunk position declared for the whole array). Keep the legacy
-        # uniform tiling for it rather than rejecting metadata that always worked.
-        fallback_positions: Optional[list[tuple[int, ...]]] = None
-        first_position = tuple(int(i) for i in pieces[0]["chunk_position"])
-        if len(pieces) > 1 and all(tuple(int(i) for i in p["chunk_position"]) == first_position for p in pieces):
-            block_shape = tuple(pieces[0]["shape"])
-            for piece in pieces[1:]:
-                shape = tuple(piece["shape"])
-                axis = next((i for i in range(ndim) if shape[i] != block_shape[i]), None)
-                if axis is not None:
-                    raise ValueError(
-                        f"Conflicting block shapes at chunk position {first_position} on axis {axis}: a block of "
-                        f"size {shape[axis]} collides with an earlier block of size {block_shape[axis]}. One grid "
-                        "position must map to exactly one chunk shape."
-                    )
-            fallback_positions = uniform_positions(block_shape)
+        positions = [tuple(int(i) for i in piece["chunk_position"]) for piece in pieces]
+        claims = collections.Counter(positions)
 
         # Per-axis chunk sizes, indexed by chunk position on that axis: uneven distributions make the size depend on
         # the position, never on a single global block shape. The position is read off the piece itself, so this one
@@ -904,8 +889,7 @@ class Deisa(IDeisa):
         blockdims: list[dict[int, int]] = [{} for _ in range(ndim)]
         by_position: dict[tuple[int, ...], da.Array] = {}
         for index, piece in enumerate(pieces):
-            pos = fallback_positions[index] if fallback_positions is not None else piece["chunk_position"]
-            pos = tuple(int(i) for i in pos)
+            pos = positions[index]
             block = da.from_delayed(piece["future"], shape=tuple(piece["shape"]), dtype=piece["dtype"])
             if block.ndim != ndim:
                 raise ValueError(
@@ -927,6 +911,14 @@ class Deisa(IDeisa):
                         "chunk shape."
                     )
                 blockdims[axis][position] = size
+            if pos in by_position:
+                # Distinct shapes at one position surface as the conflict above; identical ones would silently
+                # overwrite each other and drop a chunk from the reconstructed array.
+                raise ValueError(
+                    f"{claims[pos]} pieces claim the same chunk position {pos} for a {ndim}-axis array "
+                    f"(axes 0..{ndim - 1}): chunk positions are explicit and must be distinct; the gather metadata "
+                    "is inconsistent."
+                )
             by_position[pos] = block
 
         # The grid extent is whatever positions the pieces actually span -- not ``global_shape // block_shape``, which
@@ -996,40 +988,21 @@ def _grid_extent_from_positions(positions: Collection[Tuple[int, ...]]) -> Optio
     """Per-data-axis chunk-grid extent observed in a set of chunk positions.
 
     The positions themselves enumerate the MPI chunk indices, so ``max(position) + 1`` per axis is the grid extent no
-    matter how the chunks are sized: unlike :func:`_grid_extent_from_metadata` this stays correct when the chunk
-    distribution is uneven (chunks of different sizes). ``None`` when no position is available, when the positions are
-    not all the same dimensionality, or when every piece reports the SAME position -- such positions describe no
-    layout (metadata written before tiling was position-driven) and callers should fall back to the metadata extent.
+    matter how the chunks are sized: unlike ``global_shape // chunk_shape`` it stays correct when the chunk
+    distribution is uneven (chunks of different sizes). ``None`` when no position was observed, i.e. when there is
+    nothing to read the extent off.
+
+    Repeats carry no layout meaning here: a precompute event holds one entry per (bridge, reduction), so a bridge's
+    position legitimately appears once per reduction. Degenerate positions -- several pieces claiming ONE position --
+    are rejected by the full-chunk tiler and by the precompute path, never repaired into a guessed grid.
     """
     coords = [tuple(int(v) for v in c) for c in positions]
     if not coords:
         return None
     ndim = len(coords[0])
     if any(len(c) != ndim for c in coords):
-        return None
-    if len(coords) > 1 and len(set(coords)) == 1:
-        return None
+        raise ValueError(
+            f"Chunk positions {sorted(set(coords))} do not all have the same number of coordinates; every position "
+            "must carry one coordinate per data axis."
+        )
     return tuple(max(c[axis] for c in coords) + 1 for axis in range(ndim))
-
-
-def _grid_extent_from_metadata(metadata: Dict[str, Any]) -> Optional[Tuple[int, ...]]:
-    """Per-data-axis chunk-grid extent from the array metadata.
-
-    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI chunks along data axis ``i`` -- the harness
-    invariant that the MPI cart dims map one-to-one onto the array's data axes. ``None`` when metadata is incomplete.
-    """
-    g = metadata.get("global_shape")
-    c = metadata.get("chunk_shape")
-    if not g or not c or len(g) != len(c):
-        return None
-    if any(ch <= 0 for ch in c):
-        return None
-    return tuple(max(1, int(gl // ch)) for gl, ch in zip(g, c))
-
-
-def _grid_size_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
-    """Total number of MPI chunks (bridges) the metadata implies for an array."""
-    extent = _grid_extent_from_metadata(metadata)
-    if extent is None:
-        return None
-    return int(np.prod(extent))
