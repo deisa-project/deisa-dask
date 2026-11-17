@@ -175,6 +175,53 @@ def mpi_bridge_uneven_main(scheduler_address: str, chunk_lengths: Tuple):
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
+def mpi_uneven_metadata_main(scheduler_address: str):
+    """Two ranks sharing ONE array with UNEVEN chunks: global (3,) split as (1,) on rank 0 and (2,) on rank 1.
+
+    The gathered topic event must carry each piece's OWN chunk shape/dtype: the root used to stamp its own chunk
+    geometry on every gathered piece, so the event reported (1,) for both entries and the analytics side then
+    expected 3 tiles for 2 pieces (the "Mismatch between number of blocks" error). Distinct per-rank chunk values
+    (1 and 2) make a piece attributed to the wrong chunk_position visible in the event payload.
+
+    No ``Deisa``/callback registration is needed: the pytest side sets both go events up front, so this exercises the
+    bridge gather + real ``log_event`` only.
+    """
+    import logging
+
+    import numpy as np
+    from mpi4py import MPI
+
+    from deisa.dask import Bridge
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    rank = MPI.COMM_WORLD.Get_rank()
+    size = MPI.COMM_WORLD.Get_size()
+    assert size == 2, f"this scenario needs exactly 2 ranks, got {size}"
+
+    chunk_shape = {0: (1,), 1: (2,)}[rank]
+    chunk_position = {0: (0,), 1: (1,)}
+    arrays_metadata = {
+        "temperature": {
+            "global_shape": (3,),
+            "chunk_shape": chunk_shape,
+            "chunk_position": chunk_position[rank],
+        }
+    }
+    print(f"MPI {rank} of {size}: arrays_metadata={arrays_metadata}", flush=True)
+
+    # wait_for_go defaults to True: the go and execute-callback events are pre-set on the pytest side, so the normal
+    # wait_for_go path runs without an analytics process behind it.
+    bridge = Bridge(comm=MPI.COMM_WORLD, arrays_metadata=arrays_metadata)
+
+    # Distinct per-rank values: a piece reported at the other rank's chunk_position is detectable downstream.
+    chunk = np.ones(chunk_shape, dtype=np.float64) * (rank + 1)
+    bridge.send("temperature", chunk, timestep=1)
+
+    bridge.close(timestep=1)
+    print(f"MPI {rank} of {size} finished", flush=True)
+
+
 def has_mpirun():
     return shutil.which("mpirun") is not None
 
@@ -535,6 +582,83 @@ def test_mpi_bridge_uneven_chunks(chunk_lengths: Tuple):
         cluster.close()
 
 
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
+@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+def test_mpi_bridge_uneven_metadata():
+    """Regression: a gathered topic event must carry each bridge's OWN chunk shape, not the root's.
+
+    Two real MPI ranks share ONE array whose chunks are uneven: global (3,) is (1,) at chunk_position (0,) on rank 0
+    and (2,) at (1,) on rank 1. The pre-fix bridge stamped the root's (1,) chunk shape on BOTH gathered pieces, so
+    the analytics side inferred 3 tiles from 2 pieces and raised the "Mismatch between number of blocks" error; the
+    scattered data was always correct.
+
+    The assertion runs on this (pytest) side against the real event: exactly one ``temperature`` event whose two
+    futures entries report (1,) at (0,) and (2,) at (1,), both float64. No ``Deisa`` side is needed, both go events
+    are set up front, and the run is bounded by a timeout so a collective mismatch fails instead of hanging.
+    """
+    import signal
+
+    from distributed import Client, Event, LocalCluster
+
+    from deisa.dask.constants import WAIT_FOR_EXECUTE_CB_EVENT
+    from deisa.dask.handshake import Handshake
+
+    cluster = LocalCluster(
+        n_workers=2,
+        threads_per_worker=1,
+        processes=True,
+        host="127.0.0.1",
+        scheduler_port=0,
+        dashboard_address=":0",
+        worker_dashboard_address=":0",
+    )
+    client = Client(cluster)
+    client.wait_for_workers(2, timeout=10)
+
+    # Normally set by the analytics side (``Handshake.deisa_ready``) and ``Deisa.execute_callbacks()``; setting both
+    # up front lets the bridges run the wait_for_go path without an analytics process.
+    Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
+    Event(WAIT_FOR_EXECUTE_CB_EVENT, client=client).set()
+
+    cmd = build_mpirun_cmd(2, "--mpi-uneven-metadata", "--scheduler-address", cluster.scheduler.address)
+    print(f"cmd={cmd}", flush=True)
+
+    # Own session so that a stuck run can be killed as a whole (mpirun plus every rank) instead of leaving orphans.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        try:
+            output, _ = proc.communicate(timeout=90)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            output, _ = proc.communicate()
+            pytest.fail(f"MPI run did not finish within 90s\noutput tail:\n{output[-4000:]}")
+
+        print("STDOUT:\n", output, flush=True)
+        assert proc.returncode == 0, f"MPI test failed (returncode={proc.returncode})\nSTDOUT:\n{output[-4000:]}"
+
+        events = client.get_events("temperature")
+        assert len(events) == 1, f"expected exactly one temperature event, got {events}"
+        _, info = events[0]
+        assert info["iteration"] == 1
+        futures = info["futures"]
+        assert len(futures) == 2, f"expected one futures entry per rank, got {futures}"
+
+        shape_by_position = {entry["chunk_position"]: entry["shape"] for entry in futures}
+        assert shape_by_position == {(0,): (1,), (1,): (2,)}, (
+            f"each entry must report its OWN chunk shape: got {[(f['chunk_position'], f['shape']) for f in futures]}"
+        )
+        assert {entry["dtype"] for entry in futures} == {"float64"}, f"unexpected dtypes: {futures}"
+    finally:
+        client.close()
+        cluster.close()
+
+
 # ENTRY POINT SWITCH
 if __name__ == "__main__":
     print(f"sys.argv={sys.argv}", flush=True)
@@ -545,6 +669,7 @@ if __name__ == "__main__":
     group.add_argument("--mpi-bridge", action="store_true")
     group.add_argument("--mpi-prefetch", action="store_true")
     group.add_argument("--mpi-bridge-uneven", action="store_true")
+    group.add_argument("--mpi-uneven-metadata", action="store_true")
 
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
@@ -554,8 +679,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if (args.mpi_bridge or args.mpi_prefetch or args.mpi_bridge_uneven) and not args.scheduler_address:
-        parser.error("--scheduler-address is required when using --mpi-bridge or --mpi-prefetch or --mpi-bridge-uneven")
+    if (
+        args.mpi_bridge or args.mpi_prefetch or args.mpi_bridge_uneven or args.mpi_uneven_metadata
+    ) and not args.scheduler_address:
+        parser.error(
+            "--scheduler-address is required when using --mpi-bridge or --mpi-prefetch or --mpi-bridge-uneven or --mpi-uneven-metadata"
+        )
 
     args = parser.parse_args()
 
@@ -580,6 +709,15 @@ if __name__ == "__main__":
                 global_size=global_size,
                 comm=args.comm,
             )
+        except Exception as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.mpi_uneven_metadata:
+        try:
+            os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = args.scheduler_address
+            mpi_uneven_metadata_main(scheduler_address=args.scheduler_address)
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)
             sys.exit(1)
