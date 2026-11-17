@@ -425,6 +425,10 @@ class Bridge(IBridge):
         to_send = {
             "future-info": res,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
+            # The sender's OWN chunk geometry travels with the piece: chunks may be uneven across ranks, so the
+            # root must not stamp its own shape/dtype on pieces that came from another bridge.
+            "chunk_shape": chunk.shape,
+            "chunk_dtype": str(chunk.dtype),
             "precomputed": precomputed_meta,
         }
         logger.debug(f"[{self.id}] send() gather: to_send={to_send}")
@@ -477,14 +481,15 @@ class Bridge(IBridge):
                         )
                     )
             else:
-                # Full-chunk path: one entry per bridge with the full-chunk shape.
+                # Full-chunk path: one entry per bridge, each with the SENDER's own chunk geometry: chunks may be
+                # uneven across ranks, so the root must not stamp its own shape/dtype on another bridge's piece.
                 futures_payload = [
                     {
                         "future": d["future-info"]["future"][0]
                         if isinstance(d["future-info"]["future"], list)
                         else d["future-info"]["future"],
-                        "shape": chunk.shape,
-                        "dtype": str(chunk.dtype),
+                        "shape": d["chunk_shape"],
+                        "dtype": d["chunk_dtype"],
                         "chunk_position": d["chunk_position"],
                     }
                     for d in gathered_data

@@ -466,3 +466,47 @@ class TestMultiBridge:
         assert "pressure" in bridge._array_comms
         assert bridge._array_comms["temperature"].Get_size() == 1
         assert bridge._array_comms["pressure"].Get_size() == 1
+
+    @pytest.mark.timeout(30)
+    def test_uneven_chunks_event_carries_per_piece_shape_and_dtype(self, env_setup):
+        """Uneven chunks: the event carries each gathered piece's OWN shape/dtype.
+
+        Two ranks declare the same array with global_shape (3,), but chunk (1,) at chunk_position (0,) on rank 0 and
+        chunk (2,) at (1,) on rank 1, with different dtypes. Both send on the full-chunk path. The root used to stamp
+        its own ``chunk.shape``/``chunk.dtype`` on every gathered piece, so both entries reported (1,)/float64 and
+        the Deisa side inferred 3 tiles against 2 pieces.
+        """
+        client, cluster = env_setup
+
+        metadata_0 = {"temperature": {"global_shape": (3,), "chunk_shape": (1,), "chunk_position": (0,)}}
+        metadata_1 = {"temperature": {"global_shape": (3,), "chunk_shape": (2,), "chunk_position": (1,)}}
+        comm_state = FakeComm.State(2)
+
+        def make_bridge(args):
+            rank, meta = args
+            return Bridge(comm=FakeComm(comm_state, rank), arrays_metadata=meta, wait_for_go=False)
+
+        bridges = async_map([(0, metadata_0), (1, metadata_1)], make_bridge)
+
+        chunks = {0: np.ones(1, dtype=np.float64), 1: np.ones(2, dtype=np.int32)}
+
+        def do_send(rank):
+            bridges[rank].send("temperature", chunks[rank], timestep=0)
+
+        async_map(range(2), do_send)
+
+        events = client.get_events("temperature")
+        assert len(events) == 1
+        _, info = events[0]
+        # The base pipeline's "no precompute" sentinel on the full-chunk path is None (v0.7.0), not False.
+        assert not info["precomputed"]
+        assert len(info["futures"]) == 2
+
+        by_position = {tuple(f["chunk_position"]): f for f in info["futures"]}
+        assert set(by_position) == {(0,), (1,)}
+        assert tuple(by_position[(0,)]["shape"]) == (1,)
+        assert by_position[(0,)]["dtype"] == "float64"
+        assert tuple(by_position[(1,)]["shape"]) == (2,)
+        assert by_position[(1,)]["dtype"] == "int32"
+
+        _close_all(bridges)
