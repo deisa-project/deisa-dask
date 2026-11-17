@@ -134,6 +134,47 @@ def mpi_prefetch_main(scheduler_address: str):
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
+def mpi_bridge_uneven_main(scheduler_address: str, chunk_lengths: Tuple):
+    """One MPI rank sends an UNEVEN chunk of a 1-D global array: rank r owns ``chunk_lengths[r]`` elements."""
+    import logging
+
+    import numpy as np
+    from mpi4py import MPI
+
+    from deisa.dask import Bridge
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    bridge_comm = MPI.COMM_WORLD
+    rank = bridge_comm.Get_rank()
+    size = bridge_comm.Get_size()
+
+    assert size == len(chunk_lengths), f"comm size={size} should be the number of uneven chunks={len(chunk_lengths)}"
+
+    global_shape = (sum(chunk_lengths),)
+    arrays_metadata = {
+        "temperature": {
+            # Every rank declares the SAME global shape but its OWN chunk shape and position: the uneven distribution.
+            "global_shape": global_shape,
+            "chunk_shape": (chunk_lengths[rank],),
+            "chunk_position": (rank,),
+        }
+    }
+    print(f"MPI {rank} of {size}: arrays_metadata={arrays_metadata}", flush=True)
+
+    bridge = Bridge(comm=bridge_comm, arrays_metadata=arrays_metadata)
+
+    wait_for(lambda: bridge.get("hello", timestep=1) == "world", timeout=10, interval=1)
+
+    # Values 1..global_shape[0] in rank order, so the global sum does not depend on the tiling: 1 + 2 + ... + N.
+    first = sum(chunk_lengths[:rank]) + 1
+    to_send = np.arange(first, first + chunk_lengths[rank], dtype=np.float64)
+    bridge.send("temperature", to_send, timestep=1)
+
+    bridge.close(timestep=1)
+    print(f"MPI {rank} of {size} finished", flush=True)
+
+
 def has_mpirun():
     return shutil.which("mpirun") is not None
 
@@ -387,6 +428,113 @@ def test_mpi_bridge_prefetch_all_ranks():
         cluster.close()
 
 
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
+@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+@pytest.mark.parametrize("chunk_lengths", [(1, 2), (2, 1), (1, 1, 2)])
+def test_mpi_bridge_uneven_chunks(chunk_lengths: Tuple):
+    """An UNEVEN chunk distribution must still reconstruct the global array (the field-reported failure).
+
+    Two ranks used to fail with ``Mismatch between number of blocks (2) and expected number from global_shape (3,)
+    with block shape (1,)`` because the tiler assumed a uniform grid; the callback here reads the global array with
+    ``precompute=False`` so the full-chunk tiling path is the one under test.
+    """
+    from distributed import Client, LocalCluster
+
+    from deisa.dask import Deisa
+
+    cluster = LocalCluster(
+        n_workers=2,
+        threads_per_worker=1,
+        processes=True,
+        host="127.0.0.1",
+        scheduler_port=0,
+        dashboard_address=":0",
+        worker_dashboard_address=":0",
+    )
+    client = Client(cluster)
+    print(f"client={client}", flush=True)
+
+    os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler_address
+
+    client.wait_for_workers(2, timeout=10)
+
+    global_len = sum(chunk_lengths)
+    expected_sum = float(sum(range(1, global_len + 1)))
+
+    def work():
+        logging.basicConfig(level=logging.DEBUG)
+
+        deisa = Deisa(timeout=10)
+
+        print(f"deisa={deisa}: deisa.arrays_metadata={deisa.arrays_metadata}", flush=True)
+
+        deisa.set("hello", "world", timestep=1)
+
+        callback_failed = []
+        # Records the totals the callback actually validated: without it a callback that never fires would leave the
+        # subprocess exit code green and the test would pass vacuously.
+        seen = []
+
+        def exception_handler(exception: BaseException):
+            print(f"exception_handler: exception={exception}", flush=True)
+            callback_failed.append(exception)
+
+        @deisa.register("temperature", exception_handler=exception_handler, precompute=False)
+        def cb(window):
+            darr = window[-1]
+            assert isinstance(darr, DeisaArray)
+            print(f"uneven callback: shape={darr.shape}, chunks={darr.chunks}", flush=True)
+            assert darr.shape == (global_len,), f"reconstructed shape {darr.shape} should be ({global_len},)"
+            # The pieces' own sizes, in chunk-position order: the tiling must stay uneven, not be repacked.
+            assert darr.chunks[0] == tuple(chunk_lengths), (
+                f"reconstructed chunks {darr.chunks[0]} should be the per-rank chunk sizes {tuple(chunk_lengths)}"
+            )
+            total = darr.sum().compute()
+            assert total == expected_sum, f"global sum {total} should be {expected_sum}"
+            seen.append(total)
+
+        deisa.execute_callbacks()
+        if callback_failed:
+            print(f"callback raised {callback_failed!r}", flush=True)
+            return 1
+        if not seen:
+            print("callback never ran: the uneven tiling was never exercised", flush=True)
+            return 1
+        return 0
+
+    pool = ThreadPool(processes=1)
+
+    def error_callback(e):
+        print(f"[ERROR] {e}", flush=True)
+        raise e
+
+    async_result = pool.apply_async(work, error_callback=error_callback)
+
+    cmd = build_mpirun_cmd(
+        len(chunk_lengths),
+        "--mpi-bridge-uneven",
+        "--scheduler-address",
+        cluster.scheduler.address,
+        "--chunk-lengths",
+        str(tuple(chunk_lengths)),
+    )
+
+    print(f"cmd={cmd}", flush=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        print("STDOUT:\n", result.stdout, flush=True)
+        print("STDERR:\n", result.stderr, flush=True)
+        assert result.returncode == 0, f"MPI test failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        # The callback's own compute only drains once the bridges are done, so this wait is a liveness bound on the
+        # analytics side, not a performance assertion.
+        assert async_result.get(timeout=60) == 0
+    finally:
+        pool.terminate()
+        pool.join()
+        client.close()
+        cluster.close()
+
+
 # ENTRY POINT SWITCH
 if __name__ == "__main__":
     print(f"sys.argv={sys.argv}", flush=True)
@@ -396,16 +544,18 @@ if __name__ == "__main__":
     group.add_argument("--mpi-gather", action="store_true")
     group.add_argument("--mpi-bridge", action="store_true")
     group.add_argument("--mpi-prefetch", action="store_true")
+    group.add_argument("--mpi-bridge-uneven", action="store_true")
 
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
     parser.add_argument("--parallelism", default="(2, 2)")
     parser.add_argument("--comm", default="none")
+    parser.add_argument("--chunk-lengths", default="(1, 2)")
 
     args = parser.parse_args()
 
-    if (args.mpi_bridge or args.mpi_prefetch) and not args.scheduler_address:
-        parser.error("--scheduler-address is required when using --mpi-bridge or --mpi-prefetch")
+    if (args.mpi_bridge or args.mpi_prefetch or args.mpi_bridge_uneven) and not args.scheduler_address:
+        parser.error("--scheduler-address is required when using --mpi-bridge or --mpi-prefetch or --mpi-bridge-uneven")
 
     args = parser.parse_args()
 
@@ -429,6 +579,20 @@ if __name__ == "__main__":
                 parallelism=parallelism,
                 global_size=global_size,
                 comm=args.comm,
+            )
+        except Exception as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.mpi_bridge_uneven:
+        try:
+            chunk_lengths = eval(args.chunk_lengths)
+            print(f"chunk_lengths={chunk_lengths}", flush=True)
+            os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = args.scheduler_address
+            mpi_bridge_uneven_main(
+                scheduler_address=args.scheduler_address,
+                chunk_lengths=chunk_lengths,
             )
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)

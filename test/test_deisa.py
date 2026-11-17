@@ -208,6 +208,107 @@ class TestDeisaRegistration:
         assert "full-chunk scatter path" in caplog.text
 
 
+class TestTileDaskBlocksUnevenChunks:
+    """Pieces of DIFFERENT shapes must tile correctly, driven by their chunk positions.
+
+    This is the analytics half of uneven MPI chunk distribution. Before the position-driven rewrite, two ranks with
+    chunks (1,)/(2,) on a global (3,) array raised ``Mismatch between number of blocks (2) and expected number from
+    global_shape (3,) with block shape (1,)``.
+    """
+
+    @staticmethod
+    def _uneven_pieces(array: np.ndarray, axis_lengths: List[List[int]]):
+        """Cut ``array`` into one piece per chunk position, splitting each axis by ``axis_lengths[axis]``."""
+        offsets = [np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(int) for lengths in axis_lengths]
+        blocks, positions = [], []
+        for position in np.ndindex(*(len(lengths) for lengths in axis_lengths)):
+            slices = tuple(
+                slice(int(offsets[axis][p]), int(offsets[axis][p] + axis_lengths[axis][p]))
+                for axis, p in enumerate(position)
+            )
+            piece = array[slices]
+            blocks.append(da.from_array(piece, chunks=piece.shape))
+            positions.append(tuple(int(p) for p in position))
+        return blocks, positions
+
+    def test_field_case_one_dimensional_uneven_chunks(self):
+        """The reported failure: two ranks, chunks (1,) at position (0,) and (2,) at position (1,)."""
+        data = np.array([1.0, 2.0, 3.0])
+        blocks = [da.from_array(data[0:1], chunks=1), da.from_array(data[1:3], chunks=2)]
+
+        darr = Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,), (1,)])
+
+        assert darr.shape == (3,)
+        assert darr.chunks == ((1, 2),)
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(6.0)
+
+    @pytest.mark.parametrize(
+        "axis_lengths",
+        [
+            [[1, 3], [2, 2]],
+            [[3, 1], [2, 2]],
+            [[2, 2], [1, 3]],
+            [[1, 3], [3, 1]],
+        ],
+    )
+    def test_two_dimensional_uneven_chunks(self, axis_lengths):
+        data = np.arange(16.0).reshape(4, 4)
+        blocks, positions = self._uneven_pieces(data, axis_lengths)
+
+        darr = Deisa._Deisa__tile_dask_blocks(blocks, (4, 4), positions)
+
+        assert darr.shape == (4, 4)
+        assert darr.chunks == tuple(tuple(lengths) for lengths in axis_lengths)
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(data.sum())
+
+    def test_three_dimensional_uneven_chunks(self):
+        data = np.arange(2 * 3 * 5).reshape(2, 3, 5).astype(np.float64)
+        blocks, positions = self._uneven_pieces(data, [[1, 1], [2, 1], [1, 4]])
+
+        darr = Deisa._Deisa__tile_dask_blocks(blocks, data.shape, positions)
+
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(data.sum())
+
+    def test_pieces_are_placed_by_position_not_by_order(self):
+        data = np.arange(16.0).reshape(4, 4)
+        blocks, positions = self._uneven_pieces(data, [[1, 3], [2, 2]])
+
+        darr = Deisa._Deisa__tile_dask_blocks(list(reversed(blocks)), (4, 4), list(reversed(positions)))
+
+        assert np.array_equal(darr.compute(), data)
+
+    def test_gap_in_coverage_is_loud(self):
+        data = np.arange(3.0)
+        blocks = [da.from_array(data[0:1], chunks=1), da.from_array(data[2:3], chunks=1)]
+
+        with pytest.raises(ValueError, match="Missing chunk at position 1 on axis 0"):
+            Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,), (2,)])
+
+    def test_position_collision_with_conflicting_shapes_is_loud(self):
+        data = np.arange(3.0)
+        blocks = [da.from_array(data[0:1], chunks=1), da.from_array(data[1:3], chunks=2)]
+
+        with pytest.raises(ValueError, match=r"Conflicting block shapes at chunk position \(0,\) on axis 0"):
+            Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,), (0,)])
+
+    def test_coverage_shortfall_names_axis_and_extent(self):
+        data = np.arange(3.0)
+        blocks = [da.from_array(data[0:1], chunks=1), da.from_array(data[1:2], chunks=1)]
+
+        with pytest.raises(ValueError, match="cover 2 element"):
+            Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,), (1,)])
+
+    def test_misaligned_position_count_is_loud(self):
+        data = np.arange(3.0)
+        blocks = [da.from_array(data[0:1], chunks=1), da.from_array(data[1:3], chunks=2)]
+
+        with pytest.raises(ValueError, match="chunk position"):
+            Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,)])
+
+
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function", params=[1, 2])
     def env_setup(self, request):
