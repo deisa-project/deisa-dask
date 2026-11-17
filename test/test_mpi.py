@@ -227,6 +227,52 @@ def mpi_uneven_metadata_main(scheduler_address: str):
     print(f"MPI {rank} of {size} finished", flush=True)
 
 
+def mpi_derived_position_main(scheduler_address: str):
+    """Three ranks register an array WITHOUT ``chunk_position`` on a real Cartesian communicator.
+
+    ``MPI.Compute_dims(3, 2)`` gives the non-square (3, 1) shape, so the chunks form a uniform (3, 1) grid of (2, 2)
+    tiles inside a (6, 2) array. Nothing declares a position: the bridge must derive each rank's from its Cartesian
+    COORDINATES, which also exercises the parent-communicator fallback -- ``MPI_Comm_split`` drops the Cartesian
+    topology, so the array's own sub-communicator reports none. Every chunk carries a distinct value (rank + 1), so a
+    piece placed at another rank's position shows up in the array the analytics side reconstructs.
+    """
+    import logging
+
+    import numpy as np
+    from mpi4py import MPI
+
+    from deisa.dask import Bridge
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    world = MPI.COMM_WORLD
+    rank = world.Get_rank()
+    size = world.Get_size()
+    assert size == 3, f"this scenario needs 3 ranks (the odd, non-pair case), got {size}"
+
+    dims = MPI.Compute_dims(size, 2)
+    bridge_comm = world.Create_cart(dims, periods=(False, False), reorder=False)
+    chunk_shape = (2, 2)
+    global_shape = tuple(d * c for d, c in zip(dims, chunk_shape))
+
+    # No chunk_position anywhere: it is derived from the communicator topology at registration.
+    arrays_metadata = {"temperature": {"global_shape": global_shape, "chunk_shape": chunk_shape}}
+    print(f"MPI {rank} of {size}: dims={dims} arrays_metadata={arrays_metadata}", flush=True)
+
+    bridge = Bridge(comm=bridge_comm, arrays_metadata=arrays_metadata)
+    print(
+        f"MPI {rank} of {size}: derived chunk_position={bridge.arrays_metadata['temperature']['chunk_position']}",
+        flush=True,
+    )
+
+    wait_for(lambda: bridge.get("hello", timestep=1) == "world", timeout=10, interval=1)
+
+    bridge.send("temperature", np.full(chunk_shape, rank + 1, dtype=np.float64), timestep=1)
+
+    bridge.close(timestep=1)
+    print(f"MPI {rank} of {size} finished", flush=True)
+
+
 def has_mpirun():
     return shutil.which("mpirun") is not None
 
@@ -664,6 +710,130 @@ def test_mpi_bridge_uneven_metadata():
         cluster.close()
 
 
+@pytest.mark.skipif(is_xdist(), reason="requires serial execution")
+@pytest.mark.skipif(not has_mpirun(), reason="mpirun not available")
+def test_mpi_bridge_derived_position():
+    """A registered array WITHOUT ``chunk_position`` gets its position derived from the communicator topology.
+
+    Three real MPI ranks -- the odd, non-pair case -- hand the bridge a Cartesian communicator with the non-square
+    ``MPI.Compute_dims(3, 2) == (3, 1)`` dims and register a (6, 2) array in (2, 2) chunks, declaring no position at
+    all. Each rank ships a chunk filled with ``rank + 1``, so the callback can assert the analytics side rebuilt the
+    array the derivation implies: rows 2r..2r+1 carry rank r's value, which only holds when every piece sits at its
+    own Cartesian coordinates. The event's futures entries are checked too, so the position each piece carried is
+    asserted directly.
+    """
+    import signal
+
+    import numpy as np
+    from distributed import Client, LocalCluster
+
+    from deisa.dask import Deisa
+
+    dims = (3, 1)  # MPI.Compute_dims(3, 2)
+    chunk_shape = (2, 2)
+    global_shape = tuple(d * c for d, c in zip(dims, chunk_shape))  # (6, 2)
+    # Rank r's chunk is filled with r + 1, so the tiled array has rows 2r..2r+1 equal to r + 1.
+    row_values = np.repeat(np.arange(1, dims[0] + 1, dtype=np.float64), chunk_shape[0])
+    expected = np.tile(row_values[:, np.newaxis], (1, chunk_shape[1]))
+
+    cluster = LocalCluster(
+        n_workers=2,
+        threads_per_worker=1,
+        processes=True,
+        host="127.0.0.1",
+        scheduler_port=0,
+        dashboard_address=":0",
+        worker_dashboard_address=":0",
+    )
+    client = Client(cluster)
+    client.wait_for_workers(2, timeout=10)
+
+    os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = cluster.scheduler_address
+
+    def work():
+        logging.basicConfig(level=logging.DEBUG)
+
+        deisa = Deisa(timeout=10)
+        print(f"deisa={deisa}: deisa.arrays_metadata={deisa.arrays_metadata}", flush=True)
+
+        deisa.set("hello", "world", timestep=1)
+
+        callback_failed = []
+        seen = []
+
+        def exception_handler(exception: BaseException):
+            print(f"exception_handler: exception={exception}", flush=True)
+            callback_failed.append(exception)
+
+        @deisa.register("temperature", exception_handler=exception_handler, precompute=False)
+        def cb(window):
+            darr = window[-1]
+            print(f"derived-position callback: shape={darr.shape}, chunks={darr.chunks}", flush=True)
+            assert darr.shape == global_shape, f"reconstructed shape {darr.shape} should be {global_shape}"
+            # One tile per derived position (r, 0): 3 row blocks of 2 and a single column block.
+            assert darr.chunks == ((chunk_shape[0],) * dims[0], (chunk_shape[1],)), (
+                f"reconstructed chunks {darr.chunks} should be {(chunk_shape[0],) * dims[0], (chunk_shape[1],)}"
+            )
+            data = darr.compute()
+            assert (data == expected).all(), f"reconstructed array\n{data}\nshould be\n{expected}"
+            seen.append(True)
+
+        deisa.execute_callbacks()
+        if callback_failed:
+            print(f"callback raised {callback_failed!r}", flush=True)
+            return 1
+        if not seen:
+            print("callback never ran: the derived tiling was never exercised", flush=True)
+            return 1
+        return 0
+
+    pool = ThreadPool(processes=1)
+
+    def error_callback(e):
+        print(f"[ERROR] {e}", flush=True)
+        raise e
+
+    async_result = pool.apply_async(work, error_callback=error_callback)
+
+    cmd = build_mpirun_cmd(3, "--mpi-derived-position", "--scheduler-address", cluster.scheduler.address)
+    print(f"cmd={cmd}", flush=True)
+
+    # Own session so that a stuck run can be killed as a whole (mpirun plus every rank) instead of leaving orphans.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        try:
+            output, _ = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            output, _ = proc.communicate()
+            pytest.fail(f"MPI run did not finish within 120s\noutput tail:\n{output[-4000:]}")
+
+        print("STDOUT:\n", output, flush=True)
+        assert proc.returncode == 0, f"MPI test failed (returncode={proc.returncode})\nSTDOUT:\n{output[-4000:]}"
+
+        # The event carries the derived position of each piece: (r, 0) for every rank, none repeated.
+        events = client.get_events("temperature")
+        assert len(events) == 1, f"expected exactly one temperature event, got {events}"
+        _, info = events[0]
+        positions = {tuple(entry["chunk_position"]) for entry in info["futures"]}
+        assert positions == {(0, 0), (1, 0), (2, 0)}, f"each piece must carry its derived position, got {positions}"
+
+        # The callback's own compute only drains once the bridges are done, so this wait is a liveness bound on the
+        # analytics side, not a performance assertion.
+        assert async_result.get(timeout=60) == 0
+    finally:
+        pool.terminate()
+        pool.join()
+        client.close()
+        cluster.close()
+
+
 # ENTRY POINT SWITCH
 if __name__ == "__main__":
     print(f"sys.argv={sys.argv}", flush=True)
@@ -675,6 +845,7 @@ if __name__ == "__main__":
     group.add_argument("--mpi-prefetch", action="store_true")
     group.add_argument("--mpi-bridge-uneven", action="store_true")
     group.add_argument("--mpi-uneven-metadata", action="store_true")
+    group.add_argument("--mpi-derived-position", action="store_true")
 
     parser.add_argument("--scheduler-address")
     parser.add_argument("--global-size", default="(32, 32)")
@@ -685,10 +856,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if (
-        args.mpi_bridge or args.mpi_prefetch or args.mpi_bridge_uneven or args.mpi_uneven_metadata
+        args.mpi_bridge
+        or args.mpi_prefetch
+        or args.mpi_bridge_uneven
+        or args.mpi_uneven_metadata
+        or args.mpi_derived_position
     ) and not args.scheduler_address:
         parser.error(
-            "--scheduler-address is required when using --mpi-bridge or --mpi-prefetch or --mpi-bridge-uneven or --mpi-uneven-metadata"
+            "--scheduler-address is required when using --mpi-bridge or --mpi-prefetch or --mpi-bridge-uneven "
+            "or --mpi-uneven-metadata or --mpi-derived-position"
         )
 
     args = parser.parse_args()
@@ -737,6 +913,15 @@ if __name__ == "__main__":
                 scheduler_address=args.scheduler_address,
                 chunk_lengths=chunk_lengths,
             )
+        except Exception as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.mpi_derived_position:
+        try:
+            os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = args.scheduler_address
+            mpi_derived_position_main(scheduler_address=args.scheduler_address)
         except Exception as e:
             print(f"[ERROR] {e}", flush=True)
             sys.exit(1)

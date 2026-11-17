@@ -56,9 +56,29 @@ try:
     from mpi4py import MPI
 
     _UNDEFINED = MPI.UNDEFINED
+    _CART = MPI.CART
 except Exception:
     logger.warning("mpi4py not available.")
     _UNDEFINED = 2147483647
+    # mpi4py's MPI.CART value; the test fakes report the same one.
+    _CART = 1
+
+
+def _cart_coords(*comms: Any) -> Optional[List[int]]:
+    """The rank's Cartesian coordinates on the first communicator with a Cartesian topology, else ``None``.
+
+    ``MPI_Comm_split`` does not carry the parent's Cartesian topology over: an array's sub-communicator reports
+    ``MPI.UNDEFINED`` even when the communicator the user created is a cart one. The candidates are therefore tried
+    in turn -- and whichever comm supplies them, Cartesian coordinates still identify a rank uniquely.
+    """
+    for comm in comms:
+        if comm is None or comm is _COMM_NULL:
+            continue
+        get_topology = getattr(comm, "Get_topology", None)
+        if get_topology is None or get_topology() != _CART:
+            continue
+        return [int(c) for c in comm.Get_coords(comm.Get_rank())]
+    return None
 
 
 class Bridge(IBridge):
@@ -90,12 +110,18 @@ class Bridge(IBridge):
         - ``:param args:`` Additional positional arguments for the initialization.
         - ``:param kwargs:`` Additional keyword arguments for the initialization. Can include
             configuration parameters like timeout used during client setup.
+
+        ``chunk_position`` may be omitted per array: it is then derived ONCE, here, from the communicator topology
+        (see ``_resolve_chunk_positions``). Distributions that cannot be derived raise instead of being guessed.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
         self.id = self.comm.Get_rank()
-        self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self._my_arrays: set[str] = set(arrays_metadata.keys())  # arrays this bridge owns
+        # One own copy per array: a derived default lands in the bridge's metadata, never in the caller's dict.
+        # Validation runs after the defaults are resolved (see _resolve_chunk_positions), so an entry without a
+        # 'chunk_position' is legal at registration time.
+        self.arrays_metadata = {name: dict(metadata) for name, metadata in arrays_metadata.items()}
+        self._my_arrays: set[str] = set(self.arrays_metadata)  # arrays this bridge owns
         self._feedback_queues = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
         self._has_close_been_called = False
         self.workers = None
@@ -127,6 +153,11 @@ class Bridge(IBridge):
 
         # Auto-discover array participation and create sub-communicators
         self._setup_array_comms()
+
+        # Default chunk positions are resolved ONCE, here, where the topology is known: the send/gather/publish
+        # paths below only ever consume the resolved value (no per-send topology queries).
+        self._resolve_chunk_positions()
+        self.arrays_metadata = validate_arrays_metadata(self.arrays_metadata)
 
         if self.id == 0:
             # all bridges are ready, tell handshake actor
@@ -238,6 +269,80 @@ class Bridge(IBridge):
                 f"participates={participates}, "
                 f"sub_comm_size={sub_comm.Get_size() if sub_comm is not _COMM_NULL else 'NULL'}"
             )
+
+    def _resolve_chunk_positions(self) -> None:
+        """Resolve every array's missing ``chunk_position`` from the communicator topology, ONCE per array.
+
+        Precedence, in order:
+
+        1. a user-specified ``chunk_position`` is authoritative and used verbatim (duplicates across pieces are
+           rejected downstream, where all of them are visible);
+        2. no user position on a Cartesian topology: the rank's Cartesian coordinates (unique per rank, so a
+           derivation can never collide);
+        3. no user position on a plain communicator: the rank's index as a C-order tile of the UNIFORM grid implied
+           by ``global_shape // chunk_shape``;
+        4. anything else raises: that distribution cannot be derived and REQUIRES an explicit ``chunk_position`` at
+           registration. It is never silently repaired.
+
+        Positions stay explicit downstream: the tiler only ever receives these resolved values and never infers a
+        grid of its own.
+        """
+        for array_name, metadata in self.arrays_metadata.items():
+            if "chunk_position" in metadata:
+                continue
+            metadata["chunk_position"] = self._derive_chunk_position(array_name, metadata)
+
+    def _derive_chunk_position(self, array_name: str, metadata: Dict) -> tuple:
+        """One array's default chunk position (``_resolve_chunk_positions`` documents the precedence).
+
+        - ``:param array_name:`` Registered array the position is derived for; named in every error.
+        - ``:param metadata:`` That array's registration metadata: ``global_shape`` and ``chunk_shape`` are read.
+        - ``:return:`` The position, as one index per array axis.
+        """
+        global_shape = tuple(int(extent) for extent in metadata["global_shape"])
+        chunk_shape = tuple(int(chunk) for chunk in metadata["chunk_shape"])
+        # The array's own sub-communicator carries its participation set, and the parent communicator is the one the
+        # user may have given a Cartesian topology (Split drops it, see _cart_coords).
+        sub_comm = self._array_comms.get(array_name) or self.comm
+
+        coords = _cart_coords(sub_comm, self.comm)
+        if coords is not None:
+            if len(coords) != len(global_shape):
+                raise ValueError(
+                    f"cannot derive a default chunk_position for '{array_name}': the Cartesian communicator reports "
+                    f"{len(coords)} coordinate(s) {tuple(coords)} per rank, but the array has {len(global_shape)} "
+                    f"axis(es) {global_shape}. Register this array with an explicit 'chunk_position'."
+                )
+            return tuple(coords)
+
+        if len(chunk_shape) != len(global_shape):
+            raise ValueError(
+                f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
+                f"chunk_shape {chunk_shape} must have the same number of axes. Register this array with an explicit "
+                f"'chunk_position'."
+            )
+
+        grid_extent: List[int] = []
+        for axis, (extent, chunk) in enumerate(zip(global_shape, chunk_shape)):
+            if chunk <= 0 or extent % chunk != 0:
+                raise ValueError(
+                    f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} is not "
+                    f"a whole number of chunk_shape {chunk_shape} chunks along axis {axis}, so the chunks are uneven "
+                    f"and do not tile a uniform grid. Register this array with an explicit 'chunk_position'."
+                )
+            grid_extent.append(extent // chunk)
+
+        nb_ranks = sub_comm.Get_size()
+        nb_tiles = int(np.prod(grid_extent))
+        if nb_tiles != nb_ranks:
+            raise ValueError(
+                f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
+                f"chunk_shape {chunk_shape} imply a uniform {tuple(grid_extent)} grid of {nb_tiles} tile(s), but the "
+                f"communicator has {nb_ranks} rank(s). Register this array with an explicit 'chunk_position'."
+            )
+
+        # C-order tile index of this rank over the grid: any rank count works, `unravel_index` does the splitting.
+        return tuple(int(index) for index in np.unravel_index(sub_comm.Get_rank(), tuple(grid_extent)))
 
     def __del__(self):
         """Clean up resources before destruction.

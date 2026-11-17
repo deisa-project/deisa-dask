@@ -16,6 +16,13 @@ Types of changes:
 
 ## [Unreleased]
 
+### Added
+
+- `deisa.dask.bridge.send`: a distributed array registered without `chunk_position` gets it derived from the
+  communicator topology — Cartesian coordinates on a cart sub-communicator, otherwise the rank's row-major tile index
+  on a uniform grid; distributions that cannot be derived (uneven chunks, topology mismatch) require an explicit
+  position and raise.
+
 ### Changed
 
 - `deisa.dask.deisa`: chunk positions are explicit and never guessed. Duplicate/degenerate chunk positions are now

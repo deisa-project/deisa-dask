@@ -394,6 +394,10 @@ class FakeCartComm(FakeComm):
     def periods(self) -> tuple[bool, ...]:
         return self._periods
 
+    def Get_topology(self) -> int:
+        """Mirror of ``mpi4py.MPI.Cartcomm.Get_topology``: a Cartesian comm reports ``MPI.CART``."""
+        return 1  # MPI.CART, see deisa.dask.bridge._CART
+
     def Get_coords(self, rank: int) -> list[int]:
         """
         Compatible with mpi4py MPI.Cartcomm.Get_coords.
