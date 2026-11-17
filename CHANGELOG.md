@@ -25,6 +25,10 @@ Types of changes:
   deadlocked for good: rank 0 broadcast the arrays in sorted order while the simulation sent them in its own order,
   so each rank waited on a different array's communicator and the run never started. The prefetch now runs on all
   ranks after the post-registration barrier, so every rank enters the same sorted sequence of collectives.
+- `deisa.dask.bridge`: each gathered piece keeps its own chunk shape and dtype instead of inheriting the root's chunk
+  geometry, so an uneven MPI chunk distribution no longer mis-tiles the reconstructed array.
+- `deisa.dask.deisa`: the full-chunk tiler places every gathered piece by its own chunk position instead of assuming
+  a uniform grid, so arrays distributed with uneven chunk sizes reconstruct correctly.
 
 ## [0.7.0]
 

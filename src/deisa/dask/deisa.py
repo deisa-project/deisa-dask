@@ -504,7 +504,7 @@ class Deisa(IDeisa):
 
                 iteration = payload["iteration"]
                 futures = payload["futures"]
-                futures = tuple({**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures)
+                futures = [{**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures]
 
                 _weak_self.__update_futures_ownership(futures)
 
@@ -607,15 +607,11 @@ class Deisa(IDeisa):
                     views = _weak_self._build_callback_views(array_name, iteration, combined_by_key)
                 else:
                     views = {}
-                    # Full-chunk path: ``futures`` carries one entry per bridge with that bridge's OWN chunk shape, so
-                    # tile by chunk position rather than by an assumed uniform grid -- an uneven chunk distribution
+                    # Full-chunk path: ``futures`` carries one entry per bridge with that bridge's OWN chunk shape and
+                    # chunk position, so each piece is placed by its own metadata -- an uneven chunk distribution
                     # gives the pieces different shapes and only their positions say where each one goes.
-                    parts = sorted(futures, key=lambda p: tuple(p["chunk_position"]))
-                    darr_chunks = [da.from_delayed(p["future"], shape=p["shape"], dtype=p["dtype"]) for p in parts]
                     darr = _weak_self.__tile_dask_blocks(
-                        darr_chunks,
-                        _weak_self.arrays_metadata[array_name]["global_shape"],
-                        [tuple(p["chunk_position"]) for p in parts],
+                        futures, _weak_self.arrays_metadata[array_name]["global_shape"]
                     )
                     # tell the scheduler that gc must *not* collect the futures used by this dask array
                     _weak_self.client.persist(darr)
@@ -846,78 +842,71 @@ class Deisa(IDeisa):
             raise TimeoutError(f"Timeout reached while waiting for chunks in queue '{q.name}'.")
 
     @staticmethod
-    def __tile_dask_blocks(
-        blocks: list[da.Array],
-        global_shape: tuple[int, ...],
-        chunk_positions: Optional[list[tuple[int, ...]]] = None,
-    ) -> da.Array:
-        """
-        Given a flat list of N-dimensional Dask arrays (one per MPI chunk), tile them into a single Dask array.
+    def __tile_dask_blocks(pieces: list[dict], global_shape: tuple[int, ...]) -> da.Array:
+        """Tile one full chunk per MPI bridge into a single Dask array, placing each piece by its own position.
 
-        The layout is driven by the chunks' own grid positions and per-piece shapes, so chunks of DIFFERENT shapes
-        (an uneven MPI chunk distribution) tile correctly: each data axis' block sizes are read off the pieces'
-        positions, and ``da.block`` concatenates the uneven result. Uniform grids remain the common case and behave
-        exactly as before.
+        A piece is one entry of a topic event's ``futures``, so it carries its own ``future``, ``shape``, ``dtype``
+        and ``chunk_position``: the metadata travels with the future and placement never depends on the order the
+        pieces arrived in. Chunks of DIFFERENT shapes (an uneven MPI chunk distribution) tile correctly because each
+        data axis' block sizes are read off the pieces' positions and ``da.block`` concatenates the uneven result.
+        Uniform grids remain the common case and behave exactly as before.
 
-        - ``:param blocks:`` Flat list of Dask arrays, one per MPI chunk. ``:param global_shape:`` Shape of the full
-        array to reconstruct. ``:param chunk_positions:`` Optional per-piece chunk positions, aligned with ``blocks``.
-        When omitted -- or when every piece claims the same position, as metadata written before tiling was
-        position-driven does -- the pieces are assumed to be a flat, row-major, uniform tiling and their positions are
-        inferred from ``blocks[0].shape`` (the legacy contract). ``:return:`` The reconstructed
-        ``dask.array.Array``. ``:rtype:`` dask.array.Array
+        - ``:param pieces:`` The topic event's ``futures`` entries, one per MPI chunk, each carrying ``future``,
+        ``shape``, ``dtype`` and ``chunk_position``. ``:param global_shape:`` Shape of the full array to reconstruct.
+        ``:return:`` The reconstructed ``dask.array.Array``. ``:rtype:`` dask.array.Array
         """
-        if not blocks:
+        if not pieces:
             raise ValueError("No blocks provided.")
 
-        ndim = blocks[0].ndim
+        ndim = len(pieces[0]["shape"])
 
         if len(global_shape) != ndim:
             raise ValueError("global_shape must have the same number of dimensions as blocks.")
 
         if ndim == 0:
-            if len(blocks) != 1:
-                raise ValueError(f"No tiling possible for a 0-dimensional array: got {len(blocks)} blocks.")
-            return blocks[0]
+            if len(pieces) != 1:
+                raise ValueError(f"No tiling possible for a 0-dimensional array: got {len(pieces)} blocks.")
+            return da.from_delayed(pieces[0]["future"], shape=(), dtype=pieces[0]["dtype"])
 
         def uniform_positions(block_shape: tuple[int, ...]) -> list[tuple[int, ...]]:
             """Row-major positions of a flat, uniform tiling -- the pre-position-driven tiling contract."""
             tile_counts = tuple(g // b for g, b in zip(global_shape, block_shape))
             expected = int(np.prod(tile_counts))
-            if expected != len(blocks):
+            if expected != len(pieces):
                 raise ValueError(
-                    f"Mismatch between number of blocks ({len(blocks)}) "
+                    f"Mismatch between number of blocks ({len(pieces)}) "
                     f"and expected number from global_shape {global_shape} "
                     f"with block shape {block_shape} (expected {expected} blocks)."
                 )
             return [tuple(int(i) for i in pos) for pos in np.ndindex(*tile_counts)]
 
-        if chunk_positions is None:
-            positions = uniform_positions(blocks[0].shape)
-        else:
-            positions = [tuple(int(i) for i in pos) for pos in chunk_positions]
-            if len(positions) != len(blocks):
-                raise ValueError(
-                    f"Received {len(positions)} chunk position(s) for {len(blocks)} block(s); they must be aligned "
-                    "one-to-one."
-                )
-            if len(positions) > 1 and len(set(positions)) == 1:
-                # Every piece claims the same grid position, so the positions describe no layout at all: this is
-                # metadata written before tiling was position-driven (one chunk position declared for the whole
-                # array). Keep the legacy uniform tiling for it rather than rejecting metadata that always worked.
-                for block in blocks:
-                    axis = next((i for i in range(ndim) if block.shape[i] != blocks[0].shape[i]), None)
-                    if axis is not None:
-                        raise ValueError(
-                            f"Conflicting block shapes at chunk position {positions[0]} on axis {axis}: a block of "
-                            f"size {block.shape[axis]} collides with an earlier block of size "
-                            f"{blocks[0].shape[axis]}. One grid position must map to exactly one chunk shape."
-                        )
-                positions = uniform_positions(blocks[0].shape)
+        # Every piece claiming the SAME position means the positions describe no layout at all: this is metadata
+        # written before tiling was position-driven (one chunk position declared for the whole array). Keep the legacy
+        # uniform tiling for it rather than rejecting metadata that always worked.
+        fallback_positions: Optional[list[tuple[int, ...]]] = None
+        first_position = tuple(int(i) for i in pieces[0]["chunk_position"])
+        if len(pieces) > 1 and all(tuple(int(i) for i in p["chunk_position"]) == first_position for p in pieces):
+            block_shape = tuple(pieces[0]["shape"])
+            for piece in pieces[1:]:
+                shape = tuple(piece["shape"])
+                axis = next((i for i in range(ndim) if shape[i] != block_shape[i]), None)
+                if axis is not None:
+                    raise ValueError(
+                        f"Conflicting block shapes at chunk position {first_position} on axis {axis}: a block of "
+                        f"size {shape[axis]} collides with an earlier block of size {block_shape[axis]}. One grid "
+                        "position must map to exactly one chunk shape."
+                    )
+            fallback_positions = uniform_positions(block_shape)
 
         # Per-axis chunk sizes, indexed by chunk position on that axis: uneven distributions make the size depend on
-        # the position, never on a single global block shape.
+        # the position, never on a single global block shape. The position is read off the piece itself, so this one
+        # pass builds the position -> block mapping directly.
         blockdims: list[dict[int, int]] = [{} for _ in range(ndim)]
-        for pos, block in zip(positions, blocks):
+        by_position: dict[tuple[int, ...], da.Array] = {}
+        for index, piece in enumerate(pieces):
+            pos = fallback_positions[index] if fallback_positions is not None else piece["chunk_position"]
+            pos = tuple(int(i) for i in pos)
+            block = da.from_delayed(piece["future"], shape=tuple(piece["shape"]), dtype=piece["dtype"])
             if block.ndim != ndim:
                 raise ValueError(
                     f"Block at chunk position {pos} has {block.ndim} dimension(s) but the first block has {ndim}; "
@@ -938,6 +927,7 @@ class Deisa(IDeisa):
                         "chunk shape."
                     )
                 blockdims[axis][position] = size
+            by_position[pos] = block
 
         # The grid extent is whatever positions the pieces actually span -- not ``global_shape // block_shape``, which
         # is only correct for a uniform distribution.
@@ -958,8 +948,6 @@ class Deisa(IDeisa):
                     f"Blocks cover {covered} element(s) on axis {axis} (blockdims {tuple(sizes)}) but "
                     f"global_shape[{axis}] is {global_shape[axis]} for global_shape {global_shape}."
                 )
-
-        by_position = dict(zip(positions, blocks))
 
         def nest(extent: tuple[int, ...], prefix: tuple[int, ...] = ()) -> Any:
             """Nest the pieces by chunk position, mirroring the grid (row-major, the ``da.block`` convention)."""
