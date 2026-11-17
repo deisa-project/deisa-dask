@@ -16,6 +16,16 @@ Types of changes:
 
 ## [Unreleased]
 
+### Fixed
+
+- Bridge: the task-branch prefetch in `__init__` now runs on every rank instead of world rank 0 only. The prefetch
+  broadcasts once per array on that array's own sub-communicator, i.e. it is a collective, but only rank 0 entered
+  it there; the other ranks reached the same broadcasts later, lazily, from `send()`. With a single array shared by
+  every rank that mismatch happened to pair up and complete, which hid the bug. With two or more shared arrays it
+  deadlocked for good: rank 0 broadcast the arrays in sorted order while the simulation sent them in its own order,
+  so each rank waited on a different array's communicator and the run never started. The prefetch now runs on all
+  ranks after the post-registration barrier, so every rank enters the same sorted sequence of collectives. Reported
+  by a downstream user on 0.7.0, where the workaround was to disable the prefetch.
 
 ## [0.7.0]
 

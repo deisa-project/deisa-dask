@@ -36,12 +36,10 @@ import threading
 
 import numpy as np
 import pytest
-from distributed import Client, Event, LocalCluster
-from utils import FakeCartComm, FakeComm, async_map
+from distributed import Client, LocalCluster
+from utils import FakeCartComm, FakeComm, async_map, wait_for
 
-from deisa.dask import Bridge
-from deisa.dask.constants import WAIT_FOR_EXECUTE_CB_EVENT
-from deisa.dask.handshake import Handshake
+from deisa.dask import Bridge, Deisa
 
 
 @pytest.fixture(scope="function")
@@ -184,39 +182,96 @@ class TestMultiBridge:
     def test_prefetch_populates_every_rank_cache(self, env_setup):
         """Regression: the ``__init__`` prefetch must run on EVERY rank, not just world rank 0.
 
-        ``_prefetch_task_branches`` issues one bcast per array on that array's sub-communicator, so every
-        sub-comm member has to enter the same (sorted) sequence of collectives. With the 0.7.0
-        ``and self.id == 0`` gate only rank 0's cache was filled and any second shared array deadlocked;
-        here both ranks must end up with a populated ``_task_branches`` cache for both arrays.
+        ``_prefetch_task_branches`` issues one bcast per array on that array's sub-communicator, so every sub-comm
+        member has to enter the same (sorted) sequence of collectives. With the 0.7.0 ``and self.id == 0`` gate only
+        rank 0's cache was filled, and any second shared array deadlocked.
+
+        The go events are NOT poked by hand here: a real ``Deisa`` analytics side registers one sum-reduction callback
+        over both arrays and runs ``execute_callbacks()`` off-thread, which is what sets
+        ``WAIT_FOR_EXECUTE_CB_EVENT`` and unblocks the bridges' ``__init__``. Registering the reduction also makes
+        the assertion stronger than "the cache is not None": every rank must hold the NON-EMPTY branch spec list for
+        both arrays right after ``__init__``, and the delivered sums are checked end to end.
         """
-        client, _ = env_setup
-        # The two go events are set by the analytics side (``Handshake.deisa_ready``) and by
-        # ``Deisa.execute_callbacks()``. Set them up front so that ``__init__`` does not block waiting for an
-        # analytics side this test does not need.
-        Event(Handshake._DEISA_WAIT_FOR_GO_EVENT, client=client).set()
-        Event(WAIT_FOR_EXECUTE_CB_EVENT, client=client).set()
+        env_setup  # use fixture (real cluster + scheduler address for get_client())
 
         comm_state = FakeComm.State(2)
         array_names = ("alpha", "beta")
+        global_shape = (8,)
+        chunk_shape = (4,)
+        # Two ranks send an all-ones chunk each: the reduced global sum is the number of elements.
+        expected_sum = float(np.prod(global_shape))
+
+        # Filled by the callback as the topic events arrive; read under ``wait_for`` below.
+        sums: dict = {}
+        failed: list = []
+        errors: list = []
+
+        def run_analytics():
+            try:
+                deisa = Deisa(timeout=10)
+
+                def exception_handler(exception):
+                    print(f"exception_handler: exception={exception}", flush=True)
+                    failed.append(exception)
+
+                # One callback over both arrays (the positional parameters follow the registration order): each array
+                # gets its own sum branch, which is what the prefetch must deliver to every rank.
+                @deisa.register(*array_names, exception_handler=exception_handler)
+                def cb(alpha, beta):
+                    print(f"hello from cb. iterations={alpha[-1].t},{beta[-1].t}", flush=True)
+                    sums["alpha"] = float(alpha[-1].sum().compute())
+                    sums["beta"] = float(beta[-1].sum().compute())
+
+                # Unblocks the bridges (the prefetch runs inside their __init__) and returns once they are closed.
+                deisa.execute_callbacks()
+            except BaseException as e:  # noqa: BLE001 - re-raised on the main thread below
+                print(f"[ERROR] analytics side: {e}", flush=True)
+                errors.append(e)
 
         def make_bridge(rank):
             return Bridge(
                 comm=FakeComm(comm_state, rank),
                 arrays_metadata={
-                    name: {"global_shape": (8,), "chunk_shape": (4,), "chunk_position": (rank,)} for name in array_names
+                    name: {"global_shape": global_shape, "chunk_shape": chunk_shape, "chunk_position": (rank,)}
+                    for name in array_names
                 },
                 # wait_for_go defaults to True: this is the path that runs the prefetch.
             )
 
-        bridges = _make_bridges_with_timeout(range(2), make_bridge, timeout=30)
+        thread = threading.Thread(target=run_analytics, daemon=True)
+        thread.start()
+        try:
+            bridges = _make_bridges_with_timeout(range(2), make_bridge, timeout=30)
 
-        for rank, bridge in enumerate(bridges):
-            for name in array_names:
-                cached = bridge._task_branches[name]
-                assert cached is not None, f"rank {rank} did not prefetch task branches for {name!r}"
-                assert cached == [], f"no callback registered: rank {rank}/{name!r} should cache an empty branch list"
+            for rank, bridge in enumerate(bridges):
+                for name in array_names:
+                    cached = bridge._task_branches[name]
+                    assert cached, f"rank {rank} did not prefetch task branches for {name!r}: cached={cached!r}"
 
-        _close_all(bridges)
+            # Both ranks send the same array at the same time: the per-array gather inside send() is a collective on
+            # that array's sub-communicator. FakeComm emulates one collective at a time per communicator state, so a
+            # mismatched per-rank array ORDER is not representable here (the MPI test covers that deadlock shape);
+            # what this test pins down is that the prefetch, not send(), filled every rank's cache.
+            def send_all(bridge):
+                for name in array_names:
+                    bridge.send(name, np.ones(chunk_shape, dtype=np.float64), timestep=1)
+
+            async def _send():
+                await asyncio.gather(*[asyncio.to_thread(send_all, b) for b in bridges])
+
+            asyncio.run(_send())
+
+            # The callback fires from the analytics client's event loop once both arrays delivered iteration 1; the
+            # events are asynchronous, so wait for them before tearing the bridges down.
+            assert wait_for(lambda: set(sums) == set(array_names), timeout=30), f"callback did not fire: sums={sums}"
+            _close_all(bridges)
+        finally:
+            thread.join(timeout=30)
+
+        assert not errors, f"analytics side raised: {errors}"
+        assert not thread.is_alive(), "the analytics side did not return after the bridges were closed"
+        assert not failed, f"callback raised: {failed}"
+        assert sums == {name: expected_sum for name in array_names}, sums
 
     @pytest.mark.parametrize("comm_size", [2, 4])
     def test_all_bridges_same_array(self, env_setup, comm_size):
