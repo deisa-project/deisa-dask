@@ -216,6 +216,12 @@ class TestTileDaskBlocksUnevenChunks:
     global_shape (3,) with block shape (1,)``.
     """
 
+    @pytest.fixture(autouse=True)
+    def _local_scheduler(self):
+        """Tile with a local scheduler: a Client left behind by another test in this xdist worker must not schedule."""
+        with dask.config.set(scheduler="sync"):
+            yield
+
     @staticmethod
     def _uneven_pieces(array: np.ndarray, axis_lengths: List[List[int]]):
         """Cut ``array`` into one piece per chunk position, splitting each axis by ``axis_lengths[axis]``."""
