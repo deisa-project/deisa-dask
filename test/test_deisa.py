@@ -308,6 +308,33 @@ class TestTileDaskBlocksUnevenChunks:
         with pytest.raises(ValueError, match="chunk position"):
             Deisa._Deisa__tile_dask_blocks(blocks, (3,), [(0,)])
 
+    def test_position_degenerate_metadata_tiles_uniformly_as_before(self):
+        """Metadata declaring ONE chunk position for every rank still tiles like the pre-position-driven contract."""
+        data = np.arange(16.0).reshape(4, 4)
+        blocks = [da.from_array(data[x : x + 2, y : y + 2], chunks=(2, 2)) for x in (0, 2) for y in (0, 2)]
+
+        darr = Deisa._Deisa__tile_dask_blocks(blocks, (4, 4), [(0, 0)] * 4)
+
+        assert darr.chunks == ((2, 2), (2, 2))
+        assert np.array_equal(darr.compute(), data)
+
+    def test_position_degenerate_metadata_with_mismatched_count_is_loud(self):
+        data = np.arange(6.0)
+        blocks = [da.from_array(data[0:2], chunks=2), da.from_array(data[2:4], chunks=2)]
+
+        with pytest.raises(ValueError, match="Mismatch between number of blocks"):
+            Deisa._Deisa__tile_dask_blocks(blocks, (6,), [(0,), (0,)])
+
+    def test_grid_extent_from_positions_ignores_degenerate_positions(self):
+        from deisa.dask.deisa import _grid_extent_from_positions
+
+        assert _grid_extent_from_positions([(0,), (1,)]) == (2,)
+        assert _grid_extent_from_positions([(0, 0), (0, 1), (1, 0)]) == (2, 2)
+        assert _grid_extent_from_positions([]) is None
+        # Every piece reporting the same position says nothing about the grid: the caller must fall back.
+        assert _grid_extent_from_positions([(0, 0), (0, 0), (0, 0)]) is None
+        assert _grid_extent_from_positions([(0, 0)]) == (1, 1)
+
 
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function", params=[1, 2])

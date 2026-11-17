@@ -861,9 +861,10 @@ class Deisa(IDeisa):
 
         - ``:param blocks:`` Flat list of Dask arrays, one per MPI chunk. ``:param global_shape:`` Shape of the full
         array to reconstruct. ``:param chunk_positions:`` Optional per-piece chunk positions, aligned with ``blocks``.
-        When omitted the pieces are assumed to be a flat, row-major, uniform tiling and their positions are inferred
-        from ``blocks[0].shape`` (the legacy contract). ``:return:`` The reconstructed ``dask.array.Array``.
-        ``:rtype:`` dask.array.Array
+        When omitted -- or when every piece claims the same position, as metadata written before tiling was
+        position-driven does -- the pieces are assumed to be a flat, row-major, uniform tiling and their positions are
+        inferred from ``blocks[0].shape`` (the legacy contract). ``:return:`` The reconstructed
+        ``dask.array.Array``. ``:rtype:`` dask.array.Array
         """
         if not blocks:
             raise ValueError("No blocks provided.")
@@ -878,10 +879,8 @@ class Deisa(IDeisa):
                 raise ValueError(f"No tiling possible for a 0-dimensional array: got {len(blocks)} blocks.")
             return blocks[0]
 
-        if chunk_positions is None:
-            # Legacy flat/uniform contract: the pieces are a row-major tiling of ``global_shape``, each of the shape
-            # of the first piece.
-            block_shape = blocks[0].shape
+        def uniform_positions(block_shape: tuple[int, ...]) -> list[tuple[int, ...]]:
+            """Row-major positions of a flat, uniform tiling -- the pre-position-driven tiling contract."""
             tile_counts = tuple(g // b for g, b in zip(global_shape, block_shape))
             expected = int(np.prod(tile_counts))
             if expected != len(blocks):
@@ -890,7 +889,10 @@ class Deisa(IDeisa):
                     f"and expected number from global_shape {global_shape} "
                     f"with block shape {block_shape} (expected {expected} blocks)."
                 )
-            positions = [tuple(int(i) for i in pos) for pos in np.ndindex(*tile_counts)]
+            return [tuple(int(i) for i in pos) for pos in np.ndindex(*tile_counts)]
+
+        if chunk_positions is None:
+            positions = uniform_positions(blocks[0].shape)
         else:
             positions = [tuple(int(i) for i in pos) for pos in chunk_positions]
             if len(positions) != len(blocks):
@@ -898,6 +900,19 @@ class Deisa(IDeisa):
                     f"Received {len(positions)} chunk position(s) for {len(blocks)} block(s); they must be aligned "
                     "one-to-one."
                 )
+            if len(positions) > 1 and len(set(positions)) == 1:
+                # Every piece claims the same grid position, so the positions describe no layout at all: this is
+                # metadata written before tiling was position-driven (one chunk position declared for the whole
+                # array). Keep the legacy uniform tiling for it rather than rejecting metadata that always worked.
+                for block in blocks:
+                    axis = next((i for i in range(ndim) if block.shape[i] != blocks[0].shape[i]), None)
+                    if axis is not None:
+                        raise ValueError(
+                            f"Conflicting block shapes at chunk position {positions[0]} on axis {axis}: a block of "
+                            f"size {block.shape[axis]} collides with an earlier block of size "
+                            f"{blocks[0].shape[axis]}. One grid position must map to exactly one chunk shape."
+                        )
+                positions = uniform_positions(blocks[0].shape)
 
         # Per-axis chunk sizes, indexed by chunk position on that axis: uneven distributions make the size depend on
         # the position, never on a single global block shape.
@@ -994,14 +1009,17 @@ def _grid_extent_from_positions(positions: Collection[Tuple[int, ...]]) -> Optio
 
     The positions themselves enumerate the MPI chunk indices, so ``max(position) + 1`` per axis is the grid extent no
     matter how the chunks are sized: unlike :func:`_grid_extent_from_metadata` this stays correct when the chunk
-    distribution is uneven (chunks of different sizes). ``None`` when no position is available or the positions are
-    not all the same dimensionality.
+    distribution is uneven (chunks of different sizes). ``None`` when no position is available, when the positions are
+    not all the same dimensionality, or when every piece reports the SAME position -- such positions describe no
+    layout (metadata written before tiling was position-driven) and callers should fall back to the metadata extent.
     """
     coords = [tuple(int(v) for v in c) for c in positions]
     if not coords:
         return None
     ndim = len(coords[0])
     if any(len(c) != ndim for c in coords):
+        return None
+    if len(coords) > 1 and len(set(coords)) == 1:
         return None
     return tuple(max(c[axis] for c in coords) + 1 for axis in range(ndim))
 
