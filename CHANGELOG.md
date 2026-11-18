@@ -16,6 +16,8 @@ Types of changes:
 
 ## [Unreleased]
 
+## [0.7.1]
+
 ### Added
 
 - `deisa.dask.bridge.send`: a distributed array registered without `chunk_position` gets it derived from the
