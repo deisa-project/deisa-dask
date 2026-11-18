@@ -275,14 +275,12 @@ class Bridge(IBridge):
 
         Precedence, in order:
 
-        1. a user-specified ``chunk_position`` is authoritative and used verbatim (duplicates across pieces are
-           rejected downstream, where all of them are visible);
-        2. no user position on a Cartesian topology: the rank's Cartesian coordinates (unique per rank, so a
-           derivation can never collide);
+        1. a user-specified ``chunk_position`` is authoritative and used;
+        2. no user position on a Cartesian topology: the rank's Cartesian coordinates;
         3. no user position on a plain communicator: the rank's index as a C-order tile of the UNIFORM grid implied
            by ``global_shape // chunk_shape``;
         4. anything else raises: that distribution cannot be derived and REQUIRES an explicit ``chunk_position`` at
-           registration. It is never silently repaired.
+           registration.
 
         Positions stay explicit downstream: the tiler only ever receives these resolved values and never infers a
         grid of its own.
