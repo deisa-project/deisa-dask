@@ -98,6 +98,48 @@ def _make_bridges_with_timeout(items, func, timeout: float = 30.0):
     return results
 
 
+def _build_bridges(make_comm, size, metadata_for_rank):
+    """Build one bridge per rank in parallel threads -> ``(bridges, errors)``, both keyed by rank.
+
+    A derivation error is per-rank and raised from ``Bridge.__init__`` after the Split collective, so it is recorded
+    in ``errors`` instead of propagating out of the thread (a ``pytest.raises`` block cannot span the threads that
+    must all reach the collectives).
+    """
+    bridges: dict = {}
+    errors: dict = {}
+
+    def run(rank):
+        try:
+            bridges[rank] = Bridge(comm=make_comm(rank), arrays_metadata=metadata_for_rank(rank), wait_for_go=False)
+        except BaseException as e:
+            errors[rank] = e
+
+    threads = [threading.Thread(target=run, args=(rank,)) for rank in range(size)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    return bridges, errors
+
+
+def _shutdown(bridges, size):
+    """Close the bridges, but only when every rank built one: ``close()`` runs a collective and would hang otherwise.
+
+    Called from a ``finally`` so a failed assertion in a test body cannot leave half-built bridges to be collected
+    later, where the same barrier would deadlock the garbage collector's thread.
+    """
+    if len(bridges) == size:
+        _close_all([bridges[rank] for rank in range(size)])
+
+
+def _positions(bridges, size, array_name="temperature"):
+    """The resolved positions in rank order, or ``None`` when some rank failed to build its bridge (see ``errors``)."""
+    if len(bridges) != size:
+        return None
+    return [bridges[rank].arrays_metadata[array_name]["chunk_position"] for rank in range(size)]
+
+
 class TestSingleBridge:
     """All tests use FakeComm.State(1) — one bridge, no collectives needed."""
 
@@ -466,3 +508,192 @@ class TestMultiBridge:
         assert "pressure" in bridge._array_comms
         assert bridge._array_comms["temperature"].Get_size() == 1
         assert bridge._array_comms["pressure"].Get_size() == 1
+
+    @pytest.mark.timeout(30)
+    def test_uneven_chunks_event_carries_per_piece_shape_and_dtype(self, env_setup):
+        """Uneven chunks: the event carries each gathered piece's OWN shape/dtype.
+
+        Two ranks declare the same array with global_shape (3,), but chunk (1,) at chunk_position (0,) on rank 0 and
+        chunk (2,) at (1,) on rank 1, with different dtypes. Both send on the full-chunk path. The root used to stamp
+        its own ``chunk.shape``/``chunk.dtype`` on every gathered piece, so both entries reported (1,)/float64 and
+        the Deisa side inferred 3 tiles against 2 pieces.
+        """
+        client, cluster = env_setup
+
+        metadata_0 = {"temperature": {"global_shape": (3,), "chunk_shape": (1,), "chunk_position": (0,)}}
+        metadata_1 = {"temperature": {"global_shape": (3,), "chunk_shape": (2,), "chunk_position": (1,)}}
+        comm_state = FakeComm.State(2)
+
+        def make_bridge(args):
+            rank, meta = args
+            return Bridge(comm=FakeComm(comm_state, rank), arrays_metadata=meta, wait_for_go=False)
+
+        bridges = async_map([(0, metadata_0), (1, metadata_1)], make_bridge)
+
+        chunks = {0: np.ones(1, dtype=np.float64), 1: np.ones(2, dtype=np.int32)}
+
+        def do_send(rank):
+            bridges[rank].send("temperature", chunks[rank], timestep=0)
+
+        async_map(range(2), do_send)
+
+        events = client.get_events("temperature")
+        assert len(events) == 1
+        _, info = events[0]
+        # The base pipeline's "no precompute" sentinel on the full-chunk path is None (v0.7.0), not False.
+        assert not info["precomputed"]
+        assert len(info["futures"]) == 2
+
+        by_position = {tuple(f["chunk_position"]): f for f in info["futures"]}
+        assert set(by_position) == {(0,), (1,)}
+        assert tuple(by_position[(0,)]["shape"]) == (1,)
+        assert by_position[(0,)]["dtype"] == "float64"
+        assert tuple(by_position[(1,)]["shape"]) == (2,)
+        assert by_position[(1,)]["dtype"] == "int32"
+
+        _close_all(bridges)
+
+
+class TestDerivedChunkPosition:
+    """``chunk_position`` is optional: the bridge derives a default from the communicator topology, once, at
+    registration. A user-specified position stays authoritative and the derivation is never consulted for it."""
+
+    def _assert_derivation_error(self, errors, size, array_name="temperature"):
+        """Every rank must raise the loudly-worded derivation error naming the array and pointing at chunk_position."""
+        assert len(errors) == size, f"every rank must raise, got {sorted(errors)}"
+        for error in errors.values():
+            assert isinstance(error, ValueError), f"expected a ValueError, got {error!r}"
+            assert array_name in str(error), str(error)
+            assert "chunk_position" in str(error), str(error)
+
+    def test_default_position_row_major_on_uniform_grid(self, env_setup):
+        """No position + plain comm + 3 ranks over a uniform grid -> the rank's C-order tile index.
+
+        global (6,) with chunk (2,) is 3 tiles, so the 3 ranks derive (0,), (1,), (2,) -- an odd rank count, which
+        ``np.unravel_index(rank, grid_extent)`` handles without any even-split assumption.
+        """
+        client, cluster = env_setup
+
+        metadata = {"temperature": {"global_shape": (6,), "chunk_shape": (2,)}}
+        comm_state = FakeComm.State(3)
+
+        bridges, errors = _build_bridges(lambda rank: FakeComm(comm_state, rank), 3, lambda rank: metadata)
+
+        try:
+            assert errors == {}, f"derivation must succeed on a uniform grid, got {errors}"
+            assert _positions(bridges, 3) == [(0,), (1,), (2,)]
+
+            # The resolved position is what travels to the analytics side: the event carries it per piece.
+            async_map(range(3), lambda rank: bridges[rank].send("temperature", np.ones(2), timestep=0))
+
+            events = client.get_events("temperature")
+            assert len(events) == 1
+            _, info = events[0]
+            assert {tuple(f["chunk_position"]) for f in info["futures"]} == {(0,), (1,), (2,)}
+        finally:
+            _shutdown(bridges, 3)
+
+    def test_default_position_row_major_two_ranks(self, env_setup):
+        """The documented 2-rank example: global (4,) with chunk (2,) -> rank 0 at (0,), rank 1 at (1,)."""
+        env_setup  # use fixture
+
+        metadata = {"temperature": {"global_shape": (4,), "chunk_shape": (2,)}}
+        comm_state = FakeComm.State(2)
+
+        bridges, errors = _build_bridges(lambda rank: FakeComm(comm_state, rank), 2, lambda rank: metadata)
+
+        try:
+            assert errors == {}, f"derivation must succeed on a uniform grid, got {errors}"
+            assert _positions(bridges, 2) == [(0,), (1,)]
+        finally:
+            _shutdown(bridges, 2)
+
+    def test_default_position_from_cart_coords(self, env_setup):
+        """No position + Cartesian topology -> each rank's Cartesian coordinates.
+
+        3 ranks with the non-square ``MPI.Compute_dims(3, 2) == (3, 1)`` shape -- valid per the user's steer -- and a
+        2-D array so the 2 coordinates are one position per axis.
+        """
+        env_setup  # use fixture
+
+        metadata = {"temperature": {"global_shape": (6, 4), "chunk_shape": (2, 4)}}
+        comm_state = FakeComm.State(3)
+
+        bridges, errors = _build_bridges(
+            lambda rank: FakeCartComm(comm_state, rank, dims=(3, 1)), 3, lambda rank: metadata
+        )
+
+        try:
+            assert errors == {}, f"derivation must succeed on a Cartesian topology, got {errors}"
+            positions = _positions(bridges, 3)
+            assert positions == [(0, 0), (1, 0), (2, 0)]
+            # The derived positions are exactly the communicator's own coordinates.
+            assert positions == [tuple(bridges[rank].comm.Get_coords(rank)) for rank in range(3)]
+        finally:
+            _shutdown(bridges, 3)
+
+    def test_default_position_cart_dimension_mismatch_raises(self, env_setup):
+        """No position + cart coordinates that do not match the array's axis count -> loud ValueError."""
+        env_setup  # use fixture
+
+        metadata = {"temperature": {"global_shape": (6,), "chunk_shape": (2,)}}
+        comm_state = FakeComm.State(3)
+
+        bridges, errors = _build_bridges(
+            lambda rank: FakeCartComm(comm_state, rank, dims=(3, 1)), 3, lambda rank: metadata
+        )
+
+        try:
+            self._assert_derivation_error(errors, 3)
+        finally:
+            _shutdown(bridges, 3)
+
+    def test_default_position_uneven_global_raises(self, env_setup):
+        """No position + chunks that do not divide the global shape -> loud ValueError, never repaired."""
+        env_setup  # use fixture
+
+        metadata = {"temperature": {"global_shape": (5,), "chunk_shape": (2,)}}
+        comm_state = FakeComm.State(2)
+
+        bridges, errors = _build_bridges(lambda rank: FakeComm(comm_state, rank), 2, lambda rank: metadata)
+
+        try:
+            self._assert_derivation_error(errors, 2)
+        finally:
+            _shutdown(bridges, 2)
+
+    def test_default_position_grid_extent_mismatch_raises(self, env_setup):
+        """No position + a uniform grid whose tile count is not the rank count -> loud ValueError.
+
+        global (4,) with chunk (2,) is 2 tiles but the communicator has 3 ranks: that distribution needs an explicit
+        position, which is what the error asks for.
+        """
+        env_setup  # use fixture
+
+        metadata = {"temperature": {"global_shape": (4,), "chunk_shape": (2,)}}
+        comm_state = FakeComm.State(3)
+
+        bridges, errors = _build_bridges(lambda rank: FakeComm(comm_state, rank), 3, lambda rank: metadata)
+
+        try:
+            self._assert_derivation_error(errors, 3)
+        finally:
+            _shutdown(bridges, 3)
+
+    def test_user_position_wins_over_derivation(self, env_setup):
+        """A user-specified position is authoritative: it is used verbatim, not replaced by a derived one."""
+        env_setup  # use fixture
+
+        positions = [(2,), (1,), (0,)]
+        comm_state = FakeComm.State(3)
+
+        def metadata_for_rank(rank):
+            return {"temperature": {"global_shape": (6,), "chunk_shape": (2,), "chunk_position": positions[rank]}}
+
+        bridges, errors = _build_bridges(lambda rank: FakeComm(comm_state, rank), 3, metadata_for_rank)
+
+        try:
+            assert errors == {}, f"no derivation is needed when a position is given, got {errors}"
+            assert _positions(bridges, 3) == positions
+        finally:
+            _shutdown(bridges, 3)

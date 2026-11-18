@@ -503,8 +503,7 @@ class Deisa(IDeisa):
                 logger.debug(f"topic_handler: array_name={array_name}, payload={payload}")
 
                 iteration = payload["iteration"]
-                futures = payload["futures"]
-                futures = tuple({**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures)
+                futures = [{**d, "future": Future(d["future"], client=_weak_self.client)} for d in payload["futures"]]
 
                 _weak_self.__update_futures_ownership(futures)
 
@@ -522,8 +521,22 @@ class Deisa(IDeisa):
                         by_reduction.setdefault(f["output_key"], []).append(f)
                     metadata = _weak_self.arrays_metadata[array_name]
                     array_ndim = len(metadata.get("global_shape", ())) if metadata.get("global_shape") else None
-                    grid_size = _grid_size_from_metadata(metadata)
-                    grid_extent = _grid_extent_from_metadata(metadata)
+                    # The chunk grid is whatever positions the event actually reports. With an uneven chunk
+                    # distribution ``global_shape // chunk_shape`` is wrong -- the merged metadata keeps ONE bridge's
+                    # own chunk shape -- so the extent is never derived from it. One entry per (bridge, reduction)
+                    # repeats a bridge's position, hence the distinct view.
+                    observed_positions = {tuple(int(v) for v in f["chunk_position"]) for f in futures}
+                    if len(observed_positions) == 1 and any(len(p) > 1 for p in by_reduction.values()):
+                        # Several partials, one position: the metadata describes no multi-bridge layout at all.
+                        # Guessing a uniform grid from it could silently deliver a wrong array, so refuse loudly.
+                        claimed = max(len(p) for p in by_reduction.values())
+                        raise ValueError(
+                            f"{claimed} bridge partial(s) claim the same chunk position "
+                            f"{next(iter(observed_positions))}: chunk positions are explicit and must be distinct; "
+                            "the gather metadata is inconsistent."
+                        )
+                    grid_extent = _grid_extent_from_positions(observed_positions)
+                    grid_size = int(np.prod(grid_extent)) if grid_extent is not None else None
                     combined_by_key: Dict[str, Any] = {}
                     for output_key, partial_futures in by_reduction.items():
                         kind = partial_futures[0].get("kind", "scalar")
@@ -600,12 +613,11 @@ class Deisa(IDeisa):
                     views = _weak_self._build_callback_views(array_name, iteration, combined_by_key)
                 else:
                     views = {}
-                    # Full-chunk path: ``futures`` carries one entry per bridge with the full-chunk shape. Tile them
-                    # into a single dask array.
-                    parts = sorted(futures, key=lambda p: p["chunk_position"])
-                    darr_chunks = [da.from_delayed(p["future"], shape=p["shape"], dtype=p["dtype"]) for p in parts]
+                    # Full-chunk path: ``futures`` carries one entry per bridge with that bridge's OWN chunk shape and
+                    # chunk position, so each piece is placed by its own metadata -- an uneven chunk distribution
+                    # gives the pieces different shapes and only their positions say where each one goes.
                     darr = _weak_self.__tile_dask_blocks(
-                        darr_chunks, _weak_self.arrays_metadata[array_name]["global_shape"]
+                        futures, _weak_self.arrays_metadata[array_name]["global_shape"]
                     )
                     # tell the scheduler that gc must *not* collect the futures used by this dask array
                     _weak_self.client.persist(darr)
@@ -836,53 +848,106 @@ class Deisa(IDeisa):
             raise TimeoutError(f"Timeout reached while waiting for chunks in queue '{q.name}'.")
 
     @staticmethod
-    def __tile_dask_blocks(blocks: list[da.Array], global_shape: tuple[int, ...]) -> da.Array:
-        """
-        Given a flat list of N-dimensional Dask arrays, tile them into a single Dask array. The tiling layout is
-        inferred from the provided global shape.
+    def __tile_dask_blocks(pieces: list[dict], global_shape: tuple[int, ...]) -> da.Array:
+        """Tile one full chunk per MPI bridge into a single Dask array, placing each piece by its own position.
 
-            Parameters: blocks (list of dask.array): Flat list of Dask arrays. All must have the same shape.
-            global_shape (tuple of int): Shape of the full array to reconstruct. Returns: dask.array.Array:
-            Combined tiled Dask array.
+        A piece is one entry of a topic event's ``futures``, so it carries its own ``future``, ``shape``, ``dtype``
+        and ``chunk_position``: the metadata travels with the future and placement never depends on the order the
+        pieces arrived in. Chunks of DIFFERENT shapes (an uneven MPI chunk distribution) tile correctly because each
+        data axis' block sizes are read off the pieces' positions and ``da.block`` concatenates the uneven result.
+        Uniform grids remain the common case and behave exactly as before.
+
+        Positions are explicit and never guessed: a full-chunk gather carries exactly one piece per chunk, so two
+        pieces claiming the same position mean the gather metadata is inconsistent. Such positions describe no layout
+        (a single ``chunk_position`` declared array-wide) and inferring a uniform grid from them could silently tile a
+        wrong array, so they are rejected instead.
+
+        - ``:param pieces:`` The topic event's ``futures`` entries, one per MPI chunk, each carrying ``future``,
+        ``shape``, ``dtype`` and ``chunk_position``. ``:param global_shape:`` Shape of the full array to reconstruct.
+        ``:return:`` The reconstructed ``dask.array.Array``. ``:rtype:`` dask.array.Array
         """
-        if not blocks:
+        if not pieces:
             raise ValueError("No blocks provided.")
 
-        block_shape = blocks[0].shape
-        ndim = len(block_shape)
+        ndim = len(pieces[0]["shape"])
 
         if len(global_shape) != ndim:
             raise ValueError("global_shape must have the same number of dimensions as blocks.")
 
-        # Check that all blocks have the same shape
-        for b in blocks:
-            if b.shape != block_shape:
-                raise ValueError("All blocks must have the same shape.")
+        if ndim == 0:
+            if len(pieces) != 1:
+                raise ValueError(f"No tiling possible for a 0-dimensional array: got {len(pieces)} blocks.")
+            return da.from_delayed(pieces[0]["future"], shape=(), dtype=pieces[0]["dtype"])
 
-        # Compute how many blocks are needed per dimension
-        tile_counts = tuple(g // b for g, b in zip(global_shape, block_shape))
+        positions = [tuple(int(i) for i in piece["chunk_position"]) for piece in pieces]
+        claims = collections.Counter(positions)
 
-        if np.prod(tile_counts) != len(blocks):
-            raise ValueError(
-                f"Mismatch between number of blocks ({len(blocks)}) "
-                f"and expected number from global_shape {global_shape} "
-                f"with block shape {block_shape} (expected {np.prod(tile_counts)} blocks)."
-            )
+        # Per-axis chunk sizes, indexed by chunk position on that axis: uneven distributions make the size depend on
+        # the position, never on a single global block shape. The position is read off the piece itself, so this one
+        # pass builds the position -> block mapping directly.
+        blockdims: list[dict[int, int]] = [{} for _ in range(ndim)]
+        by_position: dict[tuple[int, ...], da.Array] = {}
+        for index, piece in enumerate(pieces):
+            pos = positions[index]
+            block = da.from_delayed(piece["future"], shape=tuple(piece["shape"]), dtype=piece["dtype"])
+            if block.ndim != ndim:
+                raise ValueError(
+                    f"Block at chunk position {pos} has {block.ndim} dimension(s) but the first block has {ndim}; "
+                    "cannot tile blocks of different dimensionality."
+                )
+            if len(pos) != ndim:
+                raise ValueError(
+                    f"Chunk position {pos} has {len(pos)} coordinate(s) for a {ndim}-dimensional array; the grid "
+                    "position must have one coordinate per data axis."
+                )
+            for axis, (position, size) in enumerate(zip(pos, block.shape)):
+                size = int(size)
+                known = blockdims[axis].get(position)
+                if known is not None and known != size:
+                    raise ValueError(
+                        f"Conflicting block shapes at chunk position {pos} on axis {axis}: a block of size {size} "
+                        f"collides with an earlier block of size {known}. One grid position must map to exactly one "
+                        "chunk shape."
+                    )
+                blockdims[axis][position] = size
+            if pos in by_position:
+                # Distinct shapes at one position surface as the conflict above; identical ones would silently
+                # overwrite each other and drop a chunk from the reconstructed array.
+                raise ValueError(
+                    f"{claims[pos]} pieces claim the same chunk position {pos} for a {ndim}-axis array "
+                    f"(axes 0..{ndim - 1}): chunk positions are explicit and must be distinct; the gather metadata "
+                    "is inconsistent."
+                )
+            by_position[pos] = block
 
-        # Reshape the flat list into an N-dimensional grid of blocks
-        def nest_blocks(flat_blocks, shape):
-            """Nest a flat list of blocks into a nested list matching the grid shape."""
-            if len(shape) == 1:
-                return flat_blocks
-            else:
-                size = shape[0]
-                stride = int(len(flat_blocks) / size)
-                return [nest_blocks(flat_blocks[i * stride : (i + 1) * stride], shape[1:]) for i in range(size)]
+        # The grid extent is whatever positions the pieces actually span -- not ``global_shape // block_shape``, which
+        # is only correct for a uniform distribution.
+        grid_extent = tuple(max(dims) + 1 for dims in blockdims)
 
-        nested = nest_blocks(blocks, tile_counts)
+        for axis, dims in enumerate(blockdims):
+            sizes = []
+            for position in range(grid_extent[axis]):
+                if position not in dims:
+                    raise ValueError(
+                        f"Missing chunk at position {position} on axis {axis} (grid {grid_extent}); the blocks cover "
+                        f"positions {sorted(dims)} only, so the reconstructed array would have a hole."
+                    )
+                sizes.append(dims[position])
+            covered = sum(sizes)
+            if covered != global_shape[axis]:
+                raise ValueError(
+                    f"Blocks cover {covered} element(s) on axis {axis} (blockdims {tuple(sizes)}) but "
+                    f"global_shape[{axis}] is {global_shape[axis]} for global_shape {global_shape}."
+                )
 
-        # Use da.block to combine blocks
-        return da.block(nested)
+        def nest(extent: tuple[int, ...], prefix: tuple[int, ...] = ()) -> Any:
+            """Nest the pieces by chunk position, mirroring the grid (row-major, the ``da.block`` convention)."""
+            if not extent:
+                return by_position[prefix]
+            return [nest(extent[1:], (*prefix, i)) for i in range(extent[0])]
+
+        # dask concatenates uneven blockdims natively; only the inference above ever assumed uniformity.
+        return da.block(nest(grid_extent))
 
     @staticmethod
     def __in_client_loop(client):
@@ -918,24 +983,25 @@ class Deisa(IDeisa):
         return f"{when}|" + "|".join(sorted(arrays))
 
 
-def _grid_extent_from_metadata(metadata: Dict[str, Any]) -> Optional[Tuple[int, ...]]:
-    """Per-data-axis chunk-grid extent from the array metadata.
+def _grid_extent_from_positions(positions: Collection[Tuple[int, ...]]) -> Optional[Tuple[int, ...]]:
+    """Per-data-axis chunk-grid extent observed in a set of chunk positions.
 
-    ``global_shape[i] // chunk_shape[i]`` (at least 1) is the number of MPI chunks along data axis ``i`` -- the harness
-    invariant that the MPI cart dims map one-to-one onto the array's data axes. ``None`` when metadata is incomplete.
+    The positions themselves enumerate the MPI chunk indices, so ``max(position) + 1`` per axis is the grid extent no
+    matter how the chunks are sized: unlike ``global_shape // chunk_shape`` it stays correct when the chunk
+    distribution is uneven (chunks of different sizes). ``None`` when no position was observed, i.e. when there is
+    nothing to read the extent off.
+
+    Repeats carry no layout meaning here: a precompute event holds one entry per (bridge, reduction), so a bridge's
+    position legitimately appears once per reduction. Degenerate positions -- several pieces claiming ONE position --
+    are rejected by the full-chunk tiler and by the precompute path, never repaired into a guessed grid.
     """
-    g = metadata.get("global_shape")
-    c = metadata.get("chunk_shape")
-    if not g or not c or len(g) != len(c):
+    coords = [tuple(int(v) for v in c) for c in positions]
+    if not coords:
         return None
-    if any(ch <= 0 for ch in c):
-        return None
-    return tuple(max(1, int(gl // ch)) for gl, ch in zip(g, c))
-
-
-def _grid_size_from_metadata(metadata: Dict[str, Any]) -> Optional[int]:
-    """Total number of MPI chunks (bridges) the metadata implies for an array."""
-    extent = _grid_extent_from_metadata(metadata)
-    if extent is None:
-        return None
-    return int(np.prod(extent))
+    ndim = len(coords[0])
+    if any(len(c) != ndim for c in coords):
+        raise ValueError(
+            f"Chunk positions {sorted(set(coords))} do not all have the same number of coordinates; every position "
+            "must carry one coordinate per data axis."
+        )
+    return tuple(max(c[axis] for c in coords) + 1 for axis in range(ndim))
