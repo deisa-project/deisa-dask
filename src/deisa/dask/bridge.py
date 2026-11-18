@@ -65,19 +65,16 @@ except Exception:
 
 
 def _cart_coords(*comms: Any) -> Optional[List[int]]:
-    """The rank's Cartesian coordinates on the first communicator with a Cartesian topology, else ``None``.
+    """The rank's Cartesian coords from the first comm with a Cartesian topology, else ``None``.
 
-    ``MPI_Comm_split`` does not carry the parent's Cartesian topology over: an array's sub-communicator reports
-    ``MPI.UNDEFINED`` even when the communicator the user created is a cart one. The candidates are therefore tried
-    in turn -- and whichever comm supplies them, Cartesian coordinates still identify a rank uniquely.
+    ``MPI_Comm_split`` drops the parent's topology (a sub-comm reports ``MPI.UNDEFINED``), so both are candidates.
     """
     for comm in comms:
-        if comm is None or comm is _COMM_NULL:
+        if comm is None:  # _COMM_NULL is None: a rank that does not participate has no comm.
             continue
         get_topology = getattr(comm, "Get_topology", None)
-        if get_topology is None or get_topology() != _CART:
-            continue
-        return [int(c) for c in comm.Get_coords(comm.Get_rank())]
+        if get_topology is not None and get_topology() == _CART:
+            return [int(c) for c in comm.Get_coords(comm.Get_rank())]
     return None
 
 
@@ -271,38 +268,23 @@ class Bridge(IBridge):
             )
 
     def _resolve_chunk_positions(self) -> None:
-        """Resolve every array's missing ``chunk_position`` from the communicator topology, ONCE per array.
-
-        Precedence, in order:
-
-        1. a user-specified ``chunk_position`` is authoritative and used;
-        2. no user position on a Cartesian topology: the rank's Cartesian coordinates;
-        3. no user position on a plain communicator: the rank's index as a C-order tile of the UNIFORM grid implied
-           by ``global_shape // chunk_shape``;
-        4. anything else raises: that distribution cannot be derived and REQUIRES an explicit ``chunk_position`` at
-           registration.
-
-        Positions stay explicit downstream: the tiler only ever receives these resolved values and never infers a
-        grid of its own.
-        """
+        """Give every array its ``chunk_position`` once, here, where the topology is known (precedence: see
+        ``_derive_chunk_position``). Downstream only ever consumes the resolved value and never infers a grid."""
         for array_name, metadata in self.arrays_metadata.items():
-            if "chunk_position" in metadata:
-                continue
-            metadata["chunk_position"] = self._derive_chunk_position(array_name, metadata)
+            if "chunk_position" not in metadata:
+                metadata["chunk_position"] = self._derive_chunk_position(array_name, metadata)
 
     def _derive_chunk_position(self, array_name: str, metadata: Dict) -> tuple:
-        """One array's default chunk position (``_resolve_chunk_positions`` documents the precedence).
+        """One array's default position: Cartesian coords, else its C-order index on the implied uniform grid.
 
-        - ``:param array_name:`` Registered array the position is derived for; named in every error.
-        - ``:param metadata:`` That array's registration metadata: ``global_shape`` and ``chunk_shape`` are read.
-        - ``:return:`` The position, as one index per array axis.
+        Precedence: a user ``chunk_position`` (never derived here) > the rank's Cartesian coords > its C-order
+        row-major index in the ``global_shape // chunk_shape`` grid > raise. A distribution that cannot be derived
+        is never guessed: every failure names the array and asks for an explicit ``chunk_position``.
         """
         global_shape = tuple(int(extent) for extent in metadata["global_shape"])
         chunk_shape = tuple(int(chunk) for chunk in metadata["chunk_shape"])
-        # The array's own sub-communicator carries its participation set, and the parent communicator is the one the
-        # user may have given a Cartesian topology (Split drops it, see _cart_coords).
+        # The sub-comm carries the participation set; the parent is the one the user may have made Cartesian.
         sub_comm = self._array_comms.get(array_name) or self.comm
-
         coords = _cart_coords(sub_comm, self.comm)
         if coords is not None:
             if len(coords) != len(global_shape):
@@ -312,14 +294,12 @@ class Bridge(IBridge):
                     f"axis(es) {global_shape}. Register this array with an explicit 'chunk_position'."
                 )
             return tuple(coords)
-
         if len(chunk_shape) != len(global_shape):
             raise ValueError(
                 f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
                 f"chunk_shape {chunk_shape} must have the same number of axes. Register this array with an explicit "
                 f"'chunk_position'."
             )
-
         grid_extent: List[int] = []
         for axis, (extent, chunk) in enumerate(zip(global_shape, chunk_shape)):
             if chunk <= 0 or extent % chunk != 0:
@@ -329,16 +309,13 @@ class Bridge(IBridge):
                     f"and do not tile a uniform grid. Register this array with an explicit 'chunk_position'."
                 )
             grid_extent.append(extent // chunk)
-
-        nb_ranks = sub_comm.Get_size()
-        nb_tiles = int(np.prod(grid_extent))
+        nb_ranks, nb_tiles = sub_comm.Get_size(), int(np.prod(grid_extent))
         if nb_tiles != nb_ranks:
             raise ValueError(
                 f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
                 f"chunk_shape {chunk_shape} imply a uniform {tuple(grid_extent)} grid of {nb_tiles} tile(s), but the "
                 f"communicator has {nb_ranks} rank(s). Register this array with an explicit 'chunk_position'."
             )
-
         # C-order tile index of this rank over the grid: any rank count works, `unravel_index` does the splitting.
         return tuple(int(index) for index in np.unravel_index(sub_comm.Get_rank(), tuple(grid_extent)))
 
