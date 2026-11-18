@@ -394,9 +394,17 @@ class FakeCartComm(FakeComm):
     def periods(self) -> tuple[bool, ...]:
         return self._periods
 
-    def Get_topology(self) -> int:
-        """Mirror of ``mpi4py.MPI.Cartcomm.Get_topology``: a Cartesian comm reports ``MPI.CART``."""
-        return 1  # MPI.CART, see deisa.dask.bridge._CART
+    def Get_cart_rank(self, coords: Sequence[int]) -> int:
+        """Mirror of ``mpi4py.MPI.Cartcomm.Get_cart_rank``: row-major, the inverse of ``Get_coords``."""
+        coords = tuple(int(c) for c in coords)
+        if len(coords) != len(self._dims):
+            raise ValueError(f"expected {len(self._dims)} coordinate(s), got {coords}")
+        rank = 0
+        for dim, coord in zip(self._dims, coords):
+            if not 0 <= coord < dim:
+                raise ValueError(f"coordinate {coord} out of range for dimension {dim}")
+            rank = rank * dim + coord
+        return rank
 
     def Get_coords(self, rank: int) -> list[int]:
         """

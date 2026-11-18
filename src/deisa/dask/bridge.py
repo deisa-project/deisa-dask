@@ -56,24 +56,19 @@ try:
     from mpi4py import MPI
 
     _UNDEFINED = MPI.UNDEFINED
-    _CART = MPI.CART
 except Exception:
     logger.warning("mpi4py not available.")
     _UNDEFINED = 2147483647
-    # mpi4py's MPI.CART value; the test fakes report the same one.
-    _CART = 1
 
 
 def _cart_coords(*comms: Any) -> Optional[List[int]]:
-    """The rank's Cartesian coords from the first comm with a Cartesian topology, else ``None``.
+    """The rank's Cartesian coords from the first comm that carries mpi4py's ``Cartcomm`` methods, else ``None``.
 
-    ``MPI_Comm_split`` drops the parent's topology (a sub-comm reports ``MPI.UNDEFINED``), so both are candidates.
+    Those methods exist only on the ``Cartcomm`` subclass -- and ``MPI_Comm_split`` drops the topology, so the array's
+    own sub-communicator and the parent are both tried.
     """
     for comm in comms:
-        if comm is None:  # _COMM_NULL is None: a rank that does not participate has no comm.
-            continue
-        get_topology = getattr(comm, "Get_topology", None)
-        if get_topology is not None and get_topology() == _CART:
+        if comm is not None and getattr(comm, "Get_cart_rank", None) is not None:
             return [int(c) for c in comm.Get_coords(comm.Get_rank())]
     return None
 
@@ -289,32 +284,32 @@ class Bridge(IBridge):
         if coords is not None:
             if len(coords) != len(global_shape):
                 raise ValueError(
-                    f"cannot derive a default chunk_position for '{array_name}': the Cartesian communicator reports "
-                    f"{len(coords)} coordinate(s) {tuple(coords)} per rank, but the array has {len(global_shape)} "
-                    f"axis(es) {global_shape}. Register this array with an explicit 'chunk_position'."
+                    f"cannot derive a chunk_position for '{array_name}': cart coords {tuple(coords)} give "
+                    f"{len(coords)} axis(es), the array {global_shape} has {len(global_shape)}. "
+                    "Register this array with an explicit 'chunk_position'."
                 )
             return tuple(coords)
         if len(chunk_shape) != len(global_shape):
             raise ValueError(
-                f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
-                f"chunk_shape {chunk_shape} must have the same number of axes. Register this array with an explicit "
-                f"'chunk_position'."
+                f"cannot derive a chunk_position for '{array_name}': global_shape {global_shape} and "
+                f"chunk_shape {chunk_shape} differ in axis count. "
+                "Register this array with an explicit 'chunk_position'."
             )
         grid_extent: List[int] = []
         for axis, (extent, chunk) in enumerate(zip(global_shape, chunk_shape)):
             if chunk <= 0 or extent % chunk != 0:
                 raise ValueError(
-                    f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} is not "
-                    f"a whole number of chunk_shape {chunk_shape} chunks along axis {axis}, so the chunks are uneven "
-                    f"and do not tile a uniform grid. Register this array with an explicit 'chunk_position'."
+                    f"cannot derive a chunk_position for '{array_name}': global_shape {global_shape} is not a whole "
+                    f"number of chunk_shape {chunk_shape} chunks along axis {axis}. "
+                    "Register this array with an explicit 'chunk_position'."
                 )
             grid_extent.append(extent // chunk)
         nb_ranks, nb_tiles = sub_comm.Get_size(), int(np.prod(grid_extent))
         if nb_tiles != nb_ranks:
             raise ValueError(
-                f"cannot derive a default chunk_position for '{array_name}': global_shape {global_shape} and "
-                f"chunk_shape {chunk_shape} imply a uniform {tuple(grid_extent)} grid of {nb_tiles} tile(s), but the "
-                f"communicator has {nb_ranks} rank(s). Register this array with an explicit 'chunk_position'."
+                f"cannot derive a chunk_position for '{array_name}': {tuple(grid_extent)} grid of {nb_tiles} tile(s) "
+                f"for global_shape {global_shape} / chunk_shape {chunk_shape}, not {nb_ranks} rank(s). "
+                "Register this array with an explicit 'chunk_position'."
             )
         # C-order tile index of this rank over the grid: any rank count works, `unravel_index` does the splitting.
         return tuple(int(index) for index in np.unravel_index(sub_comm.Get_rank(), tuple(grid_extent)))
