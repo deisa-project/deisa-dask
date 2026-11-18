@@ -150,10 +150,10 @@ class Bridge(IBridge):
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
-        if kwargs.get("wait_for_go", True) and self.id == 0:
-            # Prefetch static branches out of the send() path. Only safe here: the barrier guarantees branches exist in
-            # the handshake. On wait_for_go=False they may not be registered yet (--lazy first-send fetch in
-            # _get_task_branches).
+        # Prefetch static branches out of the send() path. EVERY rank runs this: ``_prefetch_task_branches`` issues one
+        # bcast per array on that array's sub-communicator, so all sub-comm members must enter the same (sorted)
+        # sequence of collectives.
+        if kwargs.get("wait_for_go", True):
             self._prefetch_task_branches()
 
     def _gather_global_metadata(self):
