@@ -24,8 +24,7 @@ Types of changes:
   every rank that mismatch happened to pair up and complete, which hid the bug. With two or more shared arrays it
   deadlocked for good: rank 0 broadcast the arrays in sorted order while the simulation sent them in its own order,
   so each rank waited on a different array's communicator and the run never started. The prefetch now runs on all
-  ranks after the post-registration barrier, so every rank enters the same sorted sequence of collectives. Reported
-  by a downstream user on 0.7.0, where the workaround was to disable the prefetch.
+  ranks after the post-registration barrier, so every rank enters the same sorted sequence of collectives.
 
 ## [0.7.0]
 

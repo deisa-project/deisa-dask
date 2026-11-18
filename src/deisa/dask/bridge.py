@@ -152,10 +152,7 @@ class Bridge(IBridge):
 
         # Prefetch static branches out of the send() path. EVERY rank runs this: ``_prefetch_task_branches`` issues one
         # bcast per array on that array's sub-communicator, so all sub-comm members must enter the same (sorted)
-        # sequence of collectives. Gating on ``self.id == 0`` deadlocks as soon as two arrays are shared: world rank 0
-        # prefetches in sorted order while the other ranks fetch lazily in their own send() order.
-        # Only safe here: the barrier guarantees branches exist in the handshake. On wait_for_go=False they may not be
-        # registered yet (--lazy first-send fetch in _get_task_branches).
+        # sequence of collectives.
         if kwargs.get("wait_for_go", True):
             self._prefetch_task_branches()
 
