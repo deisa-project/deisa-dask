@@ -29,6 +29,7 @@
 import abc
 import asyncio
 import gc
+import json
 import logging
 import os.path
 import time
@@ -115,7 +116,7 @@ class TestDeisaCtor:
             dashboard_address=":0",
             worker_dashboard_address=":0",
             host="127.0.0.1",
-            scheduler_port=4242,
+            scheduler_port=0,
         )
         client = Client(cluster)
         client.wait_for_workers(1, timeout=20)
@@ -129,10 +130,14 @@ class TestDeisaCtor:
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
 
-    def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
+    def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster, tmp_path):
         cluster = env_setup_tcp_cluster
-        f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + "test-scheduler.json"
-        os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = f
+        # ``Client(scheduler_file=...)`` only consumes the ``address`` field, so the
+        # scheduler file can be written at runtime from the live cluster address
+        # instead of being committed with a fixed port.
+        scheduler_file = tmp_path / "scheduler.json"
+        scheduler_file.write_text(json.dumps({"address": cluster.scheduler_address}))
+        os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = str(scheduler_file)
         deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
