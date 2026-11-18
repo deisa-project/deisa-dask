@@ -503,8 +503,7 @@ class Deisa(IDeisa):
                 logger.debug(f"topic_handler: array_name={array_name}, payload={payload}")
 
                 iteration = payload["iteration"]
-                futures = payload["futures"]
-                futures = [{**d, "future": Future(d["future"], client=_weak_self.client)} for d in futures]
+                futures = [{**d, "future": Future(d["future"], client=_weak_self.client)} for d in payload["futures"]]
 
                 _weak_self.__update_futures_ownership(futures)
 

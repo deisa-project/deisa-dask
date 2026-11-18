@@ -47,7 +47,7 @@ from deisa.dask.branch import BranchSpec
 from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX, WAIT_FOR_EXECUTE_CB_EVENT
 from deisa.dask.handshake import Handshake
 from deisa.dask.precompute_analyzer import PrecomputeRuntimeError
-from deisa.dask.utils import called_from_event_loop, get_client, run_coro_on_private_loop
+from deisa.dask.utils import called_from_event_loop, get_client, get_mpi_cart_coords, run_coro_on_private_loop
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +59,6 @@ try:
 except Exception:
     logger.warning("mpi4py not available.")
     _UNDEFINED = 2147483647
-
-
-def _cart_coords(*comms: Any) -> Optional[List[int]]:
-    """The rank's Cartesian coords from the first comm that carries mpi4py's ``Cartcomm`` methods, else ``None``.
-
-    Those methods exist only on the ``Cartcomm`` subclass -- and ``MPI_Comm_split`` drops the topology, so the array's
-    own sub-communicator and the parent are both tried.
-    """
-    for comm in comms:
-        if comm is not None and getattr(comm, "Get_cart_rank", None) is not None:
-            return [int(c) for c in comm.Get_coords(comm.Get_rank())]
-    return None
 
 
 class Bridge(IBridge):
@@ -280,7 +268,7 @@ class Bridge(IBridge):
         chunk_shape = tuple(int(chunk) for chunk in metadata["chunk_shape"])
         # The sub-comm carries the participation set; the parent is the one the user may have made Cartesian.
         sub_comm = self._array_comms.get(array_name) or self.comm
-        coords = _cart_coords(sub_comm, self.comm)
+        coords = get_mpi_cart_coords(sub_comm, self.comm)
         if coords is not None:
             if len(coords) != len(global_shape):
                 raise ValueError(
