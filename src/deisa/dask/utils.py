@@ -100,7 +100,8 @@ def _get_actor(client: Client, clazz, **kwargs):
 
     key = f"deisa_actor_{clazz}"
 
-    with Lock(key):
+    # ``Lock`` takes its event loop from the *current* client; scope the bridge client here, restored on exit.
+    with client.as_current(), Lock(key):
         is_set = client.run_on_scheduler(check_variable, name=key)
         if is_set:
             return Variable(key, client=client).get().result()

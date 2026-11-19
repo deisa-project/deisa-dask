@@ -112,7 +112,10 @@ class Bridge(IBridge):
 
         if self.id == 0:
             # only id 0 has a real dask client
-            self.client = get_client(timeout=kwargs.get("timeout", 10), name=f"bridge-{self.comm.Get_rank()}")
+            # Internal to the bridge (used via ``self.client`` explicitly); must not become the process-wide default.
+            self.client = get_client(
+                timeout=kwargs.get("timeout", 10), name=f"bridge-{self.comm.Get_rank()}", set_as_default=False
+            )
             assert self.client, "client cannot be None for Bridge id 0."
             # get all workers from scheduler
             self.workers = self.client.scheduler_info(n_workers=-1)["workers"]
@@ -225,7 +228,7 @@ class Bridge(IBridge):
 
             # create a new client for sub_comm id==0 if needed
             if not self.client and sub_comm is not _COMM_NULL and sub_comm.Get_rank() == 0:
-                self.client = get_client(timeout=10, name=f"bridge-{self.comm.Get_rank()}")
+                self.client = get_client(timeout=10, name=f"bridge-{self.comm.Get_rank()}", set_as_default=False)
                 # Connect to existing handshake actor from analytics side (created by Deisa)
                 self.handshake = Handshake(self.client)
 

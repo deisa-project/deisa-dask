@@ -20,6 +20,16 @@ Types of changes:
 
 - `deisa.dask.bridge.send`: zero-copy scatter path when the receiving worker is process-local.
 
+### Fixed
+
+- Bridge: internal clients no longer become the process-wide Dask default (`set_as_default=False`); `_get_actor`
+  scopes its client with `as_current()` because `Lock` resolves from the current client.
+- Bridge: an idle client that lost its scheduler now closes itself instead of holding the global scheduler
+  config through the reconnect window.
+- Deisa: the client no longer becomes the process-wide default (`set_as_default=False`); registered callbacks
+  run inside `client.as_current()` so a bare `.compute()` resolves to the client owning the delivered futures.
+- test: `reset_dask_scheduler` fixture now actually restores `dask.config["scheduler"]` after each test.
+
 ### Changed
 
 - getting-started: add feedback (`bridge.get()` and `deisa.set()`)

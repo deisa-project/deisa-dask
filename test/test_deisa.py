@@ -29,6 +29,7 @@
 import abc
 import asyncio
 import gc
+import json
 import logging
 import os.path
 import time
@@ -115,7 +116,7 @@ class TestDeisaCtor:
             dashboard_address=":0",
             worker_dashboard_address=":0",
             host="127.0.0.1",
-            scheduler_port=4242,
+            scheduler_port=0,
         )
         client = Client(cluster)
         client.wait_for_workers(1, timeout=20)
@@ -129,10 +130,12 @@ class TestDeisaCtor:
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
 
-    def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster):
+    def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster, tmp_path):
         cluster = env_setup_tcp_cluster
-        f = os.path.abspath(os.path.dirname(__file__)) + os.path.sep + "test-scheduler.json"
-        os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = f
+        # ``Client(scheduler_file=...)`` only reads "address", so write it at runtime from the live cluster.
+        scheduler_file = tmp_path / "scheduler.json"
+        scheduler_file.write_text(json.dumps({"address": cluster.scheduler_address}))
+        os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = str(scheduler_file)
         deisa = Deisa(wait_for_go=False)
         assert deisa.client is not None, "Deisa should not be None"
         assert deisa.client.scheduler.address == cluster.scheduler_address, "Client should be the same as scheduler"
@@ -523,7 +526,9 @@ class TestUsingDaskCluster:
             assert state["map_block"] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
     @pytest.mark.filterwarnings("error")
-    @pytest.mark.timeout(30)
+    # The ceiling spans fixture setup too (pytest-timeout's func_only default), and each item spawns a fresh
+    # LocalCluster; 90 s keeps a wedged item bounded without failing on that spawn cost.
+    @pytest.mark.timeout(90)
     @pytest.mark.parametrize("temperature_global_grid_size", [(8, 8)])
     @pytest.mark.parametrize("temperature_window_size", [None, 1, 3])
     @pytest.mark.parametrize("pressure_global_grid_size", [(8, 8)])
@@ -790,6 +795,58 @@ class TestUsingDaskCluster:
         sim.generate_data("my_array", iteration=4)
         assert wait_for(lambda: context["counter"] == 3, nb_checks=10), "callback was not called"
         assert wait_for(lambda: context["exception_handler"] == 2), "callback was not called"
+
+        async_close_bridges(sim.bridges, 4)
+        deisa.execute_callbacks()
+
+    def test_callback_bare_compute_uses_deisa_client(self, env_setup):
+        """A bare ``.compute()`` inside a callback must run on the Deisa client, not the caller's default client.
+
+        ``Deisa``'s client is created with ``set_as_default=False`` -- it must never hijack the process-wide Dask
+        scheduler -- so the callback body is the one place where its client has to be scoped explicitly. Computing
+        the delivered array from a foreign client releases the delivered scatter keys as soon as that graph
+        finishes, evicting the chunk from the workers before the callback returns (that is what made the
+        ``precompute=False`` memory control test lose the chunk in CI). ``Client.current(allow_global=False)``
+        raises outside a ``Client.as_current()`` scope, so it pins the scoping without any timing dependency.
+        """
+        client, cluster = env_setup
+        global_grid_size = (8, 8)
+        mpi_parallelism = (2, 2)
+
+        sim = TestSimulation(
+            client,
+            mpi_parallelism=mpi_parallelism,
+            arrays_metadata={
+                "my_array": {
+                    "global_shape": global_grid_size,
+                    "chunk_shape": (
+                        global_grid_size[0] // mpi_parallelism[0],
+                        global_grid_size[1] // mpi_parallelism[1],
+                    ),
+                    "chunk_position": (0, 0),  # TODO
+                }
+            },
+            wait_for_go=False,
+        )
+        deisa = Deisa()
+
+        time.sleep(0.2)  # wait for bridges and deisa to be ready
+
+        context = {"client_ids": [], "sums": []}
+
+        @deisa.register("my_array", precompute=False)
+        def window_callback(my_array: list[DeisaArray]):
+            context["client_ids"].append(Client.current(allow_global=False).id)
+            context["sums"].append(float(my_array[-1].sum().compute()))
+
+        global_data = sim.generate_data("my_array", iteration=1)
+
+        assert wait_for(lambda: len(context["sums"]) == 1, timeout=10), "callback was not called"
+        assert context["client_ids"] == [deisa.client.id], (
+            f"callback body ran under client(s) {context['client_ids']!r}; expected the Deisa client "
+            f"{deisa.client.id!r}. A foreign client must not execute the callback's bare .compute()."
+        )
+        assert np.isclose(context["sums"][0], float(np.sum(global_data)))
 
         async_close_bridges(sim.bridges, 4)
         deisa.execute_callbacks()

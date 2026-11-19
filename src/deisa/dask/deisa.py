@@ -85,7 +85,9 @@ class Deisa(IDeisa):
         # "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
         super().__init__(feedback_queue_size, *args, **kwargs)
-        self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa")
+        # ``set_as_default=False``: Deisa uses ``self.client`` explicitly. Left as the default it would hold
+        # ``dask.config["scheduler"]`` through the reconnect window and decide the scheduler for unrelated code.
+        self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa", set_as_default=False)
         self.feedback_queue_size = feedback_queue_size
 
         # blocking until all bridges are ready
@@ -771,8 +773,14 @@ class Deisa(IDeisa):
             ]
 
             async def _run():
+                def _invoke_callback():
+                    # Scope it: bare ``.compute()`` must hit the client owning the delivered futures, else a foreign
+                    # client releases the scatter keys mid-callback; ``as_current`` is context-local, restores on exit.
+                    with self.client.as_current():
+                        cb_data["callback"](*windows)
+
                 try:
-                    await asyncio.to_thread(cb_data["callback"], *windows)
+                    await asyncio.to_thread(_invoke_callback)
                 except Exception as ex:
                     self._handle_callback_exception(callback_id, cb_data, ex)
 
