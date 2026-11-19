@@ -30,6 +30,7 @@ import asyncio
 import logging
 import os
 import threading
+from typing import Any, List, Optional
 
 from deisa.core import DeisaArray, ICommunicator
 from distributed import Client, Lock, Variable
@@ -65,6 +66,18 @@ def get_mpi_comm_world(cart_coord_dims: int = 1) -> ICommunicator:
     mpi_comm = MPI.COMM_WORLD
     dims = MPI.Compute_dims(mpi_comm.Get_size(), dims=cart_coord_dims)
     return mpi_comm.Create_cart(dims)
+
+
+def get_mpi_cart_coords(*comms: Any) -> Optional[List[int]]:
+    """The rank's Cartesian coords from the first comm that carries mpi4py's ``Cartcomm`` methods, else ``None``.
+
+    Those methods exist only on the ``Cartcomm`` subclass -- and ``MPI_Comm_split`` drops the topology, so the array's
+    own sub-communicator and the parent are both tried.
+    """
+    for comm in comms:
+        if comm is not None and getattr(comm, "Get_cart_rank", None) is not None:
+            return [int(c) for c in comm.Get_coords(comm.Get_rank())]
+    return None
 
 
 def get_connection_info(dask_scheduler_address: str | Client, *args, **kwargs) -> Client:

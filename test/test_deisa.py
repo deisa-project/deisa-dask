@@ -64,6 +64,16 @@ logging.basicConfig(level=logging.DEBUG)
 META_A = {"a": {"global_shape": (8, 8), "chunk_shape": (4, 4)}}
 
 
+def _tile_piece(payload: np.ndarray, position: tuple[int, ...]) -> dict:
+    """One topic-event ``futures`` entry: the piece's metadata travels with its future."""
+    return {
+        "future": dask.delayed(payload),
+        "shape": payload.shape,
+        "dtype": payload.dtype,
+        "chunk_position": tuple(int(i) for i in position),
+    }
+
+
 class _FakeClient:
     """Minimal client surface used by Deisa._register_callback_impl."""
 
@@ -211,6 +221,161 @@ class TestDeisaRegistration:
         assert "full-chunk scatter path" in caplog.text
 
 
+class TestTileDaskBlocksUnevenChunks:
+    """Pieces of DIFFERENT shapes must tile correctly, driven by their chunk positions.
+
+    This is the analytics half of uneven MPI chunk distribution. Before the position-driven rewrite, two ranks with
+    chunks (1,)/(2,) on a global (3,) array raised ``Mismatch between number of blocks (2) and expected number from
+    global_shape (3,) with block shape (1,)``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _local_scheduler(self):
+        """Tile with a local scheduler: a Client left behind by another test in this xdist worker must not schedule."""
+        with dask.config.set(scheduler="sync"):
+            yield
+
+    @staticmethod
+    def _uneven_pieces(array: np.ndarray, axis_lengths: List[List[int]]):
+        """Cut ``array`` into one piece per chunk position, splitting each axis by ``axis_lengths[axis]``."""
+        offsets = [np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(int) for lengths in axis_lengths]
+        pieces = []
+        for position in np.ndindex(*(len(lengths) for lengths in axis_lengths)):
+            slices = tuple(
+                slice(int(offsets[axis][p]), int(offsets[axis][p] + axis_lengths[axis][p]))
+                for axis, p in enumerate(position)
+            )
+            pieces.append(_tile_piece(array[slices], tuple(int(p) for p in position)))
+        return pieces
+
+    def test_field_case_one_dimensional_uneven_chunks(self):
+        """The reported failure: two ranks, chunks (1,) at position (0,) and (2,) at position (1,)."""
+        data = np.array([1.0, 2.0, 3.0])
+        pieces = [_tile_piece(data[0:1], (0,)), _tile_piece(data[1:3], (1,))]
+
+        darr = Deisa._Deisa__tile_dask_blocks(pieces, (3,))
+
+        assert darr.shape == (3,)
+        assert darr.chunks == ((1, 2),)
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(6.0)
+
+    @pytest.mark.parametrize(
+        "axis_lengths",
+        [
+            [[1, 3], [2, 2]],
+            [[3, 1], [2, 2]],
+            [[2, 2], [1, 3]],
+            [[1, 3], [3, 1]],
+        ],
+    )
+    def test_two_dimensional_uneven_chunks(self, axis_lengths):
+        data = np.arange(16.0).reshape(4, 4)
+        pieces = self._uneven_pieces(data, axis_lengths)
+
+        darr = Deisa._Deisa__tile_dask_blocks(pieces, (4, 4))
+
+        assert darr.shape == (4, 4)
+        assert darr.chunks == tuple(tuple(lengths) for lengths in axis_lengths)
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(data.sum())
+
+    def test_three_dimensional_uneven_chunks(self):
+        data = np.arange(2 * 3 * 5).reshape(2, 3, 5).astype(np.float64)
+        pieces = self._uneven_pieces(data, [[1, 1], [2, 1], [1, 4]])
+
+        darr = Deisa._Deisa__tile_dask_blocks(pieces, data.shape)
+
+        assert np.array_equal(darr.compute(), data)
+        assert darr.sum().compute() == pytest.approx(data.sum())
+
+    def test_pieces_are_placed_by_position_not_by_order(self):
+        data = np.arange(16.0).reshape(4, 4)
+        pieces = self._uneven_pieces(data, [[1, 3], [2, 2]])
+
+        darr = Deisa._Deisa__tile_dask_blocks(list(reversed(pieces)), (4, 4))
+
+        assert np.array_equal(darr.compute(), data)
+
+    def test_gap_in_coverage_is_loud(self):
+        data = np.arange(3.0)
+        pieces = [_tile_piece(data[0:1], (0,)), _tile_piece(data[2:3], (2,))]
+
+        with pytest.raises(ValueError, match="Missing chunk at position 1 on axis 0"):
+            Deisa._Deisa__tile_dask_blocks(pieces, (3,))
+
+    def test_position_collision_with_conflicting_shapes_is_loud(self):
+        data = np.arange(3.0)
+        pieces = [_tile_piece(data[0:1], (0,)), _tile_piece(data[1:3], (0,))]
+
+        with pytest.raises(ValueError, match=r"Conflicting block shapes at chunk position \(0,\) on axis 0"):
+            Deisa._Deisa__tile_dask_blocks(pieces, (3,))
+
+    def test_coverage_shortfall_names_axis_and_extent(self):
+        data = np.arange(3.0)
+        pieces = [_tile_piece(data[0:1], (0,)), _tile_piece(data[1:2], (1,))]
+
+        with pytest.raises(ValueError, match="cover 2 element"):
+            Deisa._Deisa__tile_dask_blocks(pieces, (3,))
+
+    def test_misaligned_position_arity_is_loud(self):
+        """A chunk position with the wrong number of coordinates cannot be placed on the grid."""
+        data = np.arange(3.0)
+        pieces = [_tile_piece(data[0:1], (0, 0)), _tile_piece(data[1:3], (1, 0))]
+
+        with pytest.raises(ValueError, match="coordinate\\(s\\) for a 1-dimensional array"):
+            Deisa._Deisa__tile_dask_blocks(pieces, (3,))
+
+    def test_uniform_grid_tiles_when_every_piece_declares_its_own_position(self):
+        """A uniform grid stays expressible: each piece declares its TRUE position -- only guessing is banned."""
+        data = np.arange(16.0).reshape(4, 4)
+        pieces = [_tile_piece(data[x : x + 2, y : y + 2], (x // 2, y // 2)) for x in (0, 2) for y in (0, 2)]
+
+        darr = Deisa._Deisa__tile_dask_blocks(pieces, (4, 4))
+
+        assert darr.chunks == ((2, 2), (2, 2))
+        assert np.array_equal(darr.compute(), data)
+
+    def test_duplicate_chunk_positions_are_loud(self):
+        """Metadata declaring ONE chunk position for every rank describes no layout: refuse instead of guessing."""
+        data = np.arange(16.0).reshape(4, 4)
+        pieces = [_tile_piece(data[x : x + 2, y : y + 2], (0, 0)) for x in (0, 2) for y in (0, 2)]
+
+        with pytest.raises(
+            ValueError,
+            match=r"4 pieces claim the same chunk position \(0, 0\) for a 2-axis array \(axes 0\.\.1\): chunk "
+            r"positions are explicit and must be distinct; the gather metadata is inconsistent\.",
+        ):
+            Deisa._Deisa__tile_dask_blocks(pieces, (4, 4))
+
+    def test_duplicate_chunk_positions_in_one_dimension_are_loud(self):
+        data = np.arange(6.0)
+        pieces = [_tile_piece(data[0:2], (0,)), _tile_piece(data[2:4], (0,))]
+
+        with pytest.raises(
+            ValueError,
+            match=r"2 pieces claim the same chunk position \(0,\) for a 1-axis array \(axes 0\.\.0\)",
+        ):
+            Deisa._Deisa__tile_dask_blocks(pieces, (6,))
+
+    def test_grid_extent_from_positions_reads_observed_positions(self):
+        from deisa.dask.deisa import _grid_extent_from_positions
+
+        assert _grid_extent_from_positions([(0,), (1,)]) == (2,)
+        assert _grid_extent_from_positions([(0, 0), (0, 1), (1, 0)]) == (2, 2)
+        assert _grid_extent_from_positions([]) is None
+        # One entry per (bridge, reduction) repeats a bridge's position: the extent still comes from the positions.
+        assert _grid_extent_from_positions([(0, 1), (0, 1), (1, 0)]) == (2, 2)
+        assert _grid_extent_from_positions([(0, 0)]) == (1, 1)
+
+    def test_grid_extent_from_positions_rejects_mixed_arity(self):
+        """Positions with a different number of coordinates cannot describe one grid."""
+        from deisa.dask.deisa import _grid_extent_from_positions
+
+        with pytest.raises(ValueError, match="do not all have the same number of coordinates"):
+            _grid_extent_from_positions([(0,), (0, 0)])
+
+
 class TestUsingDaskCluster:
     @pytest.fixture(scope="function", params=[1, 2])
     def env_setup(self, request):
@@ -238,23 +403,24 @@ class TestUsingDaskCluster:
 
         state = da.random.RandomState(42)
         global_data = state.random(global_shape)
+        values = global_data.compute()
 
         global_len_x, global_len_y = global_shape
         local_len_x, local_len_y = local_shape
 
         expected_nb_blocks = global_len_x // local_len_x * global_len_y // local_len_y
 
-        # create blocks (i.e. 1 block per mpi rank)
-        blocks = []
+        # create one piece per mpi rank, each carrying its own chunk position
+        pieces = []
         for x in range(0, global_len_x, local_len_x):
             for y in range(0, global_len_y, local_len_y):
-                block = global_data[x : x + local_len_x, y : y + local_len_y]
-                blocks.append(block)
+                piece = values[x : x + local_len_x, y : y + local_len_y]
+                pieces.append(_tile_piece(piece, (x // local_len_x, y // local_len_y)))
 
-        assert len(blocks) == expected_nb_blocks, "number of blocks does not match expected"
+        assert len(pieces) == expected_nb_blocks, "number of blocks does not match expected"
 
         # tested method
-        reconstructed_global_data = Deisa._Deisa__tile_dask_blocks(blocks, global_shape)  # access private staticmethod
+        reconstructed_global_data = Deisa._Deisa__tile_dask_blocks(pieces, global_shape)  # access private staticmethod
 
         assert reconstructed_global_data.shape == global_data.shape, (
             "reconstructed global data shape does not match original"
@@ -273,24 +439,25 @@ class TestUsingDaskCluster:
 
         state = da.random.RandomState(42)
         global_data = state.random(global_shape)
+        values = global_data.compute()
 
         global_len_x, global_len_y, global_len_z = global_shape
         local_len_x, local_len_y, local_len_z = local_shape
 
         expected_nb_blocks = global_len_x // local_len_x * global_len_y // local_len_y * global_len_z // local_len_z
 
-        # create blocks (i.e. 1 block per mpi rank)
-        blocks = []
+        # create one piece per mpi rank, each carrying its own chunk position
+        pieces = []
         for x in range(0, global_len_x, local_len_x):
             for y in range(0, global_len_y, local_len_y):
                 for z in range(0, global_len_z, local_len_z):
-                    block = global_data[x : x + local_len_x, y : y + local_len_y, z : z + local_len_z]
-                    blocks.append(block)
+                    piece = values[x : x + local_len_x, y : y + local_len_y, z : z + local_len_z]
+                    pieces.append(_tile_piece(piece, (x // local_len_x, y // local_len_y, z // local_len_z)))
 
-        assert len(blocks) == expected_nb_blocks, "number of blocks does not match expected"
+        assert len(pieces) == expected_nb_blocks, "number of blocks does not match expected"
 
         # tested method
-        reconstructed_global_data = Deisa._Deisa__tile_dask_blocks(blocks, global_shape)  # access private staticmethod
+        reconstructed_global_data = Deisa._Deisa__tile_dask_blocks(pieces, global_shape)  # access private staticmethod
 
         assert reconstructed_global_data.shape == global_data.shape, (
             "reconstructed global data shape does not match original"
