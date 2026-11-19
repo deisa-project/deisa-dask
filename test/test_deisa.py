@@ -526,7 +526,9 @@ class TestUsingDaskCluster:
             assert state["map_block"] == i * state["temperature"][-1].npartitions, "map_block function was not called"
 
     @pytest.mark.filterwarnings("error")
-    @pytest.mark.timeout(30)
+    # The ceiling spans fixture setup too (pytest-timeout's func_only default), and each item spawns a fresh
+    # LocalCluster; 90 s keeps a wedged item bounded without failing on that spawn cost.
+    @pytest.mark.timeout(90)
     @pytest.mark.parametrize("temperature_global_grid_size", [(8, 8)])
     @pytest.mark.parametrize("temperature_window_size", [None, 1, 3])
     @pytest.mark.parametrize("pressure_global_grid_size", [(8, 8)])
