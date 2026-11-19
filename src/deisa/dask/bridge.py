@@ -112,10 +112,7 @@ class Bridge(IBridge):
 
         if self.id == 0:
             # only id 0 has a real dask client
-            # ``set_as_default=False``: this client is internal to the bridge, which always uses it explicitly. Left as
-            # the process-wide default it would hold ``dask.config["scheduler"]`` at ``dask.distributed`` for its whole
-            # lifetime -- including a reconnect window against a scheduler that is already gone -- and a leaked bridge
-            # would then decide the scheduler for unrelated code in the same process.
+            # Internal to the bridge (used via ``self.client`` explicitly); must not become the process-wide default.
             self.client = get_client(
                 timeout=kwargs.get("timeout", 10), name=f"bridge-{self.comm.Get_rank()}", set_as_default=False
             )

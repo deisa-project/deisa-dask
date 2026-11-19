@@ -85,12 +85,8 @@ class Deisa(IDeisa):
         # "distributed.workers.memory.target":0.95, "distributed.workers.memory.terminate":0.99 })
 
         super().__init__(feedback_queue_size, *args, **kwargs)
-        # ``set_as_default=False``: Deisa always uses ``self.client`` explicitly and never relies on a bare
-        # ``.compute()`` finding it. Left as the process-wide default it would hold ``dask.config["scheduler"]`` at
-        # ``dask.distributed`` for its whole lifetime -- including a reconnect window against a scheduler that is
-        # already gone -- and a leaked Deisa (garbage-collected, or whose cluster died) would then decide the
-        # scheduler for unrelated code on the same xdist worker ("Requested dask.distributed scheduler but no
-        # Client active"). Deisa is the source of the 10 s reconnect window seen in CI (timeout=10).
+        # ``set_as_default=False``: Deisa uses ``self.client`` explicitly. Left as the default it would hold
+        # ``dask.config["scheduler"]`` through the reconnect window and decide the scheduler for unrelated code.
         self.client: Client = get_client(timeout=kwargs.get("timeout", 10), name="deisa", set_as_default=False)
         self.feedback_queue_size = feedback_queue_size
 
@@ -778,15 +774,8 @@ class Deisa(IDeisa):
 
             async def _run():
                 def _invoke_callback():
-                    # Scope the Deisa client to the callback body: user code routinely calls ``.compute()`` on the
-                    # delivered array with no client argument, and that bare call must resolve to the Deisa client
-                    # that owns the delivered futures (it persists them and holds their desires). Without this scope
-                    # it resolves to the ambient default client -- and since ``Deisa``'s client is deliberately NOT
-                    # the process-wide default, computing the array from a foreign client releases the delivered
-                    # scatter keys as soon as the graph finishes, evicting the chunk before the callback even
-                    # returns. ``as_current`` only sets context-local client/config state (no RPC), so it is safe to
-                    # enter from this ``to_thread`` worker thread, and it restores the previous values on exit so
-                    # nothing leaks outside the callback.
+                    # Scope it: bare ``.compute()`` must hit the client owning the delivered futures, else a foreign
+                    # client releases the scatter keys mid-callback; ``as_current`` is context-local, restores on exit.
                     with self.client.as_current():
                         cb_data["callback"](*windows)
 

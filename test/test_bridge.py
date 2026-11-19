@@ -466,8 +466,7 @@ class TestBridgeClientIsNotTheProcessDefault:
         )
         try:
             assert bridge.client is not None, "bridge id 0 should hold a client"
-            # With set_as_default=False the bridge client does not seize the process-wide Dask scheduler config.
-            # Client.current() therefore remains the test's own client (set by env_setup).
+            # The bridge client is not the process default, so Client.current() is still the test's own client.
             assert Client.current(allow_global=True).scheduler.address == client.scheduler.address, (
                 f"expected Client.current() scheduler address to match the test's client scheduler address, "
                 f"got {Client.current(allow_global=True).scheduler.address}"

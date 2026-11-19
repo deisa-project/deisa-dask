@@ -132,9 +132,7 @@ class TestDeisaCtor:
 
     def test_deisa_ctor_scheduler_file(self, env_setup_tcp_cluster, tmp_path):
         cluster = env_setup_tcp_cluster
-        # ``Client(scheduler_file=...)`` only consumes the ``address`` field, so the
-        # scheduler file can be written at runtime from the live cluster address
-        # instead of being committed with a fixed port.
+        # ``Client(scheduler_file=...)`` only reads "address", so write it at runtime from the live cluster.
         scheduler_file = tmp_path / "scheduler.json"
         scheduler_file.write_text(json.dumps({"address": cluster.scheduler_address}))
         os.environ["DEISA_DASK_SCHEDULER_ADDRESS"] = str(scheduler_file)

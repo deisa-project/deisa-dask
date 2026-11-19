@@ -100,9 +100,7 @@ def _get_actor(client: Client, clazz, **kwargs):
 
     key = f"deisa_actor_{clazz}"
 
-    # ``Lock`` resolves its event loop from the *current* client (it takes no client of its own). Bridges build their
-    # client with ``set_as_default=False``, so scope that client here; ``as_current`` restores the previous default and
-    # the previous scheduler config on exit, so this cannot outlive the call.
+    # ``Lock`` takes its event loop from the *current* client; scope the bridge client here, restored on exit.
     with client.as_current(), Lock(key):
         is_set = client.run_on_scheduler(check_variable, name=key)
         if is_set:
