@@ -22,15 +22,13 @@ Types of changes:
 
 ### Fixed
 
-- Deisa: registered callbacks now execute inside the Deisa client's context (`client.as_current()`), so a bare
-  `.compute()` in a callback body resolves to the Deisa client that owns the delivered futures. Since the Deisa
-  client is deliberately no longer the process-wide Dask default, such a compute resolved to the caller's default
-  client instead and released the delivered scatter keys as soon as it finished, evicting the chunk from the
-  workers before the callback even returned (the `precompute=False` memory control test lost its 32 MB chunk in
-  CI). Regression test: `test_callback_bare_compute_uses_deisa_client`.
-- test: the `reset_dask_scheduler` fixture in `test/conftest.py` now really restores the pre-test
-  `dask.config["scheduler"]` value instead of re-applying the leaked value on context exit (the previous version
-  was a no-op).
+- Bridge: internal clients no longer become the process-wide Dask default (`set_as_default=False`); `_get_actor`
+  scopes its client with `as_current()` because `Lock` resolves from the current client.
+- Bridge: an idle client that lost its scheduler now closes itself instead of holding the global scheduler
+  config through the reconnect window.
+- Deisa: the client no longer becomes the process-wide default (`set_as_default=False`); registered callbacks
+  run inside `client.as_current()` so a bare `.compute()` resolves to the client owning the delivered futures.
+- test: `reset_dask_scheduler` fixture now actually restores `dask.config["scheduler"]` after each test.
 
 ### Changed
 
@@ -89,16 +87,6 @@ Types of changes:
   the caller's running loop would deadlock, since a running loop cannot be re-entered).
 - Missing first callback(s) due to not waiting for `Deisa.execute_callbacks()`
 - Deisa: avoid exceptions raised from `__del__()`
-- Bridge: a bridge's internal `distributed.Client` is now built with `set_as_default=False`, so it no longer
-  pins the process-global Dask scheduler at `dask.distributed` for its whole lifetime (including a 10 s
-  reconnect window against a scheduler that is already gone). Previously any module on the same xdist worker
-  that pinned `scheduler="threads"` resolved to `dask.distributed`, found no live client, and failed with
-  `RuntimeError: Requested dask.distributed scheduler but no Client active.` — the flake that landed on
-  unrelated `mergeable_pca` tests in CI. `_get_actor` scopes its client with `client.as_current()` because
-  `distributed.Lock(key)` takes no client and reads `Client.current()`. Regression test:
-  `TestBridgeClientIsNotTheProcessDefault` (fails on `main`, passes here).
-- Bridge: an idle bridge client that no longer finds its scheduler now closes itself cleanly instead of
-  holding the process-global scheduler config through the reconnect window.
 
 ## [0.6.3]
 
