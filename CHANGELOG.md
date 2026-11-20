@@ -22,6 +22,10 @@ Types of changes:
 
 ### Fixed
 
+- `deisa.dask.bridge`: the garbage-collected `Bridge` finalizer no longer enters collectives. A bridge finalized
+  while its peers are still referenced used to block forever on the world barrier / sub-comm `Free()` (a hang, not an
+  error); the finalizer now releases only local resources (the Dask client), and the coordinated close stays on the
+  explicit `close()` call.
 - Bridge: internal clients no longer become the process-wide Dask default (`set_as_default=False`); `_get_actor`
   scopes its client with `as_current()` because `Lock` resolves from the current client.
 - Bridge: an idle client that lost its scheduler now closes itself instead of holding the global scheduler
@@ -43,6 +47,35 @@ Types of changes:
   iterator/set/tuple `hash=` input normalization. The `_await_scatter` helper replaces the four duplicated
   client/no-client dispatch sites.
 
+## [0.7.1]
+
+### Added
+
+- `deisa.dask.bridge.send`: a distributed array registered without `chunk_position` gets it derived from the
+  communicator topology — Cartesian coordinates on a cart sub-communicator, otherwise the rank's row-major tile index
+  on a uniform grid; distributions that cannot be derived (uneven chunks, topology mismatch) require an explicit
+  position and raise.
+
+### Changed
+
+- `deisa.dask.deisa`: chunk positions are explicit and never guessed. Duplicate/degenerate chunk positions are now
+  rejected loudly (both in the full-chunk tiler and in the precompute path) and the uniform-grid fallback inference
+  is removed: no more row-major position nesting by stride, grid extent from `global_shape // chunk_shape`, or tile
+  count inferred the same way.
+
+### Fixed
+
+- Bridge: the task-branch prefetch in `__init__` now runs on every rank instead of world rank 0 only. The prefetch
+  broadcasts once per array on that array's own sub-communicator, i.e. it is a collective, but only rank 0 entered
+  it there; the other ranks reached the same broadcasts later, lazily, from `send()`. With a single array shared by
+  every rank that mismatch happened to pair up and complete, which hid the bug. With two or more shared arrays it
+  deadlocked for good: rank 0 broadcast the arrays in sorted order while the simulation sent them in its own order,
+  so each rank waited on a different array's communicator and the run never started. The prefetch now runs on all
+  ranks after the post-registration barrier, so every rank enters the same sorted sequence of collectives.
+- `deisa.dask.bridge`: each gathered piece keeps its own chunk shape and dtype instead of inheriting the root's chunk
+  geometry, so an uneven MPI chunk distribution no longer mis-tiles the reconstructed array.
+- `deisa.dask.deisa`: the full-chunk tiler places every gathered piece by its own chunk position instead of assuming
+  a uniform grid, so arrays distributed with uneven chunk sizes reconstruct correctly.
 
 ## [0.7.0]
 

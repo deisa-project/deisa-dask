@@ -48,7 +48,7 @@ from deisa.dask.branch import BranchSpec
 from deisa.dask.constants import CLIENT_KEY, FEEDBACK_QUEUE_PREFIX, KEY_PREFIX, WAIT_FOR_EXECUTE_CB_EVENT
 from deisa.dask.handshake import Handshake
 from deisa.dask.precompute_analyzer import PrecomputeRuntimeError
-from deisa.dask.utils import called_from_event_loop, get_client, run_coro_on_private_loop
+from deisa.dask.utils import called_from_event_loop, get_client, get_mpi_cart_coords, run_coro_on_private_loop
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +91,18 @@ class Bridge(IBridge):
         - ``:param args:`` Additional positional arguments for the initialization.
         - ``:param kwargs:`` Additional keyword arguments for the initialization. Can include
             configuration parameters like timeout used during client setup.
+
+        ``chunk_position`` may be omitted per array: it is then derived ONCE, here, from the communicator topology
+        (see ``_resolve_chunk_positions``). Distributions that cannot be derived raise instead of being guessed.
         """
         super().__init__(comm, arrays_metadata, *args, **kwargs)
         self.comm: ICommunicator = comm
         self.id = self.comm.Get_rank()
-        self.arrays_metadata = validate_arrays_metadata(arrays_metadata)
-        self._my_arrays: set[str] = set(arrays_metadata.keys())  # arrays this bridge owns
+        # One own copy per array: a derived default lands in the bridge's metadata, never in the caller's dict.
+        # Validation runs after the defaults are resolved (see _resolve_chunk_positions), so an entry without a
+        # 'chunk_position' is legal at registration time.
+        self.arrays_metadata = {name: dict(metadata) for name, metadata in arrays_metadata.items()}
+        self._my_arrays: set[str] = set(self.arrays_metadata)  # arrays this bridge owns
         self._feedback_queues = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
         self._has_close_been_called = False
         self.workers = None
@@ -132,6 +138,11 @@ class Bridge(IBridge):
         # Auto-discover array participation and create sub-communicators
         self._setup_array_comms()
 
+        # Default chunk positions are resolved ONCE, here, where the topology is known: the send/gather/publish
+        # paths below only ever consume the resolved value (no per-send topology queries).
+        self._resolve_chunk_positions()
+        self.arrays_metadata = validate_arrays_metadata(self.arrays_metadata)
+
         if self.id == 0:
             # all bridges are ready, tell handshake actor
             assert self.client is not None, "client cannot be None for Bridge id 0."
@@ -154,10 +165,10 @@ class Bridge(IBridge):
         self.comm.barrier()
         logger.debug(f"[{self.id}] Bridge __init__(): post-registration barrier done")
 
-        if kwargs.get("wait_for_go", True) and self.id == 0:
-            # Prefetch static branches out of the send() path. Only safe here: the barrier guarantees branches exist in
-            # the handshake. On wait_for_go=False they may not be registered yet (--lazy first-send fetch in
-            # _get_task_branches).
+        # Prefetch static branches out of the send() path. EVERY rank runs this: ``_prefetch_task_branches`` issues one
+        # bcast per array on that array's sub-communicator, so all sub-comm members must enter the same (sorted)
+        # sequence of collectives.
+        if kwargs.get("wait_for_go", True):
             self._prefetch_task_branches()
 
     def _gather_global_metadata(self):
@@ -243,6 +254,58 @@ class Bridge(IBridge):
                 f"sub_comm_size={sub_comm.Get_size() if sub_comm is not _COMM_NULL else 'NULL'}"
             )
 
+    def _resolve_chunk_positions(self) -> None:
+        """Give every array its ``chunk_position`` once, here, where the topology is known (precedence: see
+        ``_derive_chunk_position``). Downstream only ever consumes the resolved value and never infers a grid."""
+        for array_name, metadata in self.arrays_metadata.items():
+            if "chunk_position" not in metadata:
+                metadata["chunk_position"] = self._derive_chunk_position(array_name, metadata)
+
+    def _derive_chunk_position(self, array_name: str, metadata: Dict) -> tuple:
+        """One array's default position: Cartesian coords, else its C-order index on the implied uniform grid.
+
+        Precedence: a user ``chunk_position`` (never derived here) > the rank's Cartesian coords > its C-order
+        row-major index in the ``global_shape // chunk_shape`` grid > raise. A distribution that cannot be derived
+        is never guessed: every failure names the array and asks for an explicit ``chunk_position``.
+        """
+        global_shape = tuple(int(extent) for extent in metadata["global_shape"])
+        chunk_shape = tuple(int(chunk) for chunk in metadata["chunk_shape"])
+        # The sub-comm carries the participation set; the parent is the one the user may have made Cartesian.
+        sub_comm = self._array_comms.get(array_name) or self.comm
+        coords = get_mpi_cart_coords(sub_comm, self.comm)
+        if coords is not None:
+            if len(coords) != len(global_shape):
+                raise ValueError(
+                    f"cannot derive a chunk_position for '{array_name}': cart coords {tuple(coords)} give "
+                    f"{len(coords)} axis(es), the array {global_shape} has {len(global_shape)}. "
+                    "Register this array with an explicit 'chunk_position'."
+                )
+            return tuple(coords)
+        if len(chunk_shape) != len(global_shape):
+            raise ValueError(
+                f"cannot derive a chunk_position for '{array_name}': global_shape {global_shape} and "
+                f"chunk_shape {chunk_shape} differ in axis count. "
+                "Register this array with an explicit 'chunk_position'."
+            )
+        grid_extent: List[int] = []
+        for axis, (extent, chunk) in enumerate(zip(global_shape, chunk_shape)):
+            if chunk <= 0 or extent % chunk != 0:
+                raise ValueError(
+                    f"cannot derive a chunk_position for '{array_name}': global_shape {global_shape} is not a whole "
+                    f"number of chunk_shape {chunk_shape} chunks along axis {axis}. "
+                    "Register this array with an explicit 'chunk_position'."
+                )
+            grid_extent.append(extent // chunk)
+        nb_ranks, nb_tiles = sub_comm.Get_size(), int(np.prod(grid_extent))
+        if nb_tiles != nb_ranks:
+            raise ValueError(
+                f"cannot derive a chunk_position for '{array_name}': {tuple(grid_extent)} grid of {nb_tiles} tile(s) "
+                f"for global_shape {global_shape} / chunk_shape {chunk_shape}, not {nb_ranks} rank(s). "
+                "Register this array with an explicit 'chunk_position'."
+            )
+        # C-order tile index of this rank over the grid: any rank count works, `unravel_index` does the splitting.
+        return tuple(int(index) for index in np.unravel_index(sub_comm.Get_rank(), tuple(grid_extent)))
+
     def __del__(self):
         """Clean up resources before destruction.
 
@@ -262,8 +325,13 @@ class Bridge(IBridge):
         whole ``sync()`` timeout (60 s measured) and, with an in-process cluster whose
         scheduler, workers and client share that loop, freezes the whole cluster.
 
-        During normal (non-shutdown) garbage collection from any other thread the
-        full ``close()`` still runs.
+        During normal (non-shutdown) garbage collection from any other thread, the COORDINATED part of
+        ``close()`` (world barrier, sub-comm ``Free()``, handshake sync) still does NOT run: those are
+        collectives that require every participating rank's Bridge to be finalized in the same GC cycle.
+        A rank whose peers are still referenced enters the barrier alone and blocks forever on the
+        condition/MPI wait -- one wedge takes down the whole process (observed: xdist test workers hung
+        mid-suite, CI unit jobs stalled to their job limit). A hang is worse than a leaked communicator,
+        so the finalizer releases only what is local: the Dask client.
         """
         if sys.is_finalizing():
             logger.debug(f"[{self.id}] Bridge.__del__ during interpreter shutdown: skipping close()")
@@ -275,9 +343,10 @@ class Bridge(IBridge):
             )
             return
         try:
-            self.close(timestep=sys.maxsize)
+            if self.client is not None:
+                self.client.close()
         except Exception:
-            # Never raise from __del__. close() already logs its own errors.
+            # Never raise from __del__.
             pass
 
     def close(self, timestep: int) -> None:
@@ -483,6 +552,10 @@ class Bridge(IBridge):
         piece: Dict[str, Any] = {
             "scatter": scatter_result,
             "chunk_position": self.arrays_metadata[array_name]["chunk_position"],
+            # The sender's OWN chunk geometry travels with the piece: chunks may be uneven across ranks, so the
+            # root must not stamp its own shape/dtype on pieces that came from another bridge.
+            "chunk_shape": chunk.shape,
+            "chunk_dtype": str(chunk.dtype),
             "futures": futures_entries,
         }
 
@@ -532,8 +605,9 @@ class Bridge(IBridge):
             futures_payload = [
                 {
                     "future": other["scatter"]["future"][0],
-                    "shape": chunk.shape,
-                    "dtype": str(chunk.dtype),
+                    # Each piece keeps the geometry of the rank that sent it (uneven chunks).
+                    "shape": other["chunk_shape"],
+                    "dtype": other["chunk_dtype"],
                     "chunk_position": other["chunk_position"],
                 }
                 for other in pieces

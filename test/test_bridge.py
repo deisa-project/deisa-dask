@@ -75,6 +75,11 @@ class TestBridge:
         assert not bridge._has_close_been_called
 
     def test__del__(self, env_setup):
+        """The finalizer releases only local resources; it must never enter a collective.
+
+        A bridge GC'd while its peers are still referenced would wait alone on the world barrier / sub-comm ``Free()``
+        and wedge the whole process, so ``__del__`` closes the bridge's Dask client and nothing else.
+        """
         client, cluster = env_setup
         bridge, arrays_metadata = self.get_new_bridge()
         assert bridge.id == 0
@@ -83,8 +88,14 @@ class TestBridge:
         assert sorted(list(bridge.workers.keys())) == sorted([w.worker_address for w in cluster.workers.values()])
         assert isinstance(bridge.comm, FakeComm)
         assert not bridge._has_close_been_called
-        bridge.__del__()
-        assert bridge._has_close_been_called
+        assert bridge.client is not None
+        assert bridge.client.status != "closed"
+        barriers = []
+        bridge.comm.barrier = lambda: barriers.append(1)
+        bridge.__del__()  # must not escape with an exception
+        assert bridge.client.status == "closed", "the finalizer must release the bridge's own Dask client"
+        assert not bridge._has_close_been_called, "the finalizer must not run the coordinated close() path"
+        assert barriers == [], "the finalizer must not enter the world barrier"
 
     def test_close(self, env_setup):
         client, _ = env_setup
