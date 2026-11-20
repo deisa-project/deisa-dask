@@ -12,6 +12,7 @@ jobs:
     permissions:
       checks: write
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       UCX_TLS: tcp,self
       FI_PROVIDER: tcp

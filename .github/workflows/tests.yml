@@ -14,6 +14,7 @@ jobs:
       matrix:
         python-version: [ "3.10", "3.11", "3.12" ]
         dask-version: [ "2025.5.0", "2025.7.0", "2025.11.0" ]
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,7 @@ jobs:
         python-version: [ "3.10", "3.11", "3.12" ]
         dask-version: [ "2025.5.0", "2025.7.0", "2025.11.0" ]
         mpi-impl: [ "openmpi", "mpich"]
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4

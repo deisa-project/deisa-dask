@@ -11,6 +11,7 @@ jobs:
   benchmark_fork_pr_branch:
     name: Run fork PR benchmarks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       UCX_TLS: tcp,self
       FI_PROVIDER: tcp
