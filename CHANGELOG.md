@@ -22,6 +22,10 @@ Types of changes:
 
 ### Fixed
 
+- `deisa.dask.bridge`: the garbage-collected `Bridge` finalizer no longer enters collectives. A bridge finalized
+  while its peers are still referenced used to block forever on the world barrier / sub-comm `Free()` (a hang, not an
+  error); the finalizer now releases only local resources (the Dask client), and the coordinated close stays on the
+  explicit `close()` call.
 - Bridge: internal clients no longer become the process-wide Dask default (`set_as_default=False`); `_get_actor`
   scopes its client with `as_current()` because `Lock` resolves from the current client.
 - Bridge: an idle client that lost its scheduler now closes itself instead of holding the global scheduler

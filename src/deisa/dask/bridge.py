@@ -325,8 +325,13 @@ class Bridge(IBridge):
         whole ``sync()`` timeout (60 s measured) and, with an in-process cluster whose
         scheduler, workers and client share that loop, freezes the whole cluster.
 
-        During normal (non-shutdown) garbage collection from any other thread the
-        full ``close()`` still runs.
+        During normal (non-shutdown) garbage collection from any other thread, the COORDINATED part of
+        ``close()`` (world barrier, sub-comm ``Free()``, handshake sync) still does NOT run: those are
+        collectives that require every participating rank's Bridge to be finalized in the same GC cycle.
+        A rank whose peers are still referenced enters the barrier alone and blocks forever on the
+        condition/MPI wait -- one wedge takes down the whole process (observed: xdist test workers hung
+        mid-suite, CI unit jobs stalled to their job limit). A hang is worse than a leaked communicator,
+        so the finalizer releases only what is local: the Dask client.
         """
         if sys.is_finalizing():
             logger.debug(f"[{self.id}] Bridge.__del__ during interpreter shutdown: skipping close()")
@@ -338,9 +343,10 @@ class Bridge(IBridge):
             )
             return
         try:
-            self.close(timestep=sys.maxsize)
+            if self.client is not None:
+                self.client.close()
         except Exception:
-            # Never raise from __del__. close() already logs its own errors.
+            # Never raise from __del__.
             pass
 
     def close(self, timestep: int) -> None:
