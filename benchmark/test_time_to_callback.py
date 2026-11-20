@@ -45,9 +45,11 @@ import pytest
 N_SENDS = 100
 
 # How long bridge.get() blocks waiting for feedback from the Deisa callback
-# (seconds). 10 seconds is generous enough to handle typical callback execution
-# time plus scheduler dispatch latency under normal load.
-FEEDBACK_TIMEOUT = 10.0
+# (seconds). Error-path bound only: it exists so a wedged callback fails fast
+# instead of hanging the mpirun group, and it does not affect the measured
+# latency. It must tolerate CI-runner load spikes, so it is set far above any
+# plausible single-hop time.
+FEEDBACK_TIMEOUT = 60.0
 
 # Interval between polls in the feedback loop (seconds).
 # 100ms is a good balance between responsiveness and not flooding the
@@ -282,7 +284,9 @@ def test_time_to_callback_mpi(nb_bridges: int, benchmark, env_setup):
         )
         assert result.returncode == 0, f"MPI bridge failed with returncode {result.returncode}"
 
-        thread.join(timeout=10)
+        # Error-path bound after mpirun returns: a wedged Deisa thread must not
+        # hang the test, but the wait must tolerate CI-runner load spikes.
+        thread.join(timeout=60)
         return results
 
     results = benchmark.pedantic(run_benchmark, warmup_rounds=0, rounds=1, iterations=1)
